@@ -204,11 +204,11 @@ def load_model(model_id: str, mode: str = "inspect") -> Tuple:
         )
     elif mode == "eval":
         model = AutoModelForCausalLM.from_pretrained(
-            model_id, torch_dtype=torch.float16, device_map="auto"
+            model_id, dtype=torch.float16, device_map="auto"
         )
     elif mode == "export":
         model = AutoModelForCausalLM.from_pretrained(
-            model_id, torch_dtype=torch.float16, device_map="cpu"
+            model_id, dtype=torch.float16, device_map="cpu"
         )
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)

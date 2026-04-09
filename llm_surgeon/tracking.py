@@ -146,6 +146,11 @@ def start(
     recipe_yaml = json.dumps(recipe) if recipe is not None else None
     conn = _connect(db_path)
     try:
+        # If experiment with this name already exists, delete the old one
+        conn.execute("DELETE FROM metrics WHERE experiment_name = ?", (name,))
+        conn.execute("DELETE FROM surgery_ops WHERE experiment_name = ?", (name,))
+        conn.execute("DELETE FROM samples WHERE experiment_name = ?", (name,))
+        conn.execute("DELETE FROM experiments WHERE name = ?", (name,))
         conn.execute(
             """
             INSERT INTO experiments (name, description, base_model, recipe_yaml, status, created_at)

@@ -199,7 +199,7 @@ def _run_evaluation(
         ppl_cfg = eval_cfg["perplexity"] or {}
         dataset = ppl_cfg.get("dataset", "wikitext2")
         max_samples = ppl_cfg.get("max_samples")
-        _log(f"Measuring perplexity on {dataset}...", verbose)
+        _log(f"Measuring perplexity on {dataset} (max_samples={max_samples})...", verbose)
         ppl = benchmark.perplexity(model, tokenizer, dataset=dataset, max_samples=max_samples, verbose=verbose)
         exp.log_metric(f"perplexity_{dataset}", ppl)
         results[f"perplexity_{dataset}"] = ppl

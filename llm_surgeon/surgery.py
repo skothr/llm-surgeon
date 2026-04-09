@@ -97,3 +97,22 @@ def remove_layers(model, layer_indices: List[int]) -> SurgeryLog:
     log = SurgeryLog()
     log.add("remove_layers", f"Removed layers {layer_indices}", num_before, len(layers))
     return log
+
+
+def keep_layers(model, layer_indices: List[int]) -> SurgeryLog:
+    """Keep only the layers at the specified indices, remove all others."""
+    layers = model.model.layers
+    num_before = len(layers)
+
+    for idx in layer_indices:
+        if idx < 0 or idx >= num_before:
+            raise IndexError(f"Layer index {idx} out of range [0, {num_before - 1}]")
+
+    new_layers = nn.ModuleList([layers[i] for i in layer_indices])
+    model.model.layers = new_layers
+    model.config.num_hidden_layers = len(new_layers)
+    _renumber_layers(model)
+
+    log = SurgeryLog()
+    log.add("keep_layers", f"Kept layers {layer_indices}", num_before, len(new_layers))
+    return log

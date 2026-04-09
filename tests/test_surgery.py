@@ -5,6 +5,7 @@ import torch
 from llm_surgeon.surgery import SurgeryOp, SurgeryLog
 from llm_surgeon.surgery import get_layer_info
 from llm_surgeon.surgery import remove_layers
+from llm_surgeon.surgery import keep_layers
 
 
 class TestSurgeryOp:
@@ -129,6 +130,37 @@ class TestRemoveLayers:
 
     def test_model_still_runs_after_surgery(self, tiny_llama):
         remove_layers(tiny_llama, [3, 4, 5])
+        input_ids = torch.randint(0, 64, (1, 10))
+        with torch.no_grad():
+            output = tiny_llama(input_ids)
+        assert output.logits.shape == (1, 10, 64)
+
+
+class TestKeepLayers:
+    def test_keeps_specified_layers(self, tiny_llama):
+        log = keep_layers(tiny_llama, [0, 1, 2])
+        assert len(tiny_llama.model.layers) == 3
+        assert tiny_llama.config.num_hidden_layers == 3
+
+    def test_returns_surgery_log(self, tiny_llama):
+        log = keep_layers(tiny_llama, [0, 1])
+        assert log.ops[0].operation == "keep_layers"
+        assert log.ops[0].layer_count_before == 8
+        assert log.ops[0].layer_count_after == 2
+
+    def test_preserves_correct_layers(self, tiny_llama):
+        w0 = tiny_llama.model.layers[0].self_attn.q_proj.weight.data.clone()
+        w7 = tiny_llama.model.layers[7].self_attn.q_proj.weight.data.clone()
+        keep_layers(tiny_llama, [0, 7])
+        assert torch.equal(tiny_llama.model.layers[0].self_attn.q_proj.weight.data, w0)
+        assert torch.equal(tiny_llama.model.layers[1].self_attn.q_proj.weight.data, w7)
+
+    def test_invalid_index_raises(self, tiny_llama):
+        with pytest.raises(IndexError):
+            keep_layers(tiny_llama, [0, 99])
+
+    def test_model_still_runs(self, tiny_llama):
+        keep_layers(tiny_llama, [0, 3, 7])
         input_ids = torch.randint(0, 64, (1, 10))
         with torch.no_grad():
             output = tiny_llama(input_ids)

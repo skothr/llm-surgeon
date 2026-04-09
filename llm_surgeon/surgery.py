@@ -266,7 +266,7 @@ def calibrate(
         # This normalises the effective gain relative to the incoming variance.
         norm_weight = layer.input_layernorm.weight
         with torch.no_grad():
-            norm_weight.data = (norm_weight.data / std.to(norm_weight.device))
+            norm_weight.data = (norm_weight.data / std.to(device=norm_weight.device, dtype=norm_weight.dtype))
 
 
 def load_model(model_id: str, mode: str = "inspect") -> Tuple:

@@ -359,45 +359,63 @@ class TestChainedOperations:
 
 
 class TestCalibrate:
-    def test_runs_without_error(self, tiny_llama):
-        from llm_surgeon.surgery import calibrate, remove_layers
+    def test_capture_stats_returns_list(self, tiny_llama):
+        from llm_surgeon.surgery import capture_calibration_stats
         from tests.conftest import _make_tiny_tokenizer
-        remove_layers(tiny_llama, [3, 4])
         tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
-        # word4..word10 are valid tokens in the vocab
-        text = " ".join([f"word{i}" for i in range(4, 20)])
-        calibrate(tiny_llama, tokenizer, text=text)
+        text = " ".join([f"tok{i}" for i in range(4, 20)])
+        stats = capture_calibration_stats(tiny_llama, tokenizer, text=text)
+        assert isinstance(stats, list)
+        assert len(stats) == 8  # 8 layers in tiny_llama
+        assert all(isinstance(v, float) and v > 0 for v in stats)
 
-    def test_modifies_norm_parameters(self, tiny_llama):
-        from llm_surgeon.surgery import calibrate, remove_layers
-        import copy
+    def test_calibrate_with_baseline_modifies_norms(self, tiny_llama):
+        from llm_surgeon.surgery import calibrate, capture_calibration_stats, remove_layers
         from tests.conftest import _make_tiny_tokenizer
-        remove_layers(tiny_llama, [3, 4])
         tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
-        # Clone all norm weights before calibration
+        text = " ".join([f"tok{i}" for i in range(4, 20)])
+
+        # Capture baseline BEFORE surgery
+        baseline = capture_calibration_stats(tiny_llama, tokenizer, text=text)
+
+        # Surgery
+        remove_layers(tiny_llama, [3, 4])
+
+        # Clone norm weights before calibration
         norms_before = [
             layer.input_layernorm.weight.data.clone()
             for layer in tiny_llama.model.layers
         ]
-        text = " ".join([f"word{i}" for i in range(4, 20)])
-        calibrate(tiny_llama, tokenizer, text=text)
+
+        # Calibrate with baseline
+        calibrate(tiny_llama, tokenizer, baseline_stats=baseline, text=text)
+
         norms_after = [
             layer.input_layernorm.weight.data.clone()
             for layer in tiny_llama.model.layers
         ]
-        # At least some norm weights should have changed
         changed = any(
             not torch.equal(b, a) for b, a in zip(norms_before, norms_after)
         )
         assert changed, "calibrate() did not modify any norm parameters"
 
-    def test_model_still_runs_after_calibration(self, tiny_llama):
+    def test_calibrate_without_baseline_warns(self, tiny_llama):
         from llm_surgeon.surgery import calibrate, remove_layers
         from tests.conftest import _make_tiny_tokenizer
-        remove_layers(tiny_llama, [3, 4])
         tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
-        text = " ".join([f"word{i}" for i in range(4, 20)])
-        calibrate(tiny_llama, tokenizer, text=text)
+        remove_layers(tiny_llama, [3, 4])
+        text = " ".join([f"tok{i}" for i in range(4, 20)])
+        with pytest.warns(UserWarning, match="baseline_stats"):
+            calibrate(tiny_llama, tokenizer, text=text)
+
+    def test_model_still_runs_after_calibration(self, tiny_llama):
+        from llm_surgeon.surgery import calibrate, capture_calibration_stats, remove_layers
+        from tests.conftest import _make_tiny_tokenizer
+        tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
+        text = " ".join([f"tok{i}" for i in range(4, 20)])
+        baseline = capture_calibration_stats(tiny_llama, tokenizer, text=text)
+        remove_layers(tiny_llama, [3, 4])
+        calibrate(tiny_llama, tokenizer, baseline_stats=baseline, text=text)
         input_ids = torch.randint(0, tiny_llama.config.vocab_size, (1, 10))
         with torch.no_grad():
             output = tiny_llama(input_ids)

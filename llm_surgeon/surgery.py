@@ -186,56 +186,109 @@ def duplicate_layer(model, src: int, dst: int) -> SurgeryLog:
     return log
 
 
-def calibrate(
+def capture_calibration_stats(
     model,
     tokenizer,
     text: str = None,
     dataset: str = None,
     num_samples: int = 128,
-) -> None:
-    """Rescale RMSNorm gains to compensate for residual stream variance shift after surgery.
+) -> List[float]:
+    """Capture per-layer input RMS values for calibration reference.
 
-    Runs calibration text through the model, captures per-layer input hidden states via
-    forward hooks, computes per-dimension variance, and rescales each layer's
-    input_layernorm.weight so that the effective scale is normalised.
+    Run this BEFORE surgery on the original model. The returned stats are
+    passed to calibrate() after surgery to correct for distribution shift.
+
+    Returns:
+        List of per-layer RMS values (one float per layer).
+    """
+    return _capture_rms(model, tokenizer, text=text, dataset=dataset, num_samples=num_samples)
+
+
+def calibrate(
+    model,
+    tokenizer,
+    baseline_stats: List[float] = None,
+    text: str = None,
+    dataset: str = None,
+    num_samples: int = 128,
+) -> None:
+    """Rescale RMSNorm gains to compensate for residual stream shift after surgery.
+
+    Uses a ratio-based approach: compares the per-layer input RMS of the
+    modified model against baseline stats from the original model, then
+    scales each layer's input_layernorm.weight by (baseline_rms / current_rms).
+    This ensures downstream layers see the same magnitude they expect.
 
     Args:
-        model: A LlamaForCausalLM (or compatible) model.
-        tokenizer: Tokenizer matching the model vocabulary.
-        text: Calibration text string.  If None, *dataset* must be provided.
-        dataset: Name of a HuggingFace dataset (e.g. 'wikitext2').  Used only when
-                 *text* is None.  Requires the ``datasets`` package.
-        num_samples: Maximum number of token sequences to collect (not used when
-                     *text* is provided directly).
+        model: The modified model to calibrate.
+        tokenizer: Tokenizer matching the model.
+        baseline_stats: Per-layer RMS from capture_calibration_stats() on the
+            original model. If None, calibration is skipped with a warning.
+        text: Calibration text. If None, loads from dataset.
+        dataset: Dataset name ('wikitext2'). Used if text is None.
+        num_samples: Number of samples from dataset.
     """
-    if text is None and dataset is None:
-        raise ValueError("Provide either text= or dataset=")
+    if baseline_stats is None:
+        warnings.warn(
+            "calibrate() called without baseline_stats. "
+            "Call capture_calibration_stats() on the original model before surgery, "
+            "then pass the result here. Skipping calibration.",
+            UserWarning,
+        )
+        return
 
-    # --- Resolve calibration text ---
+    # Capture current RMS values on the modified model
+    current_stats = _capture_rms(model, tokenizer, text=text, dataset=dataset, num_samples=num_samples)
+
+    # Apply scalar correction per layer: scale weight by baseline/current ratio
+    num_to_correct = min(len(baseline_stats), len(current_stats), len(model.model.layers))
+    for i in range(num_to_correct):
+        layer = model.model.layers[i]
+        if not hasattr(layer, "input_layernorm"):
+            continue
+
+        baseline_rms = baseline_stats[i]
+        current_rms = current_stats[i]
+
+        if current_rms < 1e-8:
+            continue
+
+        ratio = baseline_rms / current_rms
+        norm_weight = layer.input_layernorm.weight
+        with torch.no_grad():
+            norm_weight.data *= torch.tensor(ratio, device=norm_weight.device, dtype=norm_weight.dtype)
+
+
+def _capture_rms(
+    model,
+    tokenizer,
+    text: str = None,
+    dataset: str = None,
+    num_samples: int = 128,
+) -> List[float]:
+    """Capture per-layer input RMS values by running calibration data through the model."""
+    if text is None and dataset is None:
+        dataset = "wikitext2"
+
     if text is None:
-        # Load from HuggingFace datasets
         from datasets import load_dataset  # type: ignore
         ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
-        calibration_text = " ".join(ds["text"][:num_samples])
-    else:
-        calibration_text = text
+        text = " ".join(ds["text"][:num_samples])
 
     device = model.model.embed_tokens.weight.device
-
-    # --- Tokenize ---
-    enc = tokenizer(calibration_text, return_tensors="pt", truncation=True, max_length=512)
+    enc = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
     input_ids = enc["input_ids"].to(device)
 
-    # --- Register hooks to capture each layer's input hidden states ---
     num_layers = len(model.model.layers)
-    captured: List[torch.Tensor] = [None] * num_layers
+    rms_values: List[float] = [0.0] * num_layers
     hooks = []
 
     def _make_hook(idx):
         def hook(module, args):
-            # args[0] is the hidden-states tensor fed into this layer
             hs = args[0].detach().float()  # (batch, seq, hidden)
-            captured[idx] = hs
+            # RMS across all positions: sqrt(mean(x^2))
+            rms = hs.pow(2).mean().sqrt().item()
+            rms_values[idx] = rms
         return hook
 
     for i, layer in enumerate(model.model.layers):
@@ -249,24 +302,7 @@ def calibrate(
         for h in hooks:
             h.remove()
 
-    # --- Rescale each layer's input_layernorm.weight ---
-    for i, layer in enumerate(model.model.layers):
-        hs = captured[i]
-        if hs is None:
-            continue
-        if not hasattr(layer, "input_layernorm"):
-            continue
-
-        # Per-dimension variance across (batch * seq) positions
-        flat = hs.reshape(-1, hs.shape[-1])          # (N, hidden)
-        var = flat.var(dim=0, unbiased=False)         # (hidden,)
-        std = var.sqrt().clamp(min=1e-6)
-
-        # Rescale: divide weight by std so that std * (w / std) = w
-        # This normalises the effective gain relative to the incoming variance.
-        norm_weight = layer.input_layernorm.weight
-        with torch.no_grad():
-            norm_weight.data = (norm_weight.data / std.to(device=norm_weight.device, dtype=norm_weight.dtype))
+    return rms_values
 
 
 def load_model(model_id: str, mode: str = "inspect") -> Tuple:

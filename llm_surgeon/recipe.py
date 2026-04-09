@@ -44,6 +44,7 @@ def _log(msg: str, verbose: bool) -> None:
 
 def _apply_surgery_step(
     model, tokenizer, step: Dict[str, Any], verbose: bool = False,
+    baseline_stats: list = None,
 ) -> Optional[surgery.SurgeryLog]:
     """Execute a single surgery step dict and return the SurgeryLog (or None for calibrate)."""
     if "remove_layers" in step:
@@ -69,6 +70,7 @@ def _apply_surgery_step(
         surgery.calibrate(
             model,
             tokenizer,
+            baseline_stats=baseline_stats,
             text=opts.get("text"),
             dataset=opts.get("dataset"),
             num_samples=int(opts.get("num_samples", 128)),
@@ -133,9 +135,25 @@ def run(
 
     # Execute surgery steps
     steps = recipe_data.get("surgery", [])
+
+    # If calibration is requested, capture baseline stats BEFORE surgery
+    baseline_stats = None
+    has_calibrate = any("calibrate" in s for s in steps)
+    if has_calibrate:
+        _log("Capturing baseline calibration stats (pre-surgery)...", verbose)
+        cal_step = next(s for s in steps if "calibrate" in s)
+        cal_opts = cal_step["calibrate"] or {}
+        baseline_stats = surgery.capture_calibration_stats(
+            model, tokenizer,
+            text=cal_opts.get("text"),
+            dataset=cal_opts.get("dataset"),
+            num_samples=int(cal_opts.get("num_samples", 128)),
+        )
+        _log(f"Captured RMS for {len(baseline_stats)} layers", verbose)
+
     combined_log = surgery.SurgeryLog()
     for step in steps:
-        log = _apply_surgery_step(model, tokenizer, step, verbose=verbose)
+        log = _apply_surgery_step(model, tokenizer, step, verbose=verbose, baseline_stats=baseline_stats)
         if log is not None:
             combined_log.ops.extend(log.ops)
 

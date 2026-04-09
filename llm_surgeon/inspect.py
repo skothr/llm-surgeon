@@ -1,7 +1,7 @@
 """Inspection and activation analysis tools for LLaMA models."""
 
 import math
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn.functional as F
@@ -251,3 +251,91 @@ def residual_stream_norms(model, tokenizer, prompt: str) -> List[float]:
             norms.append(act.float().norm(dim=-1).mean().item())
 
     return norms
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Individual head inspection
+# ---------------------------------------------------------------------------
+
+def inspect_head(
+    model,
+    tokenizer,
+    prompt: str,
+    layer: int,
+    head: int,
+) -> Dict[str, Any]:
+    """Inspect a single attention head: its attention pattern, output norm, and entropy.
+
+    Returns dict with:
+        attention_pattern: (seq_len, seq_len) tensor of attention weights
+        output_norm: mean L2 norm of this head's output across tokens
+        entropy: mean entropy of this head's attention distribution
+    """
+    num_heads = model.config.num_attention_heads
+    if head < 0 or head >= num_heads:
+        raise IndexError(f"Head {head} out of range [0, {num_heads - 1}]")
+    num_layers = len(model.model.layers)
+    if layer < 0 or layer >= num_layers:
+        raise IndexError(f"Layer {layer} out of range [0, {num_layers - 1}]")
+
+    device = _get_input_device(model)
+    enc = tokenizer(prompt, return_tensors="pt")
+    input_ids = enc["input_ids"].to(device)
+
+    # Need attention weights — force eager attention
+    orig_attn = getattr(model.config, "_attn_implementation", None)
+    model.config._attn_implementation = "eager"
+
+    # Hook to capture the head's output from o_proj input (the concatenated head outputs)
+    head_dim = model.config.hidden_size // num_heads
+    head_output = {}
+
+    def _capture_hook(module, inp, out):
+        # inp[0] is the concatenated (batch, seq, num_heads*head_dim) before o_proj
+        # Actually, the attn module output is after o_proj. We need pre-o_proj.
+        pass
+
+    # Use a pre-hook on o_proj to capture head outputs before mixing
+    o_proj_input = {}
+    def _o_proj_pre_hook(module, args):
+        # args[0] shape: (batch, seq, num_heads * head_dim)
+        o_proj_input["val"] = args[0].detach()
+
+    hook = model.model.layers[layer].self_attn.o_proj.register_forward_pre_hook(_o_proj_pre_hook)
+
+    try:
+        with torch.no_grad():
+            outputs = model(input_ids, output_attentions=True)
+    finally:
+        hook.remove()
+        if orig_attn is not None:
+            model.config._attn_implementation = orig_attn
+        else:
+            try:
+                del model.config._attn_implementation
+            except AttributeError:
+                pass
+
+    # Extract attention pattern for this head at this layer
+    # outputs.attentions is a tuple: one (batch, num_heads, seq, seq) per layer
+    attn_weights = outputs.attentions[layer][0, head].float()  # (seq, seq)
+
+    # Extract this head's output (before o_proj mixing)
+    # o_proj_input shape: (batch, seq, num_heads * head_dim)
+    if "val" in o_proj_input:
+        full_output = o_proj_input["val"][0].float()  # (seq, num_heads * head_dim)
+        head_slice = full_output[:, head * head_dim : (head + 1) * head_dim]  # (seq, head_dim)
+        output_norm = head_slice.norm(dim=-1).mean().item()
+    else:
+        output_norm = 0.0
+
+    # Entropy of attention distribution
+    eps = 1e-10
+    ent_per_pos = -(attn_weights * (attn_weights + eps).log()).sum(dim=-1)  # (seq,)
+    entropy = ent_per_pos.mean().item()
+
+    return {
+        "attention_pattern": attn_weights,
+        "output_norm": output_norm,
+        "entropy": entropy,
+    }

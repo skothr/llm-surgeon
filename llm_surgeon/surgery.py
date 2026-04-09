@@ -186,6 +186,99 @@ def duplicate_layer(model, src: int, dst: int) -> SurgeryLog:
     return log
 
 
+# ---------------------------------------------------------------------------
+# Attention head surgery
+# ---------------------------------------------------------------------------
+
+def _validate_head_args(model, layer: int, heads: list) -> None:
+    """Validate layer index and head indices."""
+    num_layers = len(model.model.layers)
+    if layer < 0 or layer >= num_layers:
+        raise IndexError(f"Layer index {layer} out of range [0, {num_layers - 1}]")
+    num_heads = model.config.num_attention_heads
+    for h in heads:
+        if h < 0 or h >= num_heads:
+            raise IndexError(f"Head index {h} out of range [0, {num_heads - 1}]")
+
+
+def _head_dim(model) -> int:
+    return model.config.hidden_size // model.config.num_attention_heads
+
+
+def zero_heads(model, layer: int, heads: List[int]) -> SurgeryLog:
+    """Zero out specific attention heads by zeroing their o_proj columns.
+
+    The head still exists structurally but contributes nothing to the
+    residual stream. This is the standard ablation approach.
+    """
+    _validate_head_args(model, layer, heads)
+    hd = _head_dim(model)
+    o_proj = model.model.layers[layer].self_attn.o_proj
+    with torch.no_grad():
+        for h in heads:
+            o_proj.weight.data[:, h * hd : (h + 1) * hd] = 0
+
+    log = SurgeryLog()
+    log.add("zero_heads", f"Zeroed heads {heads} in layer {layer}", len(model.model.layers), len(model.model.layers))
+    return log
+
+
+def scale_heads(model, layer: int, heads: List[int], factor: float) -> SurgeryLog:
+    """Scale specific heads' contribution by multiplying their o_proj columns."""
+    _validate_head_args(model, layer, heads)
+    hd = _head_dim(model)
+    o_proj = model.model.layers[layer].self_attn.o_proj
+    with torch.no_grad():
+        for h in heads:
+            o_proj.weight.data[:, h * hd : (h + 1) * hd] *= factor
+
+    log = SurgeryLog()
+    log.add("scale_heads", f"Scaled heads {heads} in layer {layer} by {factor}", len(model.model.layers), len(model.model.layers))
+    return log
+
+
+def swap_heads(model, layer: int, h1: int, h2: int) -> SurgeryLog:
+    """Exchange two heads' weight slices in q_proj, k_proj, v_proj, and o_proj."""
+    _validate_head_args(model, layer, [h1, h2])
+    hd = _head_dim(model)
+    attn = model.model.layers[layer].self_attn
+
+    with torch.no_grad():
+        # Swap q_proj rows (each head's query projection)
+        q = attn.q_proj.weight.data
+        q[h1 * hd : (h1 + 1) * hd, :], q[h2 * hd : (h2 + 1) * hd, :] = (
+            q[h2 * hd : (h2 + 1) * hd, :].clone(),
+            q[h1 * hd : (h1 + 1) * hd, :].clone(),
+        )
+
+        # Swap k_proj and v_proj rows if heads map 1:1 to KV heads
+        # (GQA: multiple Q heads share one KV head — only swap if they map to different KV heads)
+        num_kv_heads = model.config.num_key_value_heads
+        num_q_heads = model.config.num_attention_heads
+        kv_group_size = num_q_heads // num_kv_heads
+        kv1 = h1 // kv_group_size
+        kv2 = h2 // kv_group_size
+        if kv1 != kv2:
+            for proj in [attn.k_proj, attn.v_proj]:
+                w = proj.weight.data
+                kv_hd = w.shape[0] // num_kv_heads
+                w[kv1 * kv_hd : (kv1 + 1) * kv_hd, :], w[kv2 * kv_hd : (kv2 + 1) * kv_hd, :] = (
+                    w[kv2 * kv_hd : (kv2 + 1) * kv_hd, :].clone(),
+                    w[kv1 * kv_hd : (kv1 + 1) * kv_hd, :].clone(),
+                )
+
+        # Swap o_proj columns (each head's output contribution)
+        o = attn.o_proj.weight.data
+        o[:, h1 * hd : (h1 + 1) * hd], o[:, h2 * hd : (h2 + 1) * hd] = (
+            o[:, h2 * hd : (h2 + 1) * hd].clone(),
+            o[:, h1 * hd : (h1 + 1) * hd].clone(),
+        )
+
+    log = SurgeryLog()
+    log.add("swap_heads", f"Swapped heads {h1} and {h2} in layer {layer}", len(model.model.layers), len(model.model.layers))
+    return log
+
+
 def capture_calibration_stats(
     model,
     tokenizer,

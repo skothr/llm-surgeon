@@ -1,0 +1,7 @@
+[
+    {"prompt": "The capital of France is", "category": "factual"},
+    {"prompt": "Explain gravity in one sentence.", "category": "reasoning"},
+    {"prompt": "Write a haiku about rain.", "category": "creative"},
+    {"prompt": "List three prime numbers.", "category": "factual"},
+    {"prompt": "What happens when water freezes?", "category": "reasoning"}
+]

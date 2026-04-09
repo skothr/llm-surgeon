@@ -2,11 +2,12 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import warnings
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -287,3 +288,261 @@ def _extract_accuracies(data: dict, tasks: List[str]) -> Dict[str, float]:
                 out[task] = float("nan")
 
     return out
+
+
+# ---------------------------------------------------------------------------
+# Generation comparison via Ollama
+# ---------------------------------------------------------------------------
+
+def _load_prompts(path: str) -> List[Dict[str, str]]:
+    """Load a prompt list from a JSON file.
+
+    Args:
+        path: Path to a JSON file containing a list of dicts with at least
+              a ``"prompt"`` key and optionally a ``"category"`` key.
+
+    Returns:
+        List of prompt dicts.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def compare(
+    models: List[str],
+    prompts: Union[List[Dict[str, str]], str],
+    temperature: float = 0.0,
+    max_tokens: int = 256,
+    output_file: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Compare multiple ollama models across a set of prompts.
+
+    Sends each prompt to each model via the Ollama HTTP API and collects the
+    generated text and timing statistics.
+
+    Args:
+        models: List of ollama model names (e.g. ``["tinyllama", "mistral"]``).
+        prompts: Either a list of dicts ``[{"prompt": str, "category": str}]``
+                 or a path to a JSON file in that format.
+        temperature: Sampling temperature.  ``0.0`` is near-deterministic.
+        max_tokens: Maximum number of tokens to generate per response.
+        output_file: If provided, write results as JSON to this path.
+
+    Returns:
+        List of result dicts, one per prompt::
+
+            [
+                {
+                    "prompt": str,
+                    "category": str,
+                    "responses": {
+                        "<model>": {
+                            "text": str,
+                            "tokens_per_second": float,
+                            "total_tokens": int,
+                        }
+                    }
+                },
+                ...
+            ]
+
+    Note:
+        ``temperature=0.0`` is near-deterministic but not exact due to
+        quantized parallel reduction in GPU matrix operations.
+    """
+    import requests
+
+    if isinstance(prompts, str):
+        prompts = _load_prompts(prompts)
+
+    results: List[Dict[str, Any]] = []
+
+    for prompt_entry in prompts:
+        prompt_text = prompt_entry["prompt"]
+        category = prompt_entry.get("category", "")
+
+        responses: Dict[str, Dict[str, Any]] = {}
+
+        for model in models:
+            payload = {
+                "model": model,
+                "prompt": prompt_text,
+                "stream": False,
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": max_tokens,
+                },
+            }
+            resp = requests.post(
+                "http://localhost:11434/api/generate",
+                json=payload,
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            text = data.get("response", "")
+            eval_count = data.get("eval_count", 0)
+            eval_duration_ns = data.get("eval_duration", 0)
+
+            # eval_duration is in nanoseconds; compute tokens/second
+            if eval_duration_ns and eval_duration_ns > 0:
+                tps = eval_count / (eval_duration_ns / 1e9)
+            else:
+                tps = 0.0
+
+            responses[model] = {
+                "text": text,
+                "tokens_per_second": float(tps),
+                "total_tokens": int(eval_count),
+            }
+
+        results.append({
+            "prompt": prompt_text,
+            "category": category,
+            "responses": responses,
+        })
+
+    # Print side-by-side summary
+    _print_compare_summary(results, models)
+
+    if output_file is not None:
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2)
+
+    return results
+
+
+def _print_compare_summary(
+    results: List[Dict[str, Any]],
+    models: List[str],
+) -> None:
+    """Print a human-readable side-by-side comparison of model responses."""
+    col_width = 60
+    header = " | ".join(f"{m:<{col_width}}" for m in models)
+    separator = "-+-".join("-" * col_width for _ in models)
+
+    print("\n=== Generation Comparison ===\n")
+    for entry in results:
+        print(f"[{entry['category']}] {entry['prompt']!r}")
+        print(separator)
+        # Truncate long responses for display
+        cols = []
+        for model in models:
+            text = entry["responses"].get(model, {}).get("text", "")
+            tps = entry["responses"].get(model, {}).get("tokens_per_second", 0.0)
+            snippet = text[:col_width - 10].replace("\n", " ")
+            cols.append(f"{snippet:<{col_width - 10}}  {tps:5.1f}t/s")
+        print(" | ".join(cols))
+        print()
+
+
+# ---------------------------------------------------------------------------
+# Automated generation quality metrics
+# ---------------------------------------------------------------------------
+
+def generation_metrics(results: List[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
+    """Compute per-model failure-detection metrics from compare() output.
+
+    These are diagnostic metrics intended to detect obvious generation
+    failures, not to measure absolute quality.
+
+    Metrics computed per model:
+
+    - ``mean_output_length``: average character length of responses.
+    - ``vocab_diversity``: ``unique_words / total_words`` (0–1).
+    - ``repetition_rate``: fraction of 3-grams that are repeated
+      (0 = no repetition, 1 = all repeated).
+    - ``coherence``: fraction of responses that are non-empty,
+      non-error, and contain only printable text.
+
+    Args:
+        results: Output from :func:`compare`.
+
+    Returns:
+        Dict mapping model name to a dict of metric name → float value.
+    """
+    # Gather all model names from the first result entry
+    if not results:
+        return {}
+
+    model_names: List[str] = list(results[0]["responses"].keys())
+
+    # Collect all texts per model
+    texts_per_model: Dict[str, List[str]] = {m: [] for m in model_names}
+    for entry in results:
+        for model in model_names:
+            text = entry["responses"].get(model, {}).get("text", "")
+            texts_per_model[model].append(text)
+
+    out: Dict[str, Dict[str, float]] = {}
+    for model, texts in texts_per_model.items():
+        out[model] = {
+            "mean_output_length": _mean_output_length(texts),
+            "vocab_diversity": _vocab_diversity(texts),
+            "repetition_rate": _repetition_rate(texts),
+            "coherence": _coherence(texts),
+        }
+
+    return out
+
+
+def _mean_output_length(texts: List[str]) -> float:
+    """Average character length across a list of response strings."""
+    if not texts:
+        return 0.0
+    return sum(len(t) for t in texts) / len(texts)
+
+
+def _vocab_diversity(texts: List[str]) -> float:
+    """Ratio of unique words to total words across all texts (0–1)."""
+    all_words: List[str] = []
+    for text in texts:
+        words = re.findall(r"\b\w+\b", text.lower())
+        all_words.extend(words)
+    if not all_words:
+        return 0.0
+    return len(set(all_words)) / len(all_words)
+
+
+def _repetition_rate(texts: List[str]) -> float:
+    """Fraction of 3-grams that are repeated within the combined text.
+
+    A 3-gram is "repeated" if it appears more than once.  The rate is
+    ``repeated_3gram_count / total_3gram_count``, or 0 if there are
+    fewer than 3 words total.
+    """
+    all_words: List[str] = []
+    for text in texts:
+        words = re.findall(r"\b\w+\b", text.lower())
+        all_words.extend(words)
+
+    if len(all_words) < 3:
+        return 0.0
+
+    trigrams = [
+        (all_words[i], all_words[i + 1], all_words[i + 2])
+        for i in range(len(all_words) - 2)
+    ]
+    total = len(trigrams)
+    counts: Dict[tuple, int] = {}
+    for tg in trigrams:
+        counts[tg] = counts.get(tg, 0) + 1
+
+    repeated = sum(1 for tg in trigrams if counts[tg] > 1)
+    return repeated / total
+
+
+def _coherence(texts: List[str]) -> float:
+    """Fraction of responses that are non-empty and contain printable text."""
+    if not texts:
+        return 0.0
+    coherent = 0
+    for text in texts:
+        if not text or not text.strip():
+            continue
+        # Check that at least 90% of characters are printable
+        printable_count = sum(1 for c in text if c.isprintable())
+        if printable_count / len(text) >= 0.9:
+            coherent += 1
+    return coherent / len(texts)

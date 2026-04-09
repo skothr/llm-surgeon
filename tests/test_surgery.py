@@ -48,3 +48,20 @@ class TestSurgeryLog:
         s = str(log)
         assert "SurgeryLog" in s
         assert "remove_layers" in s
+
+
+class TestTinyLlamaFixture:
+    def test_fixture_creates_model(self, tiny_llama):
+        assert tiny_llama is not None
+        assert len(tiny_llama.model.layers) == 8
+
+    def test_fixture_has_correct_config(self, tiny_llama):
+        assert tiny_llama.config.num_hidden_layers == 8
+        assert tiny_llama.config.hidden_size == 32
+        assert tiny_llama.config.vocab_size == 64
+
+    def test_fixture_can_forward(self, tiny_llama):
+        input_ids = torch.randint(0, 64, (1, 10))
+        with torch.no_grad():
+            output = tiny_llama(input_ids)
+        assert output.logits.shape == (1, 10, 64)

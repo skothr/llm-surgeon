@@ -24,6 +24,7 @@ def perplexity(
     dataset: Optional[str] = None,
     max_samples: Optional[int] = None,
     stride: Optional[int] = None,
+    verbose: bool = False,
 ) -> float:
     """Compute perplexity of *model* on the given text or dataset.
 
@@ -78,6 +79,8 @@ def perplexity(
     # ---- Sliding window NLL -------------------------------------------------
     nlls = []
     prev_end = 0
+    total_windows = (seq_len - 1) // stride + 1
+    window_idx = 0
 
     for begin in range(0, seq_len, stride):
         end = min(begin + max_length, seq_len)
@@ -113,6 +116,12 @@ def perplexity(
         loss_fct = nn.CrossEntropyLoss(reduction="sum")
         nll = loss_fct(sl.view(-1, sl.size(-1)), lb.view(-1))
         nlls.append(nll.item())
+        window_idx += 1
+
+        if verbose and (window_idx % 8 == 0 or end == seq_len):
+            running_ppl = float(torch.exp(torch.tensor(sum(nlls) / max(1, _count_scored_tokens_partial(input_ids, max_length, stride, end)))).item())
+            print(f"  [perplexity] window {window_idx}/{total_windows} "
+                  f"({end}/{seq_len} tokens, running ppl: {running_ppl:.2f})")
 
         prev_end = end
         if end == seq_len:
@@ -131,6 +140,25 @@ def perplexity(
     # Simpler: count tokens directly.
     avg_nll = total_nll / max(1, _count_scored_tokens(input_ids, max_length, stride))
     return float(torch.exp(torch.tensor(avg_nll)).item())
+
+
+def _count_scored_tokens_partial(input_ids: torch.Tensor, max_length: int, stride: int, up_to: int) -> int:
+    """Count scored tokens up to a given position (for running ppl display)."""
+    seq_len = input_ids.size(1)
+    total = 0
+    prev_end = 0
+    for begin in range(0, seq_len, stride):
+        end = min(begin + max_length, seq_len)
+        if end > up_to:
+            end = up_to
+        target_begin = max(begin, prev_end)
+        target_len = end - target_begin
+        if target_len > 0:
+            total += target_len
+        prev_end = end
+        if end >= up_to:
+            break
+    return max(total, 1)
 
 
 def _count_scored_tokens(input_ids: torch.Tensor, max_length: int, stride: int) -> int:

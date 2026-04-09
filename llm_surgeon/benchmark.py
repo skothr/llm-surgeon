@@ -66,15 +66,12 @@ def perplexity(
 
     # ---- Tokenize -----------------------------------------------------------
     # Tokenize the full text without truncation — the sliding window below
-    # handles chunking. The tokenizer warns that the sequence exceeds
-    # max_position_embeddings, but this is expected (standard practice per
-    # HF perplexity docs). Suppress since it's noise in our output.
-    import logging
-    _hf_logger = logging.getLogger("transformers.tokenization_utils_base")
-    _prev_level = _hf_logger.level
-    _hf_logger.setLevel(logging.ERROR)
+    # handles chunking. Temporarily raise model_max_length so the tokenizer
+    # doesn't warn about sequence length exceeding max_position_embeddings.
+    _saved_max = tokenizer.model_max_length
+    tokenizer.model_max_length = int(1e12)
     encodings = tokenizer(text, return_tensors="pt")
-    _hf_logger.setLevel(_prev_level)
+    tokenizer.model_max_length = _saved_max
     input_ids = encodings.input_ids  # shape (1, seq_len)
 
     # ---- Sliding window parameters -----------------------------------------

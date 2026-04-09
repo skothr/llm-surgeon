@@ -153,3 +153,32 @@ def swap_layers(model, i: int, j: int) -> SurgeryLog:
     log = SurgeryLog()
     log.add("swap_layers", f"Swapped layers {i} and {j}", num_before, len(layers))
     return log
+
+
+def duplicate_layer(model, src: int, dst: int) -> SurgeryLog:
+    """Deep-copy a layer and insert it at the destination position."""
+    layers = model.model.layers
+    num_before = len(layers)
+
+    if src < 0 or src >= num_before:
+        raise IndexError(f"Source index {src} out of range [0, {num_before - 1}]")
+    if dst < 0 or dst > num_before:
+        raise IndexError(f"Destination index {dst} out of range [0, {num_before}]")
+
+    total_params = sum(p.numel() for p in model.parameters())
+    est_gb = total_params * 2 / 1e9
+    if est_gb > 28:
+        warnings.warn(
+            f"Model is ~{est_gb:.1f} GB in fp16, approaching 32 GB RAM limit. "
+            f"Duplicating a layer will increase this.",
+            ResourceWarning,
+        )
+
+    new_layer = copy.deepcopy(layers[src])
+    layers.insert(dst, new_layer)
+    model.config.num_hidden_layers = len(layers)
+    _renumber_layers(model)
+
+    log = SurgeryLog()
+    log.add("duplicate_layer", f"Duplicated layer {src} -> position {dst}", num_before, len(layers))
+    return log

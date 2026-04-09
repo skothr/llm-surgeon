@@ -8,6 +8,7 @@ from llm_surgeon.surgery import remove_layers
 from llm_surgeon.surgery import keep_layers
 from llm_surgeon.surgery import reorder_layers
 from llm_surgeon.surgery import swap_layers
+from llm_surgeon.surgery import duplicate_layer
 
 
 class TestSurgeryOp:
@@ -234,6 +235,52 @@ class TestSwapLayers:
 
     def test_model_still_runs(self, tiny_llama):
         swap_layers(tiny_llama, 1, 6)
+        input_ids = torch.randint(0, 64, (1, 10))
+        with torch.no_grad():
+            output = tiny_llama(input_ids)
+        assert output.logits.shape == (1, 10, 64)
+
+
+class TestDuplicateLayer:
+    def test_increases_layer_count(self, tiny_llama):
+        log = duplicate_layer(tiny_llama, src=3, dst=4)
+        assert len(tiny_llama.model.layers) == 9
+        assert tiny_llama.config.num_hidden_layers == 9
+
+    def test_duplicate_has_same_weights(self, tiny_llama):
+        w_src = tiny_llama.model.layers[3].self_attn.q_proj.weight.data.clone()
+        duplicate_layer(tiny_llama, src=3, dst=4)
+        w_dup = tiny_llama.model.layers[4].self_attn.q_proj.weight.data
+        assert torch.equal(w_src, w_dup)
+
+    def test_duplicate_is_deep_copy(self, tiny_llama):
+        duplicate_layer(tiny_llama, src=3, dst=4)
+        tiny_llama.model.layers[4].self_attn.q_proj.weight.data.zero_()
+        assert not torch.equal(
+            tiny_llama.model.layers[3].self_attn.q_proj.weight.data,
+            tiny_llama.model.layers[4].self_attn.q_proj.weight.data,
+        )
+
+    def test_returns_surgery_log(self, tiny_llama):
+        log = duplicate_layer(tiny_llama, src=0, dst=1)
+        assert log.ops[0].operation == "duplicate_layer"
+        assert log.ops[0].layer_count_before == 8
+        assert log.ops[0].layer_count_after == 9
+
+    def test_invalid_src_raises(self, tiny_llama):
+        with pytest.raises(IndexError):
+            duplicate_layer(tiny_llama, src=99, dst=0)
+
+    def test_invalid_dst_raises(self, tiny_llama):
+        with pytest.raises(IndexError):
+            duplicate_layer(tiny_llama, src=0, dst=99)
+
+    def test_dst_at_end_allowed(self, tiny_llama):
+        duplicate_layer(tiny_llama, src=0, dst=8)
+        assert len(tiny_llama.model.layers) == 9
+
+    def test_model_still_runs(self, tiny_llama):
+        duplicate_layer(tiny_llama, src=3, dst=4)
         input_ids = torch.randint(0, 64, (1, 10))
         with torch.no_grad():
             output = tiny_llama(input_ids)

@@ -1,0 +1,19 @@
+# testing/experiments/test_full_recipe.yaml
+name: tinyllama-smart-cut
+base_model: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+description: Remove lowest-BI layer with calibration
+
+surgery:
+  - remove_layers: [19]
+  - calibrate:
+      dataset: wikitext2
+      num_samples: 50
+
+evaluate:
+  perplexity:
+    dataset: wikitext2
+    max_samples: 50
+
+export:
+  quantization: Q4_K_M
+  ollama_name: tinyllama-smart-cut

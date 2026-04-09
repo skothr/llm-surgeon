@@ -8,6 +8,39 @@ import torch
 from transformers import LlamaConfig, LlamaForCausalLM
 
 
+def _make_tiny_tokenizer(vocab_size: int):
+    """Build a minimal HF-compatible tokenizer using the tokenizers library.
+
+    Uses a WordLevel model with a whitespace pre-tokenizer.  The vocab is
+    populated with word0..wordN tokens so that tests can construct coherent
+    input text.  Returns a ``transformers.PreTrainedTokenizerFast`` instance.
+    """
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from tokenizers.pre_tokenizers import Whitespace
+    from transformers import PreTrainedTokenizerFast
+
+    special_tokens = ["[PAD]", "[UNK]", "[BOS]", "[EOS]"]
+    vocab: dict[str, int] = {tok: i for i, tok in enumerate(special_tokens)}
+    # Fill remaining slots with word<N> tokens
+    idx = len(vocab)
+    while idx < vocab_size:
+        vocab[f"word{idx}"] = idx
+        idx += 1
+
+    tokenizer = Tokenizer(WordLevel(vocab=vocab, unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = Whitespace()
+
+    hf_tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=tokenizer,
+        unk_token="[UNK]",
+        pad_token="[PAD]",
+        bos_token="[BOS]",
+        eos_token="[EOS]",
+    )
+    return hf_tokenizer
+
+
 @pytest.fixture
 def tiny_llama_config():
     """LLaMA config with small dimensions for fast testing."""
@@ -67,5 +100,21 @@ def tiny_checkpoint(tiny_llama, tmp_path):
     }
     with open(os.path.join(checkpoint_dir, "tokenizer_config.json"), "w") as f:
         json.dump(tokenizer_config, f)
+
+    return checkpoint_dir
+
+
+@pytest.fixture
+def tiny_eval_checkpoint(tiny_llama, tmp_path):
+    """Saved HF checkpoint with a PreTrainedTokenizerFast (WordLevel) tokenizer.
+
+    Suitable for lm_eval evaluation — avoids tiktoken / SPM conversion issues.
+    """
+    checkpoint_dir = str(tmp_path / "tiny_eval_checkpoint")
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    tiny_llama.save_pretrained(checkpoint_dir)
+
+    tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
+    tokenizer.save_pretrained(checkpoint_dir)
 
     return checkpoint_dir

@@ -4,6 +4,7 @@ import pytest
 import torch
 from llm_surgeon.surgery import SurgeryOp, SurgeryLog
 from llm_surgeon.surgery import get_layer_info
+from llm_surgeon.surgery import remove_layers
 
 
 class TestSurgeryOp:
@@ -92,3 +93,43 @@ class TestGetLayerInfo:
     def test_estimated_memory_positive(self, tiny_llama):
         info = get_layer_info(tiny_llama)
         assert info["estimated_memory_gb"] > 0
+
+
+class TestRemoveLayers:
+    def test_removes_single_layer(self, tiny_llama):
+        log = remove_layers(tiny_llama, [3])
+        assert len(tiny_llama.model.layers) == 7
+        assert tiny_llama.config.num_hidden_layers == 7
+
+    def test_removes_multiple_layers(self, tiny_llama):
+        log = remove_layers(tiny_llama, [2, 4, 6])
+        assert len(tiny_llama.model.layers) == 5
+        assert tiny_llama.config.num_hidden_layers == 5
+
+    def test_returns_surgery_log(self, tiny_llama):
+        log = remove_layers(tiny_llama, [0])
+        assert len(log.ops) == 1
+        assert log.ops[0].operation == "remove_layers"
+        assert log.ops[0].layer_count_before == 8
+        assert log.ops[0].layer_count_after == 7
+
+    def test_preserves_remaining_layers(self, tiny_llama):
+        weight_before = tiny_llama.model.layers[0].self_attn.q_proj.weight.data.clone()
+        remove_layers(tiny_llama, [7])
+        weight_after = tiny_llama.model.layers[0].self_attn.q_proj.weight.data
+        assert torch.equal(weight_before, weight_after)
+
+    def test_invalid_index_raises(self, tiny_llama):
+        with pytest.raises(IndexError):
+            remove_layers(tiny_llama, [99])
+
+    def test_negative_index_raises(self, tiny_llama):
+        with pytest.raises(IndexError):
+            remove_layers(tiny_llama, [-1])
+
+    def test_model_still_runs_after_surgery(self, tiny_llama):
+        remove_layers(tiny_llama, [3, 4, 5])
+        input_ids = torch.randint(0, 64, (1, 10))
+        with torch.no_grad():
+            output = tiny_llama(input_ids)
+        assert output.logits.shape == (1, 10, 64)

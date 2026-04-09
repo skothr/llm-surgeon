@@ -37,22 +37,35 @@ def parse_recipe(path: str) -> Dict[str, Any]:
 # Execution helpers
 # ---------------------------------------------------------------------------
 
-def _apply_surgery_step(model, tokenizer, step: Dict[str, Any]) -> Optional[surgery.SurgeryLog]:
+def _log(msg: str, verbose: bool) -> None:
+    if verbose:
+        print(f"[recipe] {msg}")
+
+
+def _apply_surgery_step(
+    model, tokenizer, step: Dict[str, Any], verbose: bool = False,
+) -> Optional[surgery.SurgeryLog]:
     """Execute a single surgery step dict and return the SurgeryLog (or None for calibrate)."""
     if "remove_layers" in step:
+        _log(f"remove_layers({step['remove_layers']})", verbose)
         return surgery.remove_layers(model, step["remove_layers"])
     if "keep_layers" in step:
+        _log(f"keep_layers({step['keep_layers']})", verbose)
         return surgery.keep_layers(model, step["keep_layers"])
     if "reorder_layers" in step:
+        _log(f"reorder_layers({step['reorder_layers']})", verbose)
         return surgery.reorder_layers(model, step["reorder_layers"])
     if "swap_layers" in step:
         args = step["swap_layers"]
+        _log(f"swap_layers({args[0]}, {args[1]})", verbose)
         return surgery.swap_layers(model, args[0], args[1])
     if "duplicate_layer" in step:
         args = step["duplicate_layer"]
+        _log(f"duplicate_layer(src={args[0]}, dst={args[1]})", verbose)
         return surgery.duplicate_layer(model, src=args[0], dst=args[1])
     if "calibrate" in step:
         opts = step["calibrate"] or {}
+        _log(f"calibrate(dataset={opts.get('dataset', 'wikitext2')}, num_samples={opts.get('num_samples', 128)})", verbose)
         surgery.calibrate(
             model,
             tokenizer,
@@ -75,6 +88,7 @@ def run(
     db_path: Optional[str] = None,
     skip_export: bool = False,
     skip_eval: bool = False,
+    verbose: bool = True,
 ) -> Dict[str, Any]:
     """Parse a recipe file and execute it.
 
@@ -88,12 +102,15 @@ def run(
     7. Run export unless skip_export=True
     8. Finish tracking
 
-    Returns a result dict with at minimum {"name": ..., "status": "completed"}.
+    Returns a result dict with name, status, and any collected metrics/paths.
     """
     recipe_data = parse_recipe(recipe_path)
     name = recipe_data["name"]
     base_model = recipe_data.get("base_model", "")
     description = recipe_data.get("description", "")
+
+    _log(f"Starting experiment: {name}", verbose)
+    _log(f"Base model: {base_model}", verbose)
 
     # Tracking
     exp_kwargs: Dict[str, Any] = dict(
@@ -106,63 +123,114 @@ def run(
         exp_kwargs["db_path"] = db_path
     exp = tracking.start(**exp_kwargs)
 
+    result: Dict[str, Any] = {"name": name}
+
     # Load model if not supplied
     if model is None:
+        _log(f"Loading model in export mode...", verbose)
         model, tokenizer = surgery.load_model(base_model, mode="export")
+        _log(f"Model loaded ({len(model.model.layers)} layers)", verbose)
 
     # Execute surgery steps
     steps = recipe_data.get("surgery", [])
     combined_log = surgery.SurgeryLog()
     for step in steps:
-        log = _apply_surgery_step(model, tokenizer, step)
+        log = _apply_surgery_step(model, tokenizer, step, verbose=verbose)
         if log is not None:
             combined_log.ops.extend(log.ops)
 
     # Always verify structure after surgery
-    verify.check_structure(model)
+    _log("Verifying model structure...", verbose)
+    report = verify.check_structure(model)
+    _log(f"Structure verification: {report}", verbose)
 
     if combined_log.ops:
         exp.log_surgery(combined_log)
+        _log(f"Logged {len(combined_log.ops)} surgery operations", verbose)
 
     # Evaluation
     if not skip_eval:
         eval_cfg = recipe_data.get("evaluate", {})
         if eval_cfg:
-            _run_evaluation(model, tokenizer, eval_cfg, exp)
+            _log("Running evaluation...", verbose)
+            eval_results = _run_evaluation(model, tokenizer, eval_cfg, exp, verbose)
+            result["eval"] = eval_results
 
     # Export
     if not skip_export:
         export_cfg = recipe_data.get("export", {})
         if export_cfg:
-            _run_export(model, tokenizer, base_model, name, export_cfg, exp)
+            _log("Running export pipeline...", verbose)
+            export_results = _run_export(model, tokenizer, name, export_cfg, verbose)
+            result["export"] = export_results
 
     exp.finish()
-    return {"name": name, "status": "completed"}
+    result["status"] = "completed"
+    _log(f"Experiment '{name}' completed.", verbose)
+    return result
 
 
-def _run_evaluation(model, tokenizer, eval_cfg: Dict, exp: tracking.Experiment) -> None:
+def _run_evaluation(
+    model, tokenizer, eval_cfg: Dict, exp: tracking.Experiment, verbose: bool,
+) -> Dict[str, Any]:
     """Run evaluation steps as specified in the recipe's evaluate section."""
+    results = {}
+
     if "perplexity" in eval_cfg:
-        try:
-            from llm_surgeon import benchmark
-            ppl_cfg = eval_cfg["perplexity"] or {}
-            dataset = ppl_cfg.get("dataset", "wikitext2")
-            result = benchmark.perplexity(model, tokenizer, dataset=dataset)
-            exp.log_metric("perplexity", result)
-        except Exception:
-            pass  # Best-effort — don't abort the recipe run
+        from llm_surgeon import benchmark
+        ppl_cfg = eval_cfg["perplexity"] or {}
+        dataset = ppl_cfg.get("dataset", "wikitext2")
+        max_samples = ppl_cfg.get("max_samples")
+        _log(f"Measuring perplexity on {dataset}...", verbose)
+        ppl = benchmark.perplexity(model, tokenizer, dataset=dataset, max_samples=max_samples)
+        exp.log_metric(f"perplexity_{dataset}", ppl)
+        results[f"perplexity_{dataset}"] = ppl
+        _log(f"Perplexity ({dataset}): {ppl:.2f}", verbose)
 
-
-def _run_export(model, tokenizer, base_model: str, name: str, export_cfg: Dict, exp: tracking.Experiment) -> None:
-    """Run export steps as specified in the recipe's export section."""
-    try:
-        from llm_surgeon import export as _export
+    if "downstream" in eval_cfg:
+        from llm_surgeon import benchmark
+        ds_cfg = eval_cfg["downstream"] or {}
+        tasks = ds_cfg.get("tasks", [])
+        num_fewshot = ds_cfg.get("num_fewshot", 5)
+        _log(f"Running downstream eval: {tasks} ({num_fewshot}-shot)...", verbose)
+        # eval_downstream needs a checkpoint path, so save temporarily
         import tempfile
+        from llm_surgeon import export as _export
         with tempfile.TemporaryDirectory() as tmpdir:
-            ckpt_dir = os.path.join(tmpdir, "checkpoint")
-            _export.save_checkpoint(model, ckpt_dir, tokenizer=tokenizer)
-    except Exception:
-        pass  # Best-effort
+            ckpt = os.path.join(tmpdir, "checkpoint")
+            _export.save_checkpoint(model, ckpt, tokenizer=tokenizer)
+            ds_results = benchmark.eval_downstream(ckpt, tasks=tasks, num_fewshot=num_fewshot)
+        for task, score in ds_results.items():
+            exp.log_metric(task, score)
+            results[task] = score
+            _log(f"  {task}: {score:.4f}", verbose)
+
+    return results
+
+
+def _run_export(
+    model, tokenizer, name: str, export_cfg: Dict, verbose: bool,
+) -> Dict[str, Any]:
+    """Run export steps as specified in the recipe's export section."""
+    from llm_surgeon import export as _export
+
+    quantization = export_cfg.get("quantization", "Q4_K_M")
+    ollama_name = export_cfg.get("ollama_name", name)
+    output_dir = export_cfg.get("output_dir", "outputs")
+
+    _log(f"Exporting: quantization={quantization}, ollama_name={ollama_name}", verbose)
+    result = _export.full_pipeline(
+        model,
+        tokenizer=tokenizer,
+        name=ollama_name,
+        quantization=quantization,
+        output_dir=output_dir,
+    )
+    _log(f"GGUF saved to {result['gguf_path']}", verbose)
+    if result.get("registered"):
+        _log(f"Registered as '{ollama_name}' in ollama", verbose)
+
+    return result
 
 
 def run_batch(pattern: str, **kwargs) -> List[Dict]:
@@ -173,6 +241,9 @@ def run_batch(pattern: str, **kwargs) -> List[Dict]:
     files = sorted(_glob.glob(pattern))
     results = []
     for fpath in files:
+        print(f"\n{'='*60}")
+        print(f"Running recipe: {fpath}")
+        print(f"{'='*60}")
         result = run(fpath, **kwargs)
         results.append(result)
     return results

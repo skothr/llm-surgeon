@@ -65,7 +65,15 @@ def perplexity(
     # else text is already set
 
     # ---- Tokenize -----------------------------------------------------------
+    # We intentionally tokenize the full text without truncation — the sliding
+    # window below handles chunking. Temporarily raise the tokenizer's length
+    # limit to avoid a spurious warning about sequence length exceeding
+    # max_position_embeddings.
+    saved_max_length = getattr(tokenizer, "model_max_length", None)
+    tokenizer.model_max_length = int(1e12)
     encodings = tokenizer(text, return_tensors="pt")
+    if saved_max_length is not None:
+        tokenizer.model_max_length = saved_max_length
     input_ids = encodings.input_ids  # shape (1, seq_len)
 
     # ---- Sliding window parameters -----------------------------------------

@@ -7,6 +7,11 @@ import torch
 import torch.nn.functional as F
 
 
+def _get_input_device(model) -> torch.device:
+    """Get the device where input_ids should be sent (embedding layer's device)."""
+    return model.model.embed_tokens.weight.device
+
+
 # ---------------------------------------------------------------------------
 # Task 1: Block Influence
 # ---------------------------------------------------------------------------
@@ -41,10 +46,11 @@ def block_influence(model, tokenizer, prompts: List[str]) -> Dict[int, float]:
     for i, layer in enumerate(model.model.layers):
         hooks.append(layer.register_forward_hook(make_hook(i)))
 
+    device = _get_input_device(model)
     try:
         for prompt in prompts:
             enc = tokenizer(prompt, return_tensors="pt")
-            input_ids = enc["input_ids"]
+            input_ids = enc["input_ids"].to(device)
             with torch.no_grad():
                 model(input_ids)
     finally:
@@ -168,7 +174,7 @@ def attention_entropy(model, tokenizer, prompt: str) -> Dict[int, List[float]]:
         Dict mapping layer index -> list of per-head entropy floats.
     """
     enc = tokenizer(prompt, return_tensors="pt")
-    input_ids = enc["input_ids"]
+    input_ids = enc["input_ids"].to(_get_input_device(model))
 
     # sdpa does not support output_attentions; switch to eager temporarily
     orig_attn = getattr(model.config, "_attn_implementation", None)
@@ -229,7 +235,7 @@ def residual_stream_norms(model, tokenizer, prompt: str) -> List[float]:
 
     try:
         enc = tokenizer(prompt, return_tensors="pt")
-        input_ids = enc["input_ids"]
+        input_ids = enc["input_ids"].to(_get_input_device(model))
         with torch.no_grad():
             model(input_ids)
     finally:

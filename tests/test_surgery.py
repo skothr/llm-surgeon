@@ -1,5 +1,7 @@
 """Tests for surgery module."""
 
+import os
+import json
 import pytest
 import torch
 from llm_surgeon.surgery import SurgeryOp, SurgeryLog
@@ -9,6 +11,8 @@ from llm_surgeon.surgery import keep_layers
 from llm_surgeon.surgery import reorder_layers
 from llm_surgeon.surgery import swap_layers
 from llm_surgeon.surgery import duplicate_layer
+from llm_surgeon.surgery import load_model
+from transformers import AutoModelForCausalLM
 
 
 class TestSurgeryOp:
@@ -285,3 +289,100 @@ class TestDuplicateLayer:
         with torch.no_grad():
             output = tiny_llama(input_ids)
         assert output.logits.shape == (1, 10, 64)
+
+
+class TestLoadModel:
+    def test_invalid_mode_raises(self):
+        with pytest.raises(ValueError, match="Unknown mode"):
+            load_model("nonexistent-model", mode="invalid")
+
+    def test_valid_modes_accepted(self):
+        # Valid modes are accepted; the model lookup fails (OSError for missing model,
+        # or ImportError when a SOCKS proxy is configured but socksio is not installed).
+        for mode in ("inspect", "eval", "export"):
+            with pytest.raises((OSError, ImportError)):
+                load_model("nonexistent/model-id-that-does-not-exist", mode=mode)
+
+    def test_returns_tuple(self, tiny_llama, tmp_path):
+        save_path = str(tmp_path / "tiny_model")
+        tiny_llama.save_pretrained(save_path)
+        tokenizer_config = {
+            "model_type": "llama",
+            "bos_token": "<s>",
+            "eos_token": "</s>",
+            "unk_token": "<unk>",
+        }
+        with open(os.path.join(save_path, "tokenizer_config.json"), "w") as f:
+            json.dump(tokenizer_config, f)
+        vocab = {f"token_{i}": i for i in range(64)}
+        tokenizer_data = {
+            "version": "1.0",
+            "model": {"type": "BPE", "vocab": vocab, "merges": []},
+            "added_tokens": [
+                {"id": 0, "content": "<unk>", "special": True},
+                {"id": 1, "content": "<s>", "special": True},
+                {"id": 2, "content": "</s>", "special": True},
+            ],
+        }
+        with open(os.path.join(save_path, "tokenizer.json"), "w") as f:
+            json.dump(tokenizer_data, f)
+
+        model, tokenizer = load_model(save_path, mode="export")
+        assert model is not None
+        assert tokenizer is not None
+        assert len(model.model.layers) == 8
+
+
+class TestChainedOperations:
+    def test_remove_then_swap(self, tiny_llama):
+        remove_layers(tiny_llama, [6, 7])
+        swap_layers(tiny_llama, 0, 5)
+        assert len(tiny_llama.model.layers) == 6
+        input_ids = torch.randint(0, 64, (1, 10))
+        with torch.no_grad():
+            output = tiny_llama(input_ids)
+        assert output.logits.shape == (1, 10, 64)
+
+    def test_keep_then_reorder(self, tiny_llama):
+        keep_layers(tiny_llama, [0, 2, 4, 6])
+        reorder_layers(tiny_llama, [3, 2, 1, 0])
+        assert len(tiny_llama.model.layers) == 4
+        input_ids = torch.randint(0, 64, (1, 10))
+        with torch.no_grad():
+            output = tiny_llama(input_ids)
+        assert output.logits.shape == (1, 10, 64)
+
+    def test_duplicate_then_remove(self, tiny_llama):
+        duplicate_layer(tiny_llama, src=0, dst=1)
+        remove_layers(tiny_llama, [0])
+        assert len(tiny_llama.model.layers) == 8
+
+
+class TestSaveReload:
+    def test_modified_model_saves_and_reloads(self, tiny_llama, tmp_path):
+        remove_layers(tiny_llama, [3, 4, 5])
+        assert len(tiny_llama.model.layers) == 5
+        save_path = str(tmp_path / "modified_model")
+        tiny_llama.save_pretrained(save_path)
+        reloaded = AutoModelForCausalLM.from_pretrained(save_path)
+        assert len(reloaded.model.layers) == 5
+        assert reloaded.config.num_hidden_layers == 5
+
+    def test_reloaded_model_produces_output(self, tiny_llama, tmp_path):
+        remove_layers(tiny_llama, [6, 7])
+        save_path = str(tmp_path / "modified_model")
+        tiny_llama.save_pretrained(save_path)
+        reloaded = AutoModelForCausalLM.from_pretrained(save_path)
+        input_ids = torch.randint(0, 64, (1, 10))
+        with torch.no_grad():
+            output = reloaded(input_ids)
+        assert output.logits.shape == (1, 10, 64)
+
+    def test_reloaded_weights_match(self, tiny_llama, tmp_path):
+        w0_before = tiny_llama.model.layers[0].self_attn.q_proj.weight.data.clone()
+        remove_layers(tiny_llama, [7])
+        save_path = str(tmp_path / "modified_model")
+        tiny_llama.save_pretrained(save_path)
+        reloaded = AutoModelForCausalLM.from_pretrained(save_path)
+        w0_after = reloaded.model.layers[0].self_attn.q_proj.weight.data
+        assert torch.equal(w0_before, w0_after)

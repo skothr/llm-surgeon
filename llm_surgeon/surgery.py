@@ -3,9 +3,11 @@
 import copy
 import warnings
 from dataclasses import dataclass, field
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 
+import torch
 import torch.nn as nn
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 
 @dataclass
@@ -182,3 +184,32 @@ def duplicate_layer(model, src: int, dst: int) -> SurgeryLog:
     log = SurgeryLog()
     log.add("duplicate_layer", f"Duplicated layer {src} -> position {dst}", num_before, len(layers))
     return log
+
+
+def load_model(model_id: str, mode: str = "inspect") -> Tuple:
+    """Load a model and tokenizer.
+
+    Modes:
+        inspect: 4-bit quantized on GPU (fast, for inspection)
+        eval: fp16 with auto device map (for perplexity measurement)
+        export: fp16 on CPU only (for clean checkpoint export)
+    """
+    if mode not in ("inspect", "eval", "export"):
+        raise ValueError(f"Unknown mode: '{mode}'. Must be 'inspect', 'eval', or 'export'.")
+
+    if mode == "inspect":
+        bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id, quantization_config=bnb_config, device_map="auto"
+        )
+    elif mode == "eval":
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id, torch_dtype=torch.float16, device_map="auto"
+        )
+    elif mode == "export":
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id, torch_dtype=torch.float16, device_map="cpu"
+        )
+
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    return model, tokenizer

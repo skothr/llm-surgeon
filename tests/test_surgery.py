@@ -3,6 +3,7 @@
 import pytest
 import torch
 from llm_surgeon.surgery import SurgeryOp, SurgeryLog
+from llm_surgeon.surgery import get_layer_info
 
 
 class TestSurgeryOp:
@@ -65,3 +66,29 @@ class TestTinyLlamaFixture:
         with torch.no_grad():
             output = tiny_llama(input_ids)
         assert output.logits.shape == (1, 10, 64)
+
+
+class TestGetLayerInfo:
+    def test_returns_dict(self, tiny_llama):
+        info = get_layer_info(tiny_llama)
+        assert isinstance(info, dict)
+
+    def test_layer_count(self, tiny_llama):
+        info = get_layer_info(tiny_llama)
+        assert info["num_layers"] == 8
+
+    def test_hidden_size(self, tiny_llama):
+        info = get_layer_info(tiny_llama)
+        assert info["hidden_size"] == 32
+
+    def test_total_params_positive(self, tiny_llama):
+        info = get_layer_info(tiny_llama)
+        assert info["total_params"] > 0
+
+    def test_layer_params_list_length(self, tiny_llama):
+        info = get_layer_info(tiny_llama)
+        assert len(info["layer_params"]) == 8
+
+    def test_estimated_memory_positive(self, tiny_llama):
+        info = get_layer_info(tiny_llama)
+        assert info["estimated_memory_gb"] > 0

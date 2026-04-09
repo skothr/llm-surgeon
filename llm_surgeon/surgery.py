@@ -116,3 +116,23 @@ def keep_layers(model, layer_indices: List[int]) -> SurgeryLog:
     log = SurgeryLog()
     log.add("keep_layers", f"Kept layers {layer_indices}", num_before, len(new_layers))
     return log
+
+
+def reorder_layers(model, new_order: List[int]) -> SurgeryLog:
+    """Rearrange layers to the specified order. new_order must be a permutation."""
+    layers = model.model.layers
+    num_before = len(layers)
+
+    if len(new_order) != num_before:
+        raise ValueError(f"new_order length ({len(new_order)}) must match layer count ({num_before})")
+    if set(new_order) != set(range(num_before)):
+        raise ValueError(f"new_order must be a permutation of [0, {num_before - 1}]")
+
+    new_layers = nn.ModuleList([layers[i] for i in new_order])
+    model.model.layers = new_layers
+    model.config.num_hidden_layers = len(new_layers)
+    _renumber_layers(model)
+
+    log = SurgeryLog()
+    log.add("reorder_layers", f"Reordered to {new_order}", num_before, len(new_layers))
+    return log

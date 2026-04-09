@@ -6,6 +6,7 @@ from llm_surgeon.surgery import SurgeryOp, SurgeryLog
 from llm_surgeon.surgery import get_layer_info
 from llm_surgeon.surgery import remove_layers
 from llm_surgeon.surgery import keep_layers
+from llm_surgeon.surgery import reorder_layers
 
 
 class TestSurgeryOp:
@@ -161,6 +162,41 @@ class TestKeepLayers:
 
     def test_model_still_runs(self, tiny_llama):
         keep_layers(tiny_llama, [0, 3, 7])
+        input_ids = torch.randint(0, 64, (1, 10))
+        with torch.no_grad():
+            output = tiny_llama(input_ids)
+        assert output.logits.shape == (1, 10, 64)
+
+
+class TestReorderLayers:
+    def test_reverses_layers(self, tiny_llama):
+        w_first = tiny_llama.model.layers[0].self_attn.q_proj.weight.data.clone()
+        w_last = tiny_llama.model.layers[7].self_attn.q_proj.weight.data.clone()
+        log = reorder_layers(tiny_llama, [7, 6, 5, 4, 3, 2, 1, 0])
+        assert torch.equal(tiny_llama.model.layers[0].self_attn.q_proj.weight.data, w_last)
+        assert torch.equal(tiny_llama.model.layers[7].self_attn.q_proj.weight.data, w_first)
+
+    def test_layer_count_unchanged(self, tiny_llama):
+        reorder_layers(tiny_llama, [7, 6, 5, 4, 3, 2, 1, 0])
+        assert len(tiny_llama.model.layers) == 8
+        assert tiny_llama.config.num_hidden_layers == 8
+
+    def test_returns_surgery_log(self, tiny_llama):
+        log = reorder_layers(tiny_llama, [7, 6, 5, 4, 3, 2, 1, 0])
+        assert log.ops[0].operation == "reorder_layers"
+        assert log.ops[0].layer_count_before == 8
+        assert log.ops[0].layer_count_after == 8
+
+    def test_wrong_length_raises(self, tiny_llama):
+        with pytest.raises(ValueError, match="must match layer count"):
+            reorder_layers(tiny_llama, [0, 1, 2])
+
+    def test_not_permutation_raises(self, tiny_llama):
+        with pytest.raises(ValueError, match="must be a permutation"):
+            reorder_layers(tiny_llama, [0, 0, 0, 0, 0, 0, 0, 0])
+
+    def test_model_still_runs(self, tiny_llama):
+        reorder_layers(tiny_llama, [7, 6, 5, 4, 3, 2, 1, 0])
         input_ids = torch.randint(0, 64, (1, 10))
         with torch.no_grad():
             output = tiny_llama(input_ids)

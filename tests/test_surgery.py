@@ -358,6 +358,52 @@ class TestChainedOperations:
         assert len(tiny_llama.model.layers) == 8
 
 
+class TestCalibrate:
+    def test_runs_without_error(self, tiny_llama):
+        from llm_surgeon.surgery import calibrate, remove_layers
+        from tests.conftest import _make_tiny_tokenizer
+        remove_layers(tiny_llama, [3, 4])
+        tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
+        # word4..word10 are valid tokens in the vocab
+        text = " ".join([f"word{i}" for i in range(4, 20)])
+        calibrate(tiny_llama, tokenizer, text=text)
+
+    def test_modifies_norm_parameters(self, tiny_llama):
+        from llm_surgeon.surgery import calibrate, remove_layers
+        import copy
+        from tests.conftest import _make_tiny_tokenizer
+        remove_layers(tiny_llama, [3, 4])
+        tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
+        # Clone all norm weights before calibration
+        norms_before = [
+            layer.input_layernorm.weight.data.clone()
+            for layer in tiny_llama.model.layers
+        ]
+        text = " ".join([f"word{i}" for i in range(4, 20)])
+        calibrate(tiny_llama, tokenizer, text=text)
+        norms_after = [
+            layer.input_layernorm.weight.data.clone()
+            for layer in tiny_llama.model.layers
+        ]
+        # At least some norm weights should have changed
+        changed = any(
+            not torch.equal(b, a) for b, a in zip(norms_before, norms_after)
+        )
+        assert changed, "calibrate() did not modify any norm parameters"
+
+    def test_model_still_runs_after_calibration(self, tiny_llama):
+        from llm_surgeon.surgery import calibrate, remove_layers
+        from tests.conftest import _make_tiny_tokenizer
+        remove_layers(tiny_llama, [3, 4])
+        tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
+        text = " ".join([f"word{i}" for i in range(4, 20)])
+        calibrate(tiny_llama, tokenizer, text=text)
+        input_ids = torch.randint(0, tiny_llama.config.vocab_size, (1, 10))
+        with torch.no_grad():
+            output = tiny_llama(input_ids)
+        assert output.logits.shape == (1, 10, tiny_llama.config.vocab_size)
+
+
 class TestSaveReload:
     def test_modified_model_saves_and_reloads(self, tiny_llama, tmp_path):
         remove_layers(tiny_llama, [3, 4, 5])

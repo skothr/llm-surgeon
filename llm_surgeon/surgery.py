@@ -186,6 +186,89 @@ def duplicate_layer(model, src: int, dst: int) -> SurgeryLog:
     return log
 
 
+def calibrate(
+    model,
+    tokenizer,
+    text: str = None,
+    dataset: str = None,
+    num_samples: int = 128,
+) -> None:
+    """Rescale RMSNorm gains to compensate for residual stream variance shift after surgery.
+
+    Runs calibration text through the model, captures per-layer input hidden states via
+    forward hooks, computes per-dimension variance, and rescales each layer's
+    input_layernorm.weight so that the effective scale is normalised.
+
+    Args:
+        model: A LlamaForCausalLM (or compatible) model.
+        tokenizer: Tokenizer matching the model vocabulary.
+        text: Calibration text string.  If None, *dataset* must be provided.
+        dataset: Name of a HuggingFace dataset (e.g. 'wikitext2').  Used only when
+                 *text* is None.  Requires the ``datasets`` package.
+        num_samples: Maximum number of token sequences to collect (not used when
+                     *text* is provided directly).
+    """
+    if text is None and dataset is None:
+        raise ValueError("Provide either text= or dataset=")
+
+    # --- Resolve calibration text ---
+    if text is None:
+        # Load from HuggingFace datasets
+        from datasets import load_dataset  # type: ignore
+        ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+        calibration_text = " ".join(ds["text"][:num_samples])
+    else:
+        calibration_text = text
+
+    device = model.model.embed_tokens.weight.device
+
+    # --- Tokenize ---
+    enc = tokenizer(calibration_text, return_tensors="pt", truncation=True, max_length=512)
+    input_ids = enc["input_ids"].to(device)
+
+    # --- Register hooks to capture each layer's input hidden states ---
+    num_layers = len(model.model.layers)
+    captured: List[torch.Tensor] = [None] * num_layers
+    hooks = []
+
+    def _make_hook(idx):
+        def hook(module, args):
+            # args[0] is the hidden-states tensor fed into this layer
+            hs = args[0].detach().float()  # (batch, seq, hidden)
+            captured[idx] = hs
+        return hook
+
+    for i, layer in enumerate(model.model.layers):
+        hooks.append(layer.register_forward_pre_hook(_make_hook(i)))
+
+    try:
+        model.eval()
+        with torch.no_grad():
+            model(input_ids)
+    finally:
+        for h in hooks:
+            h.remove()
+
+    # --- Rescale each layer's input_layernorm.weight ---
+    for i, layer in enumerate(model.model.layers):
+        hs = captured[i]
+        if hs is None:
+            continue
+        if not hasattr(layer, "input_layernorm"):
+            continue
+
+        # Per-dimension variance across (batch * seq) positions
+        flat = hs.reshape(-1, hs.shape[-1])          # (N, hidden)
+        var = flat.var(dim=0, unbiased=False)         # (hidden,)
+        std = var.sqrt().clamp(min=1e-6)
+
+        # Rescale: divide weight by std so that std * (w / std) = w
+        # This normalises the effective gain relative to the incoming variance.
+        norm_weight = layer.input_layernorm.weight
+        with torch.no_grad():
+            norm_weight.data = (norm_weight.data / std.to(norm_weight.device))
+
+
 def load_model(model_id: str, mode: str = "inspect") -> Tuple:
     """Load a model and tokenizer.
 

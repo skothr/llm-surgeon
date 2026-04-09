@@ -7,6 +7,7 @@ from llm_surgeon.surgery import get_layer_info
 from llm_surgeon.surgery import remove_layers
 from llm_surgeon.surgery import keep_layers
 from llm_surgeon.surgery import reorder_layers
+from llm_surgeon.surgery import swap_layers
 
 
 class TestSurgeryOp:
@@ -197,6 +198,42 @@ class TestReorderLayers:
 
     def test_model_still_runs(self, tiny_llama):
         reorder_layers(tiny_llama, [7, 6, 5, 4, 3, 2, 1, 0])
+        input_ids = torch.randint(0, 64, (1, 10))
+        with torch.no_grad():
+            output = tiny_llama(input_ids)
+        assert output.logits.shape == (1, 10, 64)
+
+
+class TestSwapLayers:
+    def test_swaps_weights(self, tiny_llama):
+        w0 = tiny_llama.model.layers[0].self_attn.q_proj.weight.data.clone()
+        w5 = tiny_llama.model.layers[5].self_attn.q_proj.weight.data.clone()
+        swap_layers(tiny_llama, 0, 5)
+        assert torch.equal(tiny_llama.model.layers[0].self_attn.q_proj.weight.data, w5)
+        assert torch.equal(tiny_llama.model.layers[5].self_attn.q_proj.weight.data, w0)
+
+    def test_layer_count_unchanged(self, tiny_llama):
+        swap_layers(tiny_llama, 0, 7)
+        assert len(tiny_llama.model.layers) == 8
+        assert tiny_llama.config.num_hidden_layers == 8
+
+    def test_returns_surgery_log(self, tiny_llama):
+        log = swap_layers(tiny_llama, 2, 6)
+        assert log.ops[0].operation == "swap_layers"
+        assert log.ops[0].layer_count_before == 8
+        assert log.ops[0].layer_count_after == 8
+
+    def test_invalid_index_raises(self, tiny_llama):
+        with pytest.raises(IndexError):
+            swap_layers(tiny_llama, 0, 99)
+
+    def test_swap_same_index(self, tiny_llama):
+        w0 = tiny_llama.model.layers[0].self_attn.q_proj.weight.data.clone()
+        swap_layers(tiny_llama, 0, 0)
+        assert torch.equal(tiny_llama.model.layers[0].self_attn.q_proj.weight.data, w0)
+
+    def test_model_still_runs(self, tiny_llama):
+        swap_layers(tiny_llama, 1, 6)
         input_ids = torch.randint(0, 64, (1, 10))
         with torch.no_grad():
             output = tiny_llama(input_ids)

@@ -136,3 +136,20 @@ def reorder_layers(model, new_order: List[int]) -> SurgeryLog:
     log = SurgeryLog()
     log.add("reorder_layers", f"Reordered to {new_order}", num_before, len(new_layers))
     return log
+
+
+def swap_layers(model, i: int, j: int) -> SurgeryLog:
+    """Swap two layers' positions."""
+    layers = model.model.layers
+    num_before = len(layers)
+
+    for idx in (i, j):
+        if idx < 0 or idx >= num_before:
+            raise IndexError(f"Layer index {idx} out of range [0, {num_before - 1}]")
+
+    layers[i], layers[j] = layers[j], layers[i]
+    _renumber_layers(model)
+
+    log = SurgeryLog()
+    log.add("swap_layers", f"Swapped layers {i} and {j}", num_before, len(layers))
+    return log

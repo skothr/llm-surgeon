@@ -7,6 +7,7 @@ from tests.conftest import _make_tiny_tokenizer
 from llm_surgeon.probe import (
     LogitLensResult, HiddenStates, extract_hidden_states,
     logit_lens, layer_predictions_table, ops,
+    Intervention, InterventionResult, intervene,
 )
 
 
@@ -284,3 +285,88 @@ def test_ops_project_out():
     assert result[:, 0].abs().max().item() < 1e-5
     assert torch.allclose(result[:, 1:], t[:, 1:])
     assert "project_out" in repr(fn)
+
+
+# ---------------------------------------------------------------------------
+# intervene()
+# ---------------------------------------------------------------------------
+
+def test_intervene_scale_identity(tiny_llama, tiny_llama_config):
+    """Scaling by 1.0 should produce the same output as an unmodified forward pass."""
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    prompt = "word4 word5 word6"
+
+    device = tiny_llama.model.embed_tokens.weight.device
+    enc = tokenizer(prompt, return_tensors="pt")
+    input_ids = enc["input_ids"].to(device)
+    with torch.no_grad():
+        baseline_logits = tiny_llama(input_ids).logits[0]
+
+    result = intervene(
+        tiny_llama, tokenizer, prompt,
+        interventions=[Intervention(layer=0, sublayer="ffn", fn=ops.scale(1.0))],
+    )
+    assert isinstance(result, InterventionResult)
+    assert torch.allclose(result.output_logits, baseline_logits, atol=1e-4)
+
+
+def test_intervene_scale_zero_changes_output(tiny_llama, tiny_llama_config):
+    """Zeroing layer 0 should produce different output."""
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    prompt = "word4 word5 word6"
+
+    device = tiny_llama.model.embed_tokens.weight.device
+    enc = tokenizer(prompt, return_tensors="pt")
+    input_ids = enc["input_ids"].to(device)
+    with torch.no_grad():
+        baseline_logits = tiny_llama(input_ids).logits[0]
+
+    result = intervene(
+        tiny_llama, tokenizer, prompt,
+        interventions=[Intervention(layer=0, sublayer="ffn", fn=ops.scale(0.0))],
+    )
+    assert not torch.allclose(result.output_logits, baseline_logits, atol=1e-3)
+
+
+def test_intervene_with_logit_lens(tiny_llama, tiny_llama_config):
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    prompt = "word4 word5 word6"
+    result = intervene(
+        tiny_llama, tokenizer, prompt,
+        interventions=[Intervention(layer=2, sublayer="ffn", fn=ops.scale(0.5))],
+        capture_logit_lens=True,
+        top_k=3,
+    )
+    assert result.logit_lens_result is not None
+    assert len(result.logit_lens_result.predictions) > 0
+
+
+def test_intervene_callback_modified_flag(tiny_llama, tiny_llama_config):
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    prompt = "word4 word5 word6"
+    calls = []
+    def cb(layer, sublayer, data):
+        calls.append((layer, sublayer, data["modified"]))
+    intervene(
+        tiny_llama, tokenizer, prompt,
+        interventions=[Intervention(layer=3, sublayer="ffn", fn=ops.scale(2.0))],
+        on_layer=cb,
+    )
+    modified_calls = [(l, s) for l, s, m in calls if m]
+    assert (3, "ffn") in modified_calls
+    unmodified_calls = [(l, s) for l, s, m in calls if not m]
+    assert len(unmodified_calls) > 0
+
+
+def test_intervene_metadata(tiny_llama, tiny_llama_config):
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    prompt = "word4 word5 word6"
+    result = intervene(
+        tiny_llama, tokenizer, prompt,
+        interventions=[Intervention(layer=1, sublayer="ffn", fn=ops.noise(0.1, seed=0))],
+    )
+    assert len(result.interventions_applied) == 1
+    meta = result.interventions_applied[0]
+    assert meta["layer"] == 1
+    assert meta["sublayer"] == "ffn"
+    assert "noise" in meta["op_repr"]

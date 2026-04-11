@@ -4,7 +4,7 @@ import torch
 
 from tests.conftest import _make_tiny_tokenizer
 
-from llm_surgeon.probe import LogitLensResult, HiddenStates
+from llm_surgeon.probe import LogitLensResult, HiddenStates, extract_hidden_states
 
 
 def _make_test_tokenizer(vocab_size):
@@ -92,3 +92,47 @@ def test_hidden_states_save_load(tmp_path):
     assert set(loaded.states.keys()) == {(0, "ffn"), (2, "attn")}
     assert loaded.prompt_tokens == hs.prompt_tokens
     assert torch.allclose(loaded.states[(0, "ffn")], t)
+
+
+# ---------------------------------------------------------------------------
+# extract_hidden_states
+# ---------------------------------------------------------------------------
+
+def test_extract_hidden_states_ffn_only(tiny_llama, tiny_llama_config):
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    prompt = "word4 word5 word6"
+    hs = extract_hidden_states(tiny_llama, tokenizer, prompt)
+    num_layers = tiny_llama_config.num_hidden_layers
+    assert len(hs.states) == num_layers
+    for i in range(num_layers):
+        assert (i, "ffn") in hs.states
+        assert hs.states[(i, "ffn")].shape[-1] == tiny_llama_config.hidden_size
+
+
+def test_extract_hidden_states_both_sublayers(tiny_llama, tiny_llama_config):
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    prompt = "word4 word5 word6"
+    hs = extract_hidden_states(tiny_llama, tokenizer, prompt, sublayers=("attn", "ffn"))
+    num_layers = tiny_llama_config.num_hidden_layers
+    assert len(hs.states) == num_layers * 2
+    for i in range(num_layers):
+        assert (i, "attn") in hs.states
+        assert (i, "ffn") in hs.states
+
+
+def test_extract_hidden_states_specific_layers(tiny_llama, tiny_llama_config):
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    prompt = "word4 word5 word6"
+    hs = extract_hidden_states(tiny_llama, tokenizer, prompt, layers=[0, 3, 7])
+    assert set(hs.states.keys()) == {(0, "ffn"), (3, "ffn"), (7, "ffn")}
+
+
+def test_extract_hidden_states_callback(tiny_llama, tiny_llama_config):
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    prompt = "word4 word5 word6"
+    calls = []
+    def cb(layer, sublayer, data):
+        calls.append((layer, sublayer))
+        assert "hidden_state" in data
+    extract_hidden_states(tiny_llama, tokenizer, prompt, on_layer=cb)
+    assert len(calls) == tiny_llama_config.num_hidden_layers

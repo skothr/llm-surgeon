@@ -6,7 +6,7 @@ from tests.conftest import _make_tiny_tokenizer
 
 from llm_surgeon.probe import (
     LogitLensResult, HiddenStates, extract_hidden_states,
-    logit_lens, layer_predictions_table,
+    logit_lens, layer_predictions_table, ops,
 )
 
 
@@ -214,3 +214,73 @@ def test_layer_predictions_table(tiny_llama, tiny_llama_config):
     assert isinstance(table, str)
     assert len(table) > 0
     assert "Layer" in table
+
+
+# ---------------------------------------------------------------------------
+# Predefined operations (ops)
+# ---------------------------------------------------------------------------
+
+def test_ops_scale():
+    fn = ops.scale(2.0)
+    t = torch.ones(4, 8)
+    result = fn(t, 0)
+    assert torch.allclose(result, t * 2.0)
+    assert "scale(2.0)" in repr(fn)
+
+
+def test_ops_scale_identity():
+    fn = ops.scale(1.0)
+    t = torch.randn(4, 8)
+    result = fn(t, 0)
+    assert torch.allclose(result, t)
+
+
+def test_ops_zero_dims():
+    fn = ops.zero_dims([0, 2, 4])
+    t = torch.ones(3, 8)
+    result = fn(t, 0)
+    assert result[:, 0].sum() == 0
+    assert result[:, 2].sum() == 0
+    assert result[:, 4].sum() == 0
+    assert result[:, 1].sum() == 3
+    assert "zero_dims" in repr(fn)
+
+
+def test_ops_clamp():
+    fn = ops.clamp(-0.5, 0.5)
+    t = torch.tensor([[-1.0, 0.0, 1.0]])
+    result = fn(t, 0)
+    assert result.min().item() >= -0.5
+    assert result.max().item() <= 0.5
+    assert "clamp" in repr(fn)
+
+
+def test_ops_noise():
+    fn = ops.noise(0.1, seed=42)
+    t = torch.zeros(4, 8)
+    result = fn(t, 0)
+    assert not torch.allclose(result, t)
+    assert result.abs().max().item() < 1.0
+    result2 = ops.noise(0.1, seed=42)(t, 0)
+    assert torch.allclose(result, result2)
+    assert "noise" in repr(fn)
+
+
+def test_ops_replace():
+    replacement = torch.ones(4, 8) * 5
+    fn = ops.replace(replacement)
+    t = torch.zeros(4, 8)
+    result = fn(t, 0)
+    assert torch.allclose(result, replacement)
+    assert "replace" in repr(fn)
+
+
+def test_ops_project_out():
+    direction = torch.zeros(8)
+    direction[0] = 1.0
+    fn = ops.project_out(direction)
+    t = torch.ones(3, 8)
+    result = fn(t, 0)
+    assert result[:, 0].abs().max().item() < 1e-5
+    assert torch.allclose(result[:, 1:], t[:, 1:])
+    assert "project_out" in repr(fn)

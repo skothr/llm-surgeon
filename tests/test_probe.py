@@ -4,7 +4,10 @@ import torch
 
 from tests.conftest import _make_tiny_tokenizer
 
-from llm_surgeon.probe import LogitLensResult, HiddenStates, extract_hidden_states
+from llm_surgeon.probe import (
+    LogitLensResult, HiddenStates, extract_hidden_states,
+    logit_lens, layer_predictions_table,
+)
 
 
 def _make_test_tokenizer(vocab_size):
@@ -136,3 +139,78 @@ def test_extract_hidden_states_callback(tiny_llama, tiny_llama_config):
         assert "hidden_state" in data
     extract_hidden_states(tiny_llama, tokenizer, prompt, on_layer=cb)
     assert len(calls) == tiny_llama_config.num_hidden_layers
+
+
+# ---------------------------------------------------------------------------
+# logit_lens
+# ---------------------------------------------------------------------------
+
+def test_logit_lens_basic(tiny_llama, tiny_llama_config):
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    prompt = "word4 word5 word6"
+    result = logit_lens(tiny_llama, tokenizer, prompt, top_k=5)
+
+    assert isinstance(result, LogitLensResult)
+    assert result.logits is None
+    assert len(result.prompt_tokens) > 0
+
+    num_layers = tiny_llama_config.num_hidden_layers
+    num_positions = len(result.prompt_tokens)
+    expected_predictions = num_layers * 2 * num_positions
+    assert len(result.predictions) == expected_predictions
+
+    for p in result.predictions:
+        assert "layer" in p
+        assert "sublayer" in p
+        assert p["sublayer"] in ("attn", "ffn")
+        assert "position" in p
+        assert "top_k" in p
+        assert len(p["top_k"]) <= 5
+        if p["top_k"]:
+            assert "token" in p["top_k"][0]
+            assert "prob" in p["top_k"][0]
+            assert p["top_k"][0]["prob"] >= 0.0
+
+
+def test_logit_lens_full_logits(tiny_llama, tiny_llama_config):
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    prompt = "word4 word5 word6"
+    result = logit_lens(tiny_llama, tokenizer, prompt, top_k=3, full_logits=True)
+
+    assert result.logits is not None
+    num_layers = tiny_llama_config.num_hidden_layers
+    assert len(result.logits) == num_layers * 2
+    for key, tensor in result.logits.items():
+        assert tensor.shape[-1] == tiny_llama_config.vocab_size
+
+
+def test_logit_lens_positions_filter(tiny_llama, tiny_llama_config):
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    prompt = "word4 word5 word6"
+    result = logit_lens(tiny_llama, tokenizer, prompt, top_k=3, positions=[-1])
+
+    positions_seen = set(p["position"] for p in result.predictions)
+    assert len(positions_seen) == 1
+
+
+def test_logit_lens_callback(tiny_llama, tiny_llama_config):
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    prompt = "word4 word5 word6"
+    calls = []
+    def cb(layer, sublayer, data):
+        calls.append((layer, sublayer))
+        assert "hidden_state" in data
+        assert "top_k" in data
+    logit_lens(tiny_llama, tokenizer, prompt, top_k=3, on_layer=cb)
+    num_layers = tiny_llama_config.num_hidden_layers
+    assert len(calls) == num_layers * 2
+
+
+def test_layer_predictions_table(tiny_llama, tiny_llama_config):
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    prompt = "word4 word5 word6"
+    result = logit_lens(tiny_llama, tokenizer, prompt, top_k=3)
+    table = layer_predictions_table(result, position=-1)
+    assert isinstance(table, str)
+    assert len(table) > 0
+    assert "Layer" in table

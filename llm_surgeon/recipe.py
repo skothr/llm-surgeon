@@ -166,6 +166,13 @@ def run(
         exp.log_surgery(combined_log)
         _log(f"Logged {len(combined_log.ops)} surgery operations", verbose)
 
+    # Analyze
+    analyze_cfg = recipe_data.get("analyze", {})
+    if analyze_cfg:
+        _log("Running analysis...", verbose)
+        analyze_results = _run_analyze(model, tokenizer, analyze_cfg, exp, verbose)
+        result["analyze"] = analyze_results
+
     # Evaluation
     if not skip_eval:
         eval_cfg = recipe_data.get("evaluate", {})
@@ -222,6 +229,45 @@ def _run_evaluation(
             exp.log_metric(task, score)
             results[task] = score
             _log(f"  {task}: {score:.4f}", verbose)
+
+    return results
+
+
+def _run_analyze(
+    model, tokenizer, analyze_cfg: Dict, exp: tracking.Experiment, verbose: bool,
+) -> Dict[str, Any]:
+    """Run analysis steps as specified in the recipe's analyze section."""
+    from llm_surgeon import probe
+
+    results = {}
+
+    if "logit_lens" in analyze_cfg:
+        ll_cfg = analyze_cfg["logit_lens"] or {}
+        prompt = ll_cfg.get("prompt", "")
+        top_k = int(ll_cfg.get("top_k", 5))
+        _log(f"Running logit lens (top_k={top_k})...", verbose)
+        ll_result = probe.logit_lens(model, tokenizer, prompt, top_k=top_k)
+
+        num_positions = len(ll_result.prompt_tokens)
+        last_pos = num_positions - 1
+        flips = ll_result.prediction_flips(last_pos)
+        exp.log_metric("logit_lens_prediction_flips", flips)
+
+        results["logit_lens"] = {
+            "num_layers_captured": len(set(p["layer"] for p in ll_result.predictions)),
+            "prediction_flips": flips,
+        }
+        _log(f"Logit lens: {results['logit_lens']}", verbose)
+
+    if "hidden_states" in analyze_cfg:
+        hs_cfg = analyze_cfg["hidden_states"] or {}
+        prompt = hs_cfg.get("prompt", "")
+        _log(f"Extracting hidden states...", verbose)
+        hs = probe.extract_hidden_states(model, tokenizer, prompt)
+        results["hidden_states"] = {
+            "num_capture_points": len(hs.states),
+        }
+        _log(f"Hidden states: {len(hs.states)} capture points", verbose)
 
     return results
 

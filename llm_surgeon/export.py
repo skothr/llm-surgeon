@@ -116,7 +116,9 @@ def to_gguf(
     # Step 2: quantize
     quantized_gguf = os.path.join(output_dir, f"{model_name}-{quantization}.gguf")
     quantize_cmd = [quantize_bin, f16_gguf, quantized_gguf, quantization]
-    result = subprocess.run(quantize_cmd, capture_output=True, text=True)
+    env = os.environ.copy()
+    env["LD_LIBRARY_PATH"] = os.path.dirname(quantize_bin) + ":" + env.get("LD_LIBRARY_PATH", "")
+    result = subprocess.run(quantize_cmd, capture_output=True, text=True, env=env)
     if result.returncode != 0:
         raise RuntimeError(
             f"GGUF quantization failed (exit {result.returncode}):\n"

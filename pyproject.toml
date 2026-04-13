@@ -7,17 +7,28 @@ name = "llm-surgeon"
 version = "0.1.0"
 description = "Surgical layer-level manipulation of LLaMA models"
 requires-python = ">=3.10"
+license = "GPL-3.0-only"
+authors = [{ name = "Michael Lannum" }]
 dependencies = [
     "torch>=2.0",
     "transformers>=4.40",
     "accelerate>=0.27",
     "bitsandbytes>=0.43",
     "requests",
+    "pyyaml>=6.0",
+    "sentencepiece>=0.1.99",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+]
+gui = [
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.20",
+]
+eval = [
+    "lm_eval>=0.4",
 ]
 
 [tool.setuptools.packages.find]

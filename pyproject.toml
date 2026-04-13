@@ -29,6 +29,7 @@ gui = [
 ]
 eval = [
     "lm_eval>=0.4",
+    "datasets>=2.0",
 ]
 
 [tool.setuptools.packages.find]

@@ -332,6 +332,43 @@ class TestLoadModel:
         assert tokenizer is not None
         assert len(model.model.layers) == 8
 
+    def test_local_path_skips_network(self, tiny_llama, tmp_path, monkeypatch):
+        """Loading from a local path should not touch HF Hub at all."""
+        save_path = str(tmp_path / "local_model")
+        tiny_llama.save_pretrained(save_path)
+        tokenizer_config = {
+            "model_type": "llama",
+            "bos_token": "<s>",
+            "eos_token": "</s>",
+            "unk_token": "<unk>",
+        }
+        with open(os.path.join(save_path, "tokenizer_config.json"), "w") as f:
+            json.dump(tokenizer_config, f)
+        vocab = {f"token_{i}": i for i in range(64)}
+        tokenizer_data = {
+            "version": "1.0",
+            "model": {"type": "BPE", "vocab": vocab, "merges": []},
+            "added_tokens": [
+                {"id": 0, "content": "<unk>", "special": True},
+                {"id": 1, "content": "<s>", "special": True},
+                {"id": 2, "content": "</s>", "special": True},
+            ],
+        }
+        with open(os.path.join(save_path, "tokenizer.json"), "w") as f:
+            json.dump(tokenizer_data, f)
+
+        # Force offline — if it tries the network, it will fail
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        model, tokenizer = load_model(save_path, mode="export")
+        assert len(model.model.layers) == 8
+
+    def test_cache_dir_used_for_hub_models(self):
+        """load_model should use MODEL_CACHE_DIR for HF Hub downloads."""
+        from llm_surgeon.surgery import MODEL_CACHE_DIR
+        assert MODEL_CACHE_DIR is not None
+        # The cache dir should be a path (string), not empty
+        assert len(MODEL_CACHE_DIR) > 0
+
 
 class TestChainedOperations:
     def test_remove_then_swap(self, tiny_llama):

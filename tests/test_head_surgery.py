@@ -4,7 +4,7 @@ import pytest
 import torch
 from transformers import LlamaForCausalLM
 
-from llm_surgeon.surgery import zero_heads, scale_heads, swap_heads
+from llm_surgeon.surgery import zero_heads, scale_heads, swap_heads, zero_mlp, zero_attention
 from llm_surgeon.inspect import inspect_head
 from tests.conftest import _make_tiny_tokenizer
 
@@ -198,3 +198,80 @@ class TestInspectHead:
         r1 = inspect_head(tiny_llama, tokenizer, prompt="word4 word5 word6 word7", layer=0, head=1)
         # Different heads should have different attention patterns (very unlikely to be identical with random weights)
         assert not torch.equal(r0["attention_pattern"], r1["attention_pattern"])
+
+
+class TestZeroMlp:
+    def test_down_proj_zeroed(self, tiny_llama):
+        """After zero_mlp, the down_proj weight should be all zeros."""
+        zero_mlp(tiny_llama, layer=0)
+        dp = tiny_llama.model.layers[0].mlp.down_proj.weight.data
+        assert torch.all(dp == 0)
+
+    def test_other_layers_unchanged(self, tiny_llama):
+        """zero_mlp on layer 0 should not affect layer 1's MLP."""
+        dp1_before = tiny_llama.model.layers[1].mlp.down_proj.weight.data.clone()
+        zero_mlp(tiny_llama, layer=0)
+        dp1_after = tiny_llama.model.layers[1].mlp.down_proj.weight.data
+        assert torch.equal(dp1_before, dp1_after)
+
+    def test_attention_unchanged(self, tiny_llama):
+        """zero_mlp should not affect the attention weights in the same layer."""
+        o_before = tiny_llama.model.layers[0].self_attn.o_proj.weight.data.clone()
+        zero_mlp(tiny_llama, layer=0)
+        o_after = tiny_llama.model.layers[0].self_attn.o_proj.weight.data
+        assert torch.equal(o_before, o_after)
+
+    def test_returns_surgery_log(self, tiny_llama):
+        log = zero_mlp(tiny_llama, layer=0)
+        assert len(log.ops) == 1
+        assert "mlp" in log.ops[0].operation.lower() or "mlp" in log.ops[0].description.lower()
+
+    def test_model_still_runs(self, tiny_llama):
+        zero_mlp(tiny_llama, layer=0)
+        input_ids = torch.randint(0, 64, (1, 10))
+        with torch.no_grad():
+            output = tiny_llama(input_ids)
+        assert output.logits.shape == (1, 10, 64)
+
+    def test_invalid_layer_raises(self, tiny_llama):
+        with pytest.raises(IndexError):
+            zero_mlp(tiny_llama, layer=99)
+
+    def test_multiple_layers(self, tiny_llama):
+        """Can zero MLP in multiple layers sequentially."""
+        zero_mlp(tiny_llama, layer=0)
+        zero_mlp(tiny_llama, layer=3)
+        assert torch.all(tiny_llama.model.layers[0].mlp.down_proj.weight.data == 0)
+        assert torch.all(tiny_llama.model.layers[3].mlp.down_proj.weight.data == 0)
+        # Other layers untouched
+        assert not torch.all(tiny_llama.model.layers[1].mlp.down_proj.weight.data == 0)
+
+
+class TestZeroAttention:
+    def test_o_proj_zeroed(self, tiny_llama):
+        """After zero_attention, the o_proj weight should be all zeros."""
+        zero_attention(tiny_llama, layer=0)
+        o = tiny_llama.model.layers[0].self_attn.o_proj.weight.data
+        assert torch.all(o == 0)
+
+    def test_mlp_unchanged(self, tiny_llama):
+        """zero_attention should not affect the MLP weights in the same layer."""
+        dp_before = tiny_llama.model.layers[0].mlp.down_proj.weight.data.clone()
+        zero_attention(tiny_llama, layer=0)
+        dp_after = tiny_llama.model.layers[0].mlp.down_proj.weight.data
+        assert torch.equal(dp_before, dp_after)
+
+    def test_returns_surgery_log(self, tiny_llama):
+        log = zero_attention(tiny_llama, layer=0)
+        assert len(log.ops) == 1
+
+    def test_model_still_runs(self, tiny_llama):
+        zero_attention(tiny_llama, layer=0)
+        input_ids = torch.randint(0, 64, (1, 10))
+        with torch.no_grad():
+            output = tiny_llama(input_ids)
+        assert output.logits.shape == (1, 10, 64)
+
+    def test_invalid_layer_raises(self, tiny_llama):
+        with pytest.raises(IndexError):
+            zero_attention(tiny_llama, layer=99)

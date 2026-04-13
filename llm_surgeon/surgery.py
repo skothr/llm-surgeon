@@ -1,13 +1,22 @@
 """Model loading and layer surgery operations."""
 
 import copy
+import os
 import warnings
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, Any, List, Tuple
 
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+# Dedicated cache for clean HF model downloads.
+# Override with LLM_SURGEON_CACHE_DIR env var.
+MODEL_CACHE_DIR = os.environ.get(
+    "LLM_SURGEON_CACHE_DIR",
+    str(Path(__file__).resolve().parent.parent.parent / "models"),
+)
 
 
 @dataclass
@@ -279,6 +288,38 @@ def swap_heads(model, layer: int, h1: int, h2: int) -> SurgeryLog:
     return log
 
 
+def zero_mlp(model, layer: int) -> SurgeryLog:
+    """Zero out a layer's MLP by zeroing down_proj weights.
+
+    The MLP still exists structurally but contributes nothing to the
+    residual stream (the residual connection passes through unchanged).
+    """
+    num_layers = len(model.model.layers)
+    if layer < 0 or layer >= num_layers:
+        raise IndexError(f"Layer index {layer} out of range [0, {num_layers - 1}]")
+    with torch.no_grad():
+        model.model.layers[layer].mlp.down_proj.weight.data.zero_()
+    log = SurgeryLog()
+    log.add("zero_mlp", f"Zeroed MLP in layer {layer}", num_layers, num_layers)
+    return log
+
+
+def zero_attention(model, layer: int) -> SurgeryLog:
+    """Zero out a layer's entire attention by zeroing o_proj weights.
+
+    The attention module still exists structurally but contributes nothing
+    to the residual stream.
+    """
+    num_layers = len(model.model.layers)
+    if layer < 0 or layer >= num_layers:
+        raise IndexError(f"Layer index {layer} out of range [0, {num_layers - 1}]")
+    with torch.no_grad():
+        model.model.layers[layer].self_attn.o_proj.weight.data.zero_()
+    log = SurgeryLog()
+    log.add("zero_attention", f"Zeroed attention in layer {layer}", num_layers, num_layers)
+    return log
+
+
 def capture_calibration_stats(
     model,
     tokenizer,
@@ -405,23 +446,39 @@ def load_model(model_id: str, mode: str = "inspect") -> Tuple:
         inspect: 4-bit quantized on GPU (fast, for inspection)
         eval: fp16 with auto device map (for perplexity measurement)
         export: fp16 on CPU only (for clean checkpoint export)
+
+    For HF Hub model IDs (not local paths), downloads are cached in
+    MODEL_CACHE_DIR. Subsequent loads use the cache without network access.
     """
     if mode not in ("inspect", "eval", "export"):
         raise ValueError(f"Unknown mode: '{mode}'. Must be 'inspect', 'eval', or 'export'.")
 
+    # Determine if model_id is a local path or a HF Hub repo ID
+    is_local = os.path.isdir(model_id)
+    cache_kwargs = {} if is_local else {"cache_dir": MODEL_CACHE_DIR}
+
     if mode == "inspect":
         bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
         model = AutoModelForCausalLM.from_pretrained(
-            model_id, quantization_config=bnb_config, device_map="auto"
+            model_id, quantization_config=bnb_config, device_map="auto",
+            **cache_kwargs,
         )
     elif mode == "eval":
         model = AutoModelForCausalLM.from_pretrained(
-            model_id, dtype=torch.float16, device_map="auto"
+            model_id, dtype=torch.float16, device_map="auto",
+            **cache_kwargs,
         )
     elif mode == "export":
         model = AutoModelForCausalLM.from_pretrained(
-            model_id, dtype=torch.float16, device_map="cpu"
+            model_id, dtype=torch.float16, device_map="cpu",
+            **cache_kwargs,
         )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, **cache_kwargs)
+
+    # Once we've successfully loaded, set offline mode so future loads
+    # in this process don't make network requests.
+    if not is_local:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+
     return model, tokenizer

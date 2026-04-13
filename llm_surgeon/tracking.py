@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-_DEFAULT_DB = str(Path(__file__).parent.parent / "experiments.db")
+_DEFAULT_DB = str(Path(__file__).parent.parent / "experiments/experiments.db")
 
 
 # ---------------------------------------------------------------------------

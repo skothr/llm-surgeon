@@ -3,5 +3,6 @@
     {"prompt": "Explain gravity in one sentence.", "category": "reasoning"},
     {"prompt": "Write a haiku about rain.", "category": "creative"},
     {"prompt": "List three prime numbers.", "category": "factual"},
-    {"prompt": "What happens when water freezes?", "category": "reasoning"}
+    {"prompt": "What happens when water freezes?", "category": "reasoning"},
+    {"prompt": "My car is dirty, the car wash is 50 meters away. Should I walk or drive?", "category": "reasoning"}
 ]

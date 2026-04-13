@@ -76,6 +76,198 @@ def block_influence(model, tokenizer, prompts: List[str]) -> Dict[int, float]:
     return scores
 
 
+def magnitude_influence(
+    model, tokenizer, prompts: List[str]
+) -> Dict[int, Dict[str, float]]:
+    """Compute magnitude-aware influence metrics for each transformer layer.
+
+    Complements block_influence (angle-only) with magnitude information.
+    Uses forward hooks to capture layer input/output hidden states.
+
+    Returns a dict mapping layer index -> dict with:
+        magnitude_ratio: ||output|| / ||input||, averaged over tokens and prompts.
+            >1 means the layer amplifies, <1 means it attenuates.
+        contribution_norm: ||output - input||, the L2 size of the layer's
+            residual contribution, averaged over tokens and prompts.
+        bi_score: 1 - cosine_similarity(input, output), same as block_influence.
+    """
+    num_layers = len(model.model.layers)
+    layer_inputs: Dict[int, List[torch.Tensor]] = {i: [] for i in range(num_layers)}
+    layer_outputs: Dict[int, List[torch.Tensor]] = {i: [] for i in range(num_layers)}
+
+    hooks = []
+
+    def make_hook(idx):
+        def hook(module, inp, out):
+            hidden_in = inp[0].detach()
+            if isinstance(out, tuple):
+                hidden_out = out[0].detach()
+            else:
+                hidden_out = out.detach()
+            layer_inputs[idx].append(hidden_in)
+            layer_outputs[idx].append(hidden_out)
+        return hook
+
+    for i, layer in enumerate(model.model.layers):
+        hooks.append(layer.register_forward_hook(make_hook(i)))
+
+    device = _get_input_device(model)
+    try:
+        for prompt in prompts:
+            enc = tokenizer(prompt, return_tensors="pt")
+            input_ids = enc["input_ids"].to(device)
+            with torch.no_grad():
+                model(input_ids)
+    finally:
+        for h in hooks:
+            h.remove()
+
+    results: Dict[int, Dict[str, float]] = {}
+    for i in range(num_layers):
+        mag_ratios = []
+        contrib_norms = []
+        cosine_sims = []
+
+        for h_in, h_out in zip(layer_inputs[i], layer_outputs[i]):
+            flat_in = h_in.reshape(-1, h_in.shape[-1]).float()
+            flat_out = h_out.reshape(-1, h_out.shape[-1]).float()
+
+            # Per-token magnitude ratio: ||out|| / ||in||
+            in_norms = flat_in.norm(dim=-1)
+            out_norms = flat_out.norm(dim=-1)
+            # Avoid division by zero
+            ratio = out_norms / in_norms.clamp(min=1e-10)
+            mag_ratios.append(ratio.mean().item())
+
+            # Per-token contribution norm: ||out - in||
+            contrib = (flat_out - flat_in).norm(dim=-1)
+            contrib_norms.append(contrib.mean().item())
+
+            # Cosine similarity (same as block_influence)
+            cos_sim = F.cosine_similarity(flat_in, flat_out, dim=-1)
+            cosine_sims.append(cos_sim.mean().item())
+
+        n = len(mag_ratios) or 1
+        avg_ratio = sum(mag_ratios) / n
+        avg_contrib = sum(contrib_norms) / n
+        avg_sim = sum(cosine_sims) / n
+
+        results[i] = {
+            "magnitude_ratio": avg_ratio,
+            "contribution_norm": avg_contrib,
+            "bi_score": max(0.0, min(1.0, 1.0 - avg_sim)),
+        }
+
+    return results
+
+
+def _compute_metrics(flat_in: torch.Tensor, flat_out: torch.Tensor) -> Dict[str, float]:
+    """Compute magnitude_ratio, contribution_norm, bi_score for a pair of tensors.
+
+    Both inputs should be shaped (num_tokens, hidden_dim) in float.
+    """
+    in_norms = flat_in.norm(dim=-1)
+    out_norms = flat_out.norm(dim=-1)
+    ratio = out_norms / in_norms.clamp(min=1e-10)
+
+    contrib = (flat_out - flat_in).norm(dim=-1)
+
+    cos_sim = F.cosine_similarity(flat_in, flat_out, dim=-1)
+
+    return {
+        "magnitude_ratio": ratio.mean().item(),
+        "contribution_norm": contrib.mean().item(),
+        "bi_score": max(0.0, min(1.0, 1.0 - cos_sim.mean().item())),
+    }
+
+
+def sublayer_influence(
+    model, tokenizer, prompts: List[str]
+) -> Dict[int, Dict[str, Dict[str, float]]]:
+    """Decompose per-layer influence into attention and MLP contributions.
+
+    Each LLaMA block does:
+        h_mid = h_in + attention(RMSNorm(h_in))
+        h_out = h_mid + mlp(RMSNorm(h_mid))
+
+    Hooks capture h_in (block input), h_mid (between attention and MLP,
+    via pre-hook on post_attention_layernorm), and h_out (block output).
+
+    Returns a dict mapping layer index -> dict with:
+        attention: {magnitude_ratio, contribution_norm, bi_score} for h_in -> h_mid
+        mlp:       {magnitude_ratio, contribution_norm, bi_score} for h_mid -> h_out
+        total:     {magnitude_ratio, contribution_norm, bi_score} for h_in -> h_out
+    """
+    num_layers = len(model.model.layers)
+    layer_h_in: Dict[int, List[torch.Tensor]] = {i: [] for i in range(num_layers)}
+    layer_h_mid: Dict[int, List[torch.Tensor]] = {i: [] for i in range(num_layers)}
+    layer_h_out: Dict[int, List[torch.Tensor]] = {i: [] for i in range(num_layers)}
+
+    hooks = []
+
+    def make_block_hook(idx):
+        def hook(module, inp, out):
+            layer_h_in[idx].append(inp[0].detach())
+            hidden_out = out[0].detach() if isinstance(out, tuple) else out.detach()
+            layer_h_out[idx].append(hidden_out)
+        return hook
+
+    def make_mid_hook(idx):
+        def hook(module, args):
+            # pre-hook on post_attention_layernorm: input is h_mid
+            layer_h_mid[idx].append(args[0].detach())
+        return hook
+
+    for i, layer in enumerate(model.model.layers):
+        hooks.append(layer.register_forward_hook(make_block_hook(i)))
+        hooks.append(
+            layer.post_attention_layernorm.register_forward_pre_hook(make_mid_hook(i))
+        )
+
+    device = _get_input_device(model)
+    try:
+        for prompt in prompts:
+            enc = tokenizer(prompt, return_tensors="pt")
+            input_ids = enc["input_ids"].to(device)
+            with torch.no_grad():
+                model(input_ids)
+    finally:
+        for h in hooks:
+            h.remove()
+
+    results: Dict[int, Dict[str, Dict[str, float]]] = {}
+    for i in range(num_layers):
+        attn_metrics_list = []
+        mlp_metrics_list = []
+        total_metrics_list = []
+
+        for h_in, h_mid, h_out in zip(
+            layer_h_in[i], layer_h_mid[i], layer_h_out[i]
+        ):
+            flat_in = h_in.reshape(-1, h_in.shape[-1]).float()
+            flat_mid = h_mid.reshape(-1, h_mid.shape[-1]).float()
+            flat_out = h_out.reshape(-1, h_out.shape[-1]).float()
+
+            attn_metrics_list.append(_compute_metrics(flat_in, flat_mid))
+            mlp_metrics_list.append(_compute_metrics(flat_mid, flat_out))
+            total_metrics_list.append(_compute_metrics(flat_in, flat_out))
+
+        def _avg(metrics_list):
+            n = len(metrics_list) or 1
+            return {
+                key: sum(m[key] for m in metrics_list) / n
+                for key in ("magnitude_ratio", "contribution_norm", "bi_score")
+            }
+
+        results[i] = {
+            "attention": _avg(attn_metrics_list),
+            "mlp": _avg(mlp_metrics_list),
+            "total": _avg(total_metrics_list),
+        }
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Task 2: Weight norms and SVD
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 # Default path to llama.cpp; overridable via env var.
-_DEFAULT_LLAMA_CPP_PATH = "/home/ai/ai-projects/llm/llama.cpp"
+_DEFAULT_LLAMA_CPP_PATH = str(Path(__file__).resolve().parents[2] / "lib" / "llama.cpp")
 
 
 def save_checkpoint(model, output_dir: str, tokenizer=None) -> str:

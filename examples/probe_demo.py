@@ -13,8 +13,11 @@ probabilities shown are the model's raw beliefs at each layer, not sampled
 outputs.
 """
 
+import os
 import sys
-sys.path.insert(0, "/home/ai/ai-projects/llm/testing")
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -28,7 +31,7 @@ from llm_surgeon.probe import (
 # -------------------------------------------------------------------------
 
 MODEL_ID = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-CACHE_DIR = "/home/ai/ai-projects/llm/models"
+CACHE_DIR = os.environ.get("LLM_MODEL_DIR", str(Path(__file__).resolve().parents[2] / "models"))
 
 print("Loading model...")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, cache_dir=CACHE_DIR)

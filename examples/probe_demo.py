@@ -31,7 +31,7 @@ from llm_surgeon.probe import (
 # -------------------------------------------------------------------------
 
 MODEL_ID = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-CACHE_DIR = os.environ.get("LLM_MODEL_DIR", str(Path(__file__).resolve().parents[2] / "models"))
+CACHE_DIR = os.environ.get("LLM_MODEL_DIR", str(Path(__file__).resolve().parents[1] / ".cache" / "models"))
 
 print("Loading model...")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, cache_dir=CACHE_DIR)

@@ -15,7 +15,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 # Override with LLM_SURGEON_CACHE_DIR env var.
 MODEL_CACHE_DIR = os.environ.get(
     "LLM_SURGEON_CACHE_DIR",
-    str(Path(__file__).resolve().parent.parent.parent / "models"),
+    str(Path(__file__).resolve().parent.parent / ".cache" / "models"),
 )
 
 

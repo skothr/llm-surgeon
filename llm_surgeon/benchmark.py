@@ -281,15 +281,15 @@ def eval_downstream(
 
 
 def _find_and_parse_results(output_dir: str) -> dict:
-    """Recursively search for results.json produced by lm_eval."""
+    """Recursively search for results JSON produced by lm_eval."""
     for root, dirs, files in os.walk(output_dir):
-        for fname in files:
-            if fname == "results.json":
+        for fname in sorted(files, reverse=True):
+            if fname.startswith("results") and fname.endswith(".json"):
                 path = os.path.join(root, fname)
                 with open(path) as f:
                     return json.load(f)
     raise RuntimeError(
-        f"No results.json found under {output_dir}. "
+        f"No results JSON found under {output_dir}. "
         "lm_eval may have failed silently."
     )
 

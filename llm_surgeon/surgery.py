@@ -1,11 +1,12 @@
 """Model loading and layer surgery operations."""
 
 import copy
+import gc
 import os
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -403,8 +404,8 @@ def zero_attention(model, layer: int) -> SurgeryLog:
 def capture_calibration_stats(
     model,
     tokenizer,
-    text: str = None,
-    dataset: str = None,
+    text: Optional[str] = None,
+    dataset: Optional[str] = None,
     num_samples: int = 128,
 ) -> List[float]:
     """Capture per-layer input RMS values for calibration reference.
@@ -421,9 +422,9 @@ def capture_calibration_stats(
 def calibrate(
     model,
     tokenizer,
-    baseline_stats: List[float] = None,
-    text: str = None,
-    dataset: str = None,
+    baseline_stats: Optional[List[float]] = None,
+    text: Optional[str] = None,
+    dataset: Optional[str] = None,
     num_samples: int = 128,
 ) -> None:
     """Rescale RMSNorm gains to compensate for residual stream shift after surgery.
@@ -476,8 +477,8 @@ def calibrate(
 def _capture_rms(
     model,
     tokenizer,
-    text: str = None,
-    dataset: str = None,
+    text: Optional[str] = None,
+    dataset: Optional[str] = None,
     num_samples: int = 128,
 ) -> List[float]:
     """Capture per-layer input RMS values by running calibration data through the model."""
@@ -498,7 +499,7 @@ def _capture_rms(
     hooks = []
 
     def _make_hook(idx):
-        def hook(module, args):
+        def hook(_module, args):
             hs = args[0].detach().float()  # (batch, seq, hidden)
             # RMS across all positions: sqrt(mean(x^2))
             rms = hs.pow(2).mean().sqrt().item()
@@ -519,19 +520,77 @@ def _capture_rms(
     return rms_values
 
 
-def load_model(model_id: str, mode: str = "inspect") -> Tuple:
+def _is_ollama_id(model_id: str) -> bool:
+    """Check if model_id looks like an Ollama model (name:tag, no '/')."""
+    return "/" not in model_id and not os.path.isdir(model_id)
+
+
+def _quantize_in_place(model, bnb_config):
+    """Re-load an in-memory model with BitsAndBytes quantization.
+
+    Saves to a temp directory and reloads with the given quantization config.
+    The temp directory is cleaned up after loading.
+    """
+    import shutil
+    import tempfile
+    from transformers import AutoModelForCausalLM
+    tmpdir = tempfile.mkdtemp(prefix="gguf_quant_")
+    try:
+        model.save_pretrained(tmpdir)
+        del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return AutoModelForCausalLM.from_pretrained(
+            tmpdir, quantization_config=bnb_config, device_map="auto",
+        )
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+_MODE_ALIASES = {"inspect": "nf4", "eval": "fp16", "export": "fp32-cpu"}
+VALID_MODES = {"nf4", "int8", "bf16", "fp16", "fp32", "fp32-cpu"}
+
+
+def load_model(model_id: str, mode: str = "nf4") -> Tuple:
     """Load a model and tokenizer.
 
     Modes:
-        inspect: 4-bit quantized on GPU (fast, for inspection)
-        eval: fp16 with auto device map (for perplexity measurement)
-        export: fp16 on CPU only (for clean checkpoint export)
+        nf4:      4-bit NormalFloat on GPU (smallest, for surgery/inspection)
+        int8:     8-bit LLM.int8() on GPU (balanced quality/memory)
+        fp16:     half-precision with auto device map
+        fp32:     full precision with auto device map
+        fp32-cpu: full precision forced to CPU (for export)
 
-    For HF Hub model IDs (not local paths), downloads are cached in
-    MODEL_CACHE_DIR. Subsequent loads use the cache without network access.
+    Supports HuggingFace Hub IDs, local paths, and Ollama model IDs
+    (e.g. 'tinyllama:latest'). Ollama models are loaded from GGUF and
+    dequantized into standard HuggingFace models.
     """
-    if mode not in ("inspect", "eval", "export"):
-        raise ValueError(f"Unknown mode: '{mode}'. Must be 'inspect', 'eval', or 'export'.")
+    mode = _MODE_ALIASES.get(mode, mode)
+    if mode not in VALID_MODES:
+        raise ValueError(f"Unknown mode: '{mode}'. Must be one of {sorted(VALID_MODES)}.")
+
+    # Try Ollama resolution for non-HF, non-local model IDs
+    if _is_ollama_id(model_id):
+        from .gguf_reader import resolve_ollama_blob, load_gguf_as_hf
+        blob = resolve_ollama_blob(model_id)
+        if blob is not None:
+            _GGUF_DTYPE = {
+                "nf4": torch.float16, "int8": torch.float16,
+                "bf16": torch.bfloat16, "fp16": torch.float16,
+                "fp32": torch.float32, "fp32-cpu": torch.float32,
+            }
+            model, tokenizer = load_gguf_as_hf(blob, dtype=_GGUF_DTYPE.get(mode, torch.float16))
+            if mode == "nf4":
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.float16,
+                )
+                model = _quantize_in_place(model, bnb_config)
+            elif mode == "int8":
+                bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+                model = _quantize_in_place(model, bnb_config)
+            return model, tokenizer
 
     # Determine if model_id is a local path or a HF Hub repo ID
     is_local = os.path.isdir(model_id)
@@ -552,24 +611,44 @@ def load_model(model_id: str, mode: str = "inspect") -> Tuple:
         load_id = model_id
         load_kwargs = dict(cache_kwargs)
 
-    if mode == "inspect":
-        bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
+    if mode == "nf4":
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+        )
         model = AutoModelForCausalLM.from_pretrained(
             load_id, quantization_config=bnb_config, device_map="auto",
             **load_kwargs,
         )
-    elif mode == "eval":
+    elif mode == "int8":
+        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            load_id, quantization_config=bnb_config, device_map="auto",
+            **load_kwargs,
+        )
+    elif mode == "bf16":
+        model = AutoModelForCausalLM.from_pretrained(
+            load_id, torch_dtype=torch.bfloat16,
+            **load_kwargs,
+        )
+    elif mode == "fp16":
         model = AutoModelForCausalLM.from_pretrained(
             load_id, torch_dtype=torch.float16,
             **load_kwargs,
         )
-        if torch.cuda.is_available():
-            model = model.to("cuda:0")
-    elif mode == "export":
+    elif mode == "fp32":
         model = AutoModelForCausalLM.from_pretrained(
-            load_id, dtype=torch.float16, device_map="cpu",
+            load_id, torch_dtype=torch.float32,
             **load_kwargs,
         )
+    elif mode == "fp32-cpu":
+        model = AutoModelForCausalLM.from_pretrained(
+            load_id, torch_dtype=torch.float32, device_map="cpu",
+            **load_kwargs,
+        )
+    else:
+        raise ValueError(f"Unknown mode: '{mode}'")
 
     tok_id = str(snap) if snap else model_id
     tokenizer = AutoTokenizer.from_pretrained(tok_id, **({} if snap else cache_kwargs))

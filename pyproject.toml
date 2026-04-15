@@ -35,6 +35,12 @@ eval = [
 [tool.setuptools.packages.find]
 where = ["."]
 
+[tool.pyright]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+extraPaths = ["."]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

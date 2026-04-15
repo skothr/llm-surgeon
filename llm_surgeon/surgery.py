@@ -542,24 +542,23 @@ def load_model(model_id: str, mode: str = "inspect") -> Tuple:
     if not is_local and _snapshot_dir(model_id, cache_kwargs.get("cache_dir")) is not None:
         os.environ["HF_HUB_OFFLINE"] = "1"
 
+    st_kwargs = {"use_safetensors": True} if _has_safetensors(model_id, cache_kwargs.get("cache_dir")) else {}
+
     if mode == "inspect":
         bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
         model = AutoModelForCausalLM.from_pretrained(
             model_id, quantization_config=bnb_config, device_map="auto",
-            use_safetensors=_has_safetensors(model_id, cache_kwargs.get("cache_dir")),
-            **cache_kwargs,
+            **st_kwargs, **cache_kwargs,
         )
     elif mode == "eval":
         model = AutoModelForCausalLM.from_pretrained(
             model_id, dtype=torch.float16, device_map="auto",
-            use_safetensors=_has_safetensors(model_id, cache_kwargs.get("cache_dir")),
-            **cache_kwargs,
+            **st_kwargs, **cache_kwargs,
         )
     elif mode == "export":
         model = AutoModelForCausalLM.from_pretrained(
             model_id, dtype=torch.float16, device_map="cpu",
-            use_safetensors=_has_safetensors(model_id, cache_kwargs.get("cache_dir")),
-            **cache_kwargs,
+            **st_kwargs, **cache_kwargs,
         )
 
     tokenizer = AutoTokenizer.from_pretrained(model_id, **cache_kwargs)

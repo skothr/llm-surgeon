@@ -457,6 +457,15 @@ def load_model(model_id: str, mode: str = "inspect") -> Tuple:
     is_local = os.path.isdir(model_id)
     cache_kwargs = {} if is_local else {"cache_dir": MODEL_CACHE_DIR}
 
+    # Check if model is already cached — if so, go offline to prevent
+    # unnecessary network requests (auto-conversion, telemetry, etc.)
+    if not is_local:
+        from pathlib import Path
+        cache_dir = Path(MODEL_CACHE_DIR)
+        slug = "models--" + model_id.replace("/", "--")
+        if (cache_dir / slug).exists():
+            os.environ["HF_HUB_OFFLINE"] = "1"
+
     if mode == "inspect":
         bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
         model = AutoModelForCausalLM.from_pretrained(
@@ -476,9 +485,7 @@ def load_model(model_id: str, mode: str = "inspect") -> Tuple:
 
     tokenizer = AutoTokenizer.from_pretrained(model_id, **cache_kwargs)
 
-    # Once we've successfully loaded, set offline mode so future loads
-    # in this process don't make network requests.
-    if not is_local:
-        os.environ["HF_HUB_OFFLINE"] = "1"
+    # Ensure offline mode for all subsequent loads in this process
+    os.environ["HF_HUB_OFFLINE"] = "1"
 
     return model, tokenizer

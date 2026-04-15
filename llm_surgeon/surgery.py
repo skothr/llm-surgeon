@@ -19,6 +19,86 @@ MODEL_CACHE_DIR = os.environ.get(
 )
 
 
+def _snapshot_dir(model_id: str, cache_dir: str | None = None) -> Path | None:
+    """Resolve the snapshot directory for a cached HF model."""
+    base = Path(cache_dir or MODEL_CACHE_DIR)
+    slug = "models--" + model_id.replace("/", "--")
+    model_dir = base / slug
+    if not model_dir.exists():
+        return None
+    refs = model_dir / "refs" / "main"
+    if refs.exists():
+        sha = refs.read_text().strip()
+        snap = model_dir / "snapshots" / sha
+        if snap.exists():
+            return snap
+    snapshots = model_dir / "snapshots"
+    if snapshots.exists():
+        children = sorted(snapshots.iterdir())
+        if children:
+            return children[-1]
+    return None
+
+
+def _has_safetensors(model_id: str, cache_dir: str | None = None) -> bool:
+    """Check if a cached model has safetensors files."""
+    if os.path.isdir(model_id):
+        return any(Path(model_id).glob("*.safetensors"))
+    snap = _snapshot_dir(model_id, cache_dir)
+    if snap is None:
+        return False
+    return any(snap.glob("*.safetensors"))
+
+
+def convert_to_safetensors(model_id: str, cache_dir: str | None = None) -> dict:
+    """Convert a cached model from .bin to safetensors format in-place.
+
+    Loads the model on CPU, saves as safetensors into the same snapshot
+    directory, then removes the old .bin files.
+
+    Returns dict with conversion stats.
+    """
+    snap = _snapshot_dir(model_id, cache_dir)
+    if snap is None:
+        raise ValueError(f"No cached snapshot found for '{model_id}'")
+    if any(snap.glob("*.safetensors")):
+        return {"status": "already_safetensors", "model_id": model_id}
+
+    bin_files = list(snap.glob("*.bin"))
+    if not bin_files:
+        raise ValueError(f"No .bin files found in {snap}")
+
+    old_offline = os.environ.get("HF_HUB_OFFLINE")
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            str(snap), torch_dtype=torch.float16, device_map="cpu",
+        )
+        model.save_pretrained(str(snap), safe_serialization=True)
+        del model
+    finally:
+        if old_offline is None:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = old_offline
+
+    bin_size = sum(f.stat().st_size for f in bin_files)
+    for f in bin_files:
+        f.unlink()
+
+    safetensor_files = list(snap.glob("*.safetensors"))
+    st_size = sum(f.stat().st_size for f in safetensor_files)
+
+    return {
+        "status": "converted",
+        "model_id": model_id,
+        "removed_bin_files": len(bin_files),
+        "removed_bin_mb": round(bin_size / 1e6, 1),
+        "safetensor_files": len(safetensor_files),
+        "safetensor_mb": round(st_size / 1e6, 1),
+    }
+
+
 @dataclass
 class SurgeryOp:
     """A single surgery operation record."""
@@ -459,27 +539,26 @@ def load_model(model_id: str, mode: str = "inspect") -> Tuple:
 
     # Check if model is already cached — if so, go offline to prevent
     # unnecessary network requests (auto-conversion, telemetry, etc.)
-    if not is_local:
-        from pathlib import Path
-        cache_dir = Path(MODEL_CACHE_DIR)
-        slug = "models--" + model_id.replace("/", "--")
-        if (cache_dir / slug).exists():
-            os.environ["HF_HUB_OFFLINE"] = "1"
+    if not is_local and _snapshot_dir(model_id, cache_kwargs.get("cache_dir")) is not None:
+        os.environ["HF_HUB_OFFLINE"] = "1"
 
     if mode == "inspect":
         bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
         model = AutoModelForCausalLM.from_pretrained(
             model_id, quantization_config=bnb_config, device_map="auto",
+            use_safetensors=_has_safetensors(model_id, cache_kwargs.get("cache_dir")),
             **cache_kwargs,
         )
     elif mode == "eval":
         model = AutoModelForCausalLM.from_pretrained(
             model_id, dtype=torch.float16, device_map="auto",
+            use_safetensors=_has_safetensors(model_id, cache_kwargs.get("cache_dir")),
             **cache_kwargs,
         )
     elif mode == "export":
         model = AutoModelForCausalLM.from_pretrained(
             model_id, dtype=torch.float16, device_map="cpu",
+            use_safetensors=_has_safetensors(model_id, cache_kwargs.get("cache_dir")),
             **cache_kwargs,
         )
 

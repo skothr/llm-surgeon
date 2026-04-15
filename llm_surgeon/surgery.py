@@ -560,9 +560,11 @@ def load_model(model_id: str, mode: str = "inspect") -> Tuple:
         )
     elif mode == "eval":
         model = AutoModelForCausalLM.from_pretrained(
-            load_id, dtype=torch.float16, device_map="auto",
+            load_id, torch_dtype=torch.float16,
             **load_kwargs,
         )
+        if torch.cuda.is_available():
+            model = model.to("cuda:0")
     elif mode == "export":
         model = AutoModelForCausalLM.from_pretrained(
             load_id, dtype=torch.float16, device_map="cpu",

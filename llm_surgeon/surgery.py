@@ -542,26 +542,35 @@ def load_model(model_id: str, mode: str = "inspect") -> Tuple:
     if not is_local and _snapshot_dir(model_id, cache_kwargs.get("cache_dir")) is not None:
         os.environ["HF_HUB_OFFLINE"] = "1"
 
-    st_kwargs = {"use_safetensors": True} if _has_safetensors(model_id, cache_kwargs.get("cache_dir")) else {}
+    # If safetensors exist in the snapshot, load from the snapshot directory
+    # directly — the hub cache resolver doesn't know about converted files.
+    snap = _snapshot_dir(model_id, cache_kwargs.get("cache_dir"))
+    if snap and _has_safetensors(model_id, cache_kwargs.get("cache_dir")):
+        load_id = str(snap)
+        load_kwargs = {"use_safetensors": True}
+    else:
+        load_id = model_id
+        load_kwargs = dict(cache_kwargs)
 
     if mode == "inspect":
         bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
         model = AutoModelForCausalLM.from_pretrained(
-            model_id, quantization_config=bnb_config, device_map="auto",
-            **st_kwargs, **cache_kwargs,
+            load_id, quantization_config=bnb_config, device_map="auto",
+            **load_kwargs,
         )
     elif mode == "eval":
         model = AutoModelForCausalLM.from_pretrained(
-            model_id, dtype=torch.float16, device_map="auto",
-            **st_kwargs, **cache_kwargs,
+            load_id, dtype=torch.float16, device_map="auto",
+            **load_kwargs,
         )
     elif mode == "export":
         model = AutoModelForCausalLM.from_pretrained(
-            model_id, dtype=torch.float16, device_map="cpu",
-            **st_kwargs, **cache_kwargs,
+            load_id, dtype=torch.float16, device_map="cpu",
+            **load_kwargs,
         )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id, **cache_kwargs)
+    tok_id = str(snap) if snap else model_id
+    tokenizer = AutoTokenizer.from_pretrained(tok_id, **({} if snap else cache_kwargs))
 
     # Ensure offline mode for all subsequent loads in this process
     os.environ["HF_HUB_OFFLINE"] = "1"

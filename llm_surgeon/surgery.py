@@ -526,26 +526,49 @@ def _is_ollama_id(model_id: str) -> bool:
 
 
 def _quantize_in_place(model, bnb_config):
-    """Re-load an in-memory model with BitsAndBytes quantization.
+    """Quantize an in-memory model's Linear layers with BitsAndBytes.
 
-    Saves to a temp directory and reloads with the given quantization config.
-    The temp directory is cleaned up after loading.
+    Wraps each nn.Linear weight as a BnB Params4bit/Int8Params, then moves
+    to GPU (which triggers quantization). No disk round-trip needed.
     """
-    import shutil
-    import tempfile
-    from transformers import AutoModelForCausalLM
-    tmpdir = tempfile.mkdtemp(prefix="gguf_quant_")
-    try:
-        model.save_pretrained(tmpdir)
-        del model
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        return AutoModelForCausalLM.from_pretrained(
-            tmpdir, quantization_config=bnb_config, device_map="auto",
-        )
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+    import bitsandbytes as bnb
+    is_4bit = getattr(bnb_config, "load_in_4bit", False)
+    quant_type = getattr(bnb_config, "bnb_4bit_quant_type", "nf4")
+    compute_dtype = getattr(bnb_config, "bnb_4bit_compute_dtype", torch.float16)
+
+    for name, module in list(model.named_modules()):
+        if not isinstance(module, nn.Linear):
+            continue
+        parent_name, attr = name.rsplit(".", 1) if "." in name else ("", name)
+        parent = model.get_submodule(parent_name) if parent_name else model
+
+        w = module.weight.data
+        bias_data = module.bias.data if module.bias is not None else None
+
+        if is_4bit:
+            new_mod = bnb.nn.Linear4bit(
+                module.in_features, module.out_features,
+                bias=module.bias is not None,
+                compute_dtype=compute_dtype, quant_type=quant_type,
+            )
+            new_mod.weight = bnb.nn.Params4bit(
+                w, requires_grad=False, quant_type=quant_type,
+                compress_statistics=True,
+            )
+        else:
+            new_mod = bnb.nn.Linear8bitLt(
+                module.in_features, module.out_features,
+                bias=module.bias is not None, has_fp16_weights=False,
+            )
+            new_mod.weight = bnb.nn.Int8Params(w, requires_grad=False)
+
+        if bias_data is not None:
+            new_mod.bias = nn.Parameter(bias_data)
+        setattr(parent, attr, new_mod)
+
+    model = model.to("cuda:0")
+    model.eval()
+    return model
 
 
 _MODE_ALIASES = {"inspect": "nf4", "eval": "fp16", "export": "fp32-cpu"}

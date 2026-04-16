@@ -260,3 +260,28 @@ class TestExportHfToGguf:
             with GGUFFile(out_path) as g:
                 assert g.architecture == "llama"
                 assert len(g.tensor_infos) > 0
+
+    def test_exported_tokenizer_metadata(self):
+        """Exported GGUF carries chat_template, byte-typed byte tokens, and merges."""
+        from llm_surgeon.llama_engine import export_hf_to_gguf
+        from llm_surgeon.surgery import load_model
+        from llm_surgeon.gguf_reader import GGUFFile
+
+        model, tokenizer = load_model("tinyllama:latest", mode="fp32")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = Path(tmpdir) / "exported.gguf"
+            export_hf_to_gguf(model, tokenizer, out_path)
+
+            with GGUFFile(out_path) as g:
+                meta = g.metadata
+                assert meta.get("tokenizer.chat_template"), "chat_template missing"
+                token_types = meta.get("tokenizer.ggml.token_type")
+                assert token_types is not None
+                # TinyLlama has 256 byte tokens <0x00>..<0xFF> in the base vocab.
+                # Before this fix, all were tagged type 1 (normal); now they should be 6 (byte).
+                byte_type_count = sum(1 for t in token_types if t == 6)
+                assert byte_type_count >= 256, f"expected ≥256 byte-typed tokens, got {byte_type_count}"
+                # Merges are present for BPE-backed fast tokenizers.
+                merges = meta.get("tokenizer.ggml.merges")
+                assert merges is not None and len(merges) > 0

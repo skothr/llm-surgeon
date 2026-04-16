@@ -275,6 +275,133 @@ _HF_TO_GGUF_LAYER = {
 }
 
 
+import re as _re
+
+_BYTE_TOKEN_RE = _re.compile(r"^<0x([0-9A-Fa-f]{2})>$")
+
+
+def _tokenizer_json(tokenizer):
+    """Parse the HF fast tokenizer's serialized JSON, or None if unavailable."""
+    if not getattr(tokenizer, "is_fast", False):
+        return None
+    try:
+        import json as _json
+        return _json.loads(tokenizer.backend_tokenizer.to_str())
+    except Exception:
+        return None
+
+
+def _detect_tokenizer_style(tok_json: dict | None) -> str:
+    """Classify tokenizer as 'llama' (SentencePiece-style) or 'gpt2' (BPE-style).
+
+    Both internally use BPE in HF fast tokenizers, but they differ in how
+    whitespace is handled: SentencePiece uses a Metaspace pre-tokenizer
+    (▁-prefixed tokens), BPE/GPT-2 uses a ByteLevel pre-tokenizer.
+    """
+    if tok_json is None:
+        return "llama"
+    pre = tok_json.get("pre_tokenizer") or {}
+    pre_type = pre.get("type", "")
+    if pre_type == "Sequence":
+        children = [p.get("type", "") for p in pre.get("pretokenizers", [])]
+        if any(t == "ByteLevel" for t in children):
+            return "gpt2"
+        if any(t == "Metaspace" for t in children):
+            return "llama"
+    if pre_type == "ByteLevel":
+        return "gpt2"
+    if pre_type == "Metaspace":
+        return "llama"
+    return "llama"
+
+
+def _classify_token_type(tok_str: str, special_token_strs: set[str]) -> int:
+    """Map a token string to the GGUF token_type code.
+
+    1 = normal, 2 = unknown, 3 = control, 6 = byte.
+    """
+    if _BYTE_TOKEN_RE.match(tok_str):
+        return 6
+    if tok_str in special_token_strs:
+        return 3
+    return 1
+
+
+def _write_tokenizer(writer, tokenizer) -> None:
+    """Write vocab, merges (if BPE-style), scores, types, and specials to GGUF.
+
+    Handles both SentencePiece-style ("llama") and GPT-2-style ("gpt2")
+    tokenizers; picks the right tokenizer_model based on the fast
+    tokenizer's pre-tokenizer.
+    """
+    vocab = tokenizer.get_vocab()
+    tokens = [""] * len(vocab)
+    for tok, idx in vocab.items():
+        if 0 <= idx < len(tokens):
+            tokens[idx] = tok
+
+    tok_json = _tokenizer_json(tokenizer)
+    style = _detect_tokenizer_style(tok_json)
+    writer.add_tokenizer_model(style)
+    writer.add_token_list(tokens)
+
+    # Collect special-token strings so we can tag them as control (type 3).
+    special_strs: set[str] = set()
+    for attr in ("bos_token", "eos_token", "pad_token", "unk_token", "sep_token", "cls_token", "mask_token"):
+        v = getattr(tokenizer, attr, None)
+        if isinstance(v, str):
+            special_strs.add(v)
+    if hasattr(tokenizer, "additional_special_tokens"):
+        for v in tokenizer.additional_special_tokens or []:
+            if isinstance(v, str):
+                special_strs.add(v)
+
+    # BPE merges live in tokenizer.json under model.merges. Unigram/SP-style
+    # llama.cpp runtimes ignore merges, so writing them is harmless, but the
+    # gpt2 runtime *requires* them.
+    merges: list[str] = []
+    if tok_json is not None:
+        mdl = tok_json.get("model") or {}
+        raw_merges = mdl.get("merges") or []
+        for m in raw_merges:
+            if isinstance(m, list):
+                merges.append(" ".join(m))
+            elif isinstance(m, str):
+                merges.append(m)
+    if merges:
+        writer.add_token_merges(merges)
+    elif style == "gpt2":
+        log.warning("GPT-2-style tokenizer detected but no merges found; "
+                    "exported GGUF may fail to tokenize correctly.")
+
+    scores = [0.0] * len(tokens)
+    token_types = [_classify_token_type(t, special_strs) for t in tokens]
+    writer.add_token_scores(scores)
+    writer.add_token_types(token_types)
+
+    if getattr(tokenizer, "bos_token_id", None) is not None:
+        writer.add_bos_token_id(tokenizer.bos_token_id)
+    if getattr(tokenizer, "eos_token_id", None) is not None:
+        writer.add_eos_token_id(tokenizer.eos_token_id)
+    if getattr(tokenizer, "pad_token_id", None) is not None:
+        try:
+            writer.add_pad_token_id(tokenizer.pad_token_id)
+        except Exception:
+            pass
+    if getattr(tokenizer, "unk_token_id", None) is not None:
+        try:
+            writer.add_unk_token_id(tokenizer.unk_token_id)
+        except Exception:
+            pass
+
+    chat_template = getattr(tokenizer, "chat_template", None)
+    if isinstance(chat_template, str) and chat_template.strip():
+        try:
+            writer.add_chat_template(chat_template)
+        except Exception:
+            log.exception("Failed to write chat_template")
+
+
 def export_hf_to_gguf(model, tokenizer, output_path: Path) -> Path:
     """Export a HuggingFace LlamaForCausalLM to F16 GGUF.
 
@@ -308,33 +435,7 @@ def export_hf_to_gguf(model, tokenizer, output_path: Path) -> Path:
     writer.add_rope_dimension_count(head_dim)
     writer.add_file_type(gguf.GGMLQuantizationType.F16)
 
-    vocab = tokenizer.get_vocab()
-    tokens = [""] * len(vocab)
-    for tok, idx in vocab.items():
-        if idx < len(tokens):
-            tokens[idx] = tok
-    writer.add_tokenizer_model("llama")
-    writer.add_token_list(tokens)
-
-    scores = [0.0] * len(tokens)
-    token_types = [1] * len(tokens)  # 1 = normal
-    if hasattr(tokenizer, "get_added_vocab"):
-        added = tokenizer.get_added_vocab()
-        for tok_str, idx in added.items():
-            if idx < len(token_types):
-                if tok_str.startswith("<0x"):
-                    token_types[idx] = 6  # byte
-                elif tok_str in ("<unk>",):
-                    token_types[idx] = 2  # unknown
-                elif tok_str in ("<s>", "</s>"):
-                    token_types[idx] = 3  # control
-    writer.add_token_scores(scores)
-    writer.add_token_types(token_types)
-
-    if hasattr(tokenizer, "bos_token_id") and tokenizer.bos_token_id is not None:
-        writer.add_bos_token_id(tokenizer.bos_token_id)
-    if hasattr(tokenizer, "eos_token_id") and tokenizer.eos_token_id is not None:
-        writer.add_eos_token_id(tokenizer.eos_token_id)
+    _write_tokenizer(writer, tokenizer)
 
     state_dict = model.state_dict()
     for hf_name, param in state_dict.items():

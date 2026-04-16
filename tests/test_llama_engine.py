@@ -102,3 +102,40 @@ class TestLlamaEngineCore:
 
     def test_n_vocab(self, engine):
         assert engine.n_vocab == 32000
+
+
+@pytest.mark.skipif(not TINYLLAMA_EXISTS, reason="tinyllama not in Ollama")
+class TestLlamaEngineLogits:
+    @pytest.fixture(scope="class")
+    def engine(self):
+        blob = resolve_ollama_blob("tinyllama:latest")
+        eng = LlamaEngine(blob, n_ctx=128)
+        yield eng
+        eng.close()
+
+    def test_logits_shape(self, engine):
+        tokens = engine.tokenize("The capital of France is")
+        result = engine.logits(tokens)
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (32000,)
+        assert result.dtype == np.float32
+
+    def test_logits_predicts_paris(self, engine):
+        tokens = engine.tokenize("The capital of France is")
+        result = engine.logits(tokens)
+        top_id = int(np.argmax(result))
+        top_token = engine.detokenize([top_id])
+        assert "Paris" in top_token
+
+    def test_logits_all_shape(self, engine):
+        tokens = engine.tokenize("Hello world")
+        result = engine.logits_all(tokens)
+        assert isinstance(result, list)
+        assert len(result) == len(tokens)
+        assert all(arr.shape == (32000,) for arr in result)
+
+    def test_logits_all_last_matches_logits(self, engine):
+        tokens = engine.tokenize("Test prompt")
+        single = engine.logits(tokens)
+        all_logits = engine.logits_all(tokens)
+        np.testing.assert_allclose(single, all_logits[-1], atol=1e-4)

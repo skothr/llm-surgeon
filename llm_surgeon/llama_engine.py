@@ -116,3 +116,15 @@ class LlamaEngine:
 
     def detokenize(self, tokens: list[int]) -> str:
         return self._llm.detokenize(tokens).decode("utf-8", errors="replace")
+
+    def logits(self, tokens: list[int]) -> np.ndarray:
+        """Full vocab logits for the last token position. Shape: (n_vocab,)"""
+        self._llm.reset()
+        self._llm.eval(tokens)
+        return np.array(self._llm.eval_logits[-1], dtype=np.float32)
+
+    def logits_all(self, tokens: list[int]) -> list[np.ndarray]:
+        """Full vocab logits for every position. List of (n_vocab,) arrays."""
+        self._llm.reset()
+        self._llm.eval(tokens)
+        return [np.array(row, dtype=np.float32) for row in self._llm.eval_logits]

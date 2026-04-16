@@ -139,3 +139,48 @@ class TestLlamaEngineLogits:
         single = engine.logits(tokens)
         all_logits = engine.logits_all(tokens)
         np.testing.assert_allclose(single, all_logits[-1], atol=1e-4)
+
+
+@pytest.mark.skipif(not TINYLLAMA_EXISTS, reason="tinyllama not in Ollama")
+class TestLlamaEngineGenerate:
+    @pytest.fixture(scope="class")
+    def engine(self):
+        blob = resolve_ollama_blob("tinyllama:latest")
+        eng = LlamaEngine(blob, n_ctx=128)
+        yield eng
+        eng.close()
+
+    def test_generate_yields_steps(self, engine):
+        tokens = engine.tokenize("The capital of France is")
+        steps = list(engine.generate(tokens, max_tokens=5, temperature=0))
+        assert len(steps) >= 1
+        assert all(isinstance(s, GenerateStep) for s in steps)
+
+    def test_generate_step_fields(self, engine):
+        tokens = engine.tokenize("Hello")
+        steps = list(engine.generate(tokens, max_tokens=1, temperature=0))
+        step = steps[0]
+        assert isinstance(step.token_id, int)
+        assert isinstance(step.token_str, str)
+
+    def test_generate_without_logits(self, engine):
+        tokens = engine.tokenize("Hello")
+        steps = list(engine.generate(tokens, max_tokens=1, temperature=0, emit_logits=False))
+        assert steps[0].logits is None
+
+    def test_generate_with_logits(self, engine):
+        tokens = engine.tokenize("Hello")
+        steps = list(engine.generate(tokens, max_tokens=1, temperature=0, emit_logits=True))
+        assert steps[0].logits is not None
+        assert steps[0].logits.shape == (32000,)
+
+    def test_generate_stops_at_max_tokens(self, engine):
+        tokens = engine.tokenize("Once upon a time")
+        steps = list(engine.generate(tokens, max_tokens=3, temperature=0.8))
+        assert len(steps) <= 3
+
+    def test_generate_greedy_deterministic(self, engine):
+        tokens = engine.tokenize("The capital of France is")
+        steps1 = list(engine.generate(tokens, max_tokens=3, temperature=0))
+        steps2 = list(engine.generate(tokens, max_tokens=3, temperature=0))
+        assert [s.token_id for s in steps1] == [s.token_id for s in steps2]

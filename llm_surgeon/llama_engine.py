@@ -128,3 +128,67 @@ class LlamaEngine:
         self._llm.reset()
         self._llm.eval(tokens)
         return [np.array(row, dtype=np.float32) for row in self._llm.eval_logits]
+
+    def generate(
+        self,
+        tokens: list[int],
+        max_tokens: int = 128,
+        temperature: float = 0.7,
+        top_k: int = 40,
+        top_p: float = 0.9,
+        repetition_penalty: float = 1.0,
+        stop_sequences: list[str] | None = None,
+        emit_logits: bool = True,
+    ) -> Iterator[GenerateStep]:
+        """Streaming token generation. Greedy when temperature=0."""
+        self._llm.reset()
+        self._llm.eval(tokens)
+
+        generated_ids: list[int] = []
+        generated_text = ""
+
+        for _ in range(max_tokens):
+            logits_arr = np.array(self._llm.eval_logits[-1], dtype=np.float32)
+
+            if repetition_penalty != 1.0:
+                for tid in set(tokens + generated_ids):
+                    if logits_arr[tid] > 0:
+                        logits_arr[tid] /= repetition_penalty
+                    else:
+                        logits_arr[tid] *= repetition_penalty
+
+            if temperature == 0:
+                next_id = int(np.argmax(logits_arr))
+            else:
+                scaled = logits_arr / temperature
+                if top_k > 0:
+                    threshold = np.partition(scaled, -top_k)[-top_k]
+                    scaled[scaled < threshold] = -np.inf
+                probs = np.exp(scaled - scaled.max())
+                probs /= probs.sum()
+                if top_p < 1.0:
+                    sorted_idx = np.argsort(-probs)
+                    cum = np.cumsum(probs[sorted_idx])
+                    cutoff = np.searchsorted(cum, top_p) + 1
+                    mask = np.ones_like(probs, dtype=bool)
+                    mask[sorted_idx[:cutoff]] = False
+                    probs[mask] = 0.0
+                    probs /= probs.sum()
+                next_id = int(np.random.choice(len(probs), p=probs))
+
+            token_str = self.detokenize([next_id])
+            generated_ids.append(next_id)
+            generated_text += token_str
+
+            yield GenerateStep(
+                token_id=next_id,
+                token_str=token_str,
+                logits=logits_arr if emit_logits else None,
+            )
+
+            if next_id == self._llm.token_eos():
+                break
+            if stop_sequences and any(s in generated_text for s in stop_sequences):
+                break
+
+            self._llm.eval([next_id])

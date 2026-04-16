@@ -111,23 +111,35 @@ class LlamaEngine:
     def __del__(self):
         self.close()
 
+    def _require_loaded(self):
+        if self._llm is None:
+            raise RuntimeError("LlamaEngine is closed")
+
     def tokenize(self, text: str, add_bos: bool = True) -> list[int]:
-        return self._llm.tokenize(text.encode("utf-8"), add_bos=add_bos)
+        self._require_loaded()
+        return self._llm.tokenize(text.encode("utf-8"), add_bos=add_bos)  # type: ignore[union-attr]
 
     def detokenize(self, tokens: list[int]) -> str:
-        return self._llm.detokenize(tokens).decode("utf-8", errors="replace")
+        self._require_loaded()
+        return self._llm.detokenize(tokens).decode("utf-8", errors="replace")  # type: ignore[union-attr]
 
     def logits(self, tokens: list[int]) -> np.ndarray:
         """Full vocab logits for the last token position. Shape: (n_vocab,)"""
-        self._llm.reset()
-        self._llm.eval(tokens)
-        return np.array(self._llm.eval_logits[-1], dtype=np.float32)
+        self._require_loaded()
+        assert self._llm is not None
+        llm = self._llm
+        llm.reset()
+        llm.eval(tokens)
+        return np.array(llm.eval_logits[-1], dtype=np.float32)
 
     def logits_all(self, tokens: list[int]) -> list[np.ndarray]:
         """Full vocab logits for every position. List of (n_vocab,) arrays."""
-        self._llm.reset()
-        self._llm.eval(tokens)
-        return [np.array(row, dtype=np.float32) for row in self._llm.eval_logits]
+        self._require_loaded()
+        assert self._llm is not None
+        llm = self._llm
+        llm.reset()
+        llm.eval(tokens)
+        return [np.array(row, dtype=np.float32) for row in llm.eval_logits]
 
     def generate(
         self,
@@ -141,14 +153,17 @@ class LlamaEngine:
         emit_logits: bool = True,
     ) -> Iterator[GenerateStep]:
         """Streaming token generation. Greedy when temperature=0."""
-        self._llm.reset()
-        self._llm.eval(tokens)
+        self._require_loaded()
+        assert self._llm is not None
+        llm = self._llm
+        llm.reset()
+        llm.eval(tokens)
 
         generated_ids: list[int] = []
         generated_text = ""
 
         for _ in range(max_tokens):
-            logits_arr = np.array(self._llm.eval_logits[-1], dtype=np.float32)
+            logits_arr = np.array(llm.eval_logits[-1], dtype=np.float32)
 
             if repetition_penalty != 1.0:
                 for tid in set(tokens + generated_ids):
@@ -186,12 +201,12 @@ class LlamaEngine:
                 logits=logits_arr if emit_logits else None,
             )
 
-            if next_id == self._llm.token_eos():
+            if next_id == llm.token_eos():
                 break
             if stop_sequences and any(s in generated_text for s in stop_sequences):
                 break
 
-            self._llm.eval([next_id])
+            llm.eval([next_id])
 
     def perplexity(self, text: str) -> float:
         """Compute perplexity: exp(-1/N * sum(log P(token_i | context)))."""
@@ -199,8 +214,11 @@ class LlamaEngine:
         if len(tokens) < 2:
             return float("inf")
 
-        self._llm.reset()
-        self._llm.eval(tokens)
+        self._require_loaded()
+        assert self._llm is not None
+        llm = self._llm
+        llm.reset()
+        llm.eval(tokens)
 
         nll_sum = 0.0
         count = 0

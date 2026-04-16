@@ -5,11 +5,14 @@ GGUF models, plus export_hf_to_gguf for re-exporting modified HF models
 back to GGUF format.
 """
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
 import numpy as np
+
+log = logging.getLogger("llm_surgeon.llama_engine")
 
 
 @dataclass
@@ -52,3 +55,64 @@ def compare_logits(
         "mean_logit_diff": float(diff.mean()),
         "top_k_agreement": len(top_a & top_b),
     }
+
+
+class LlamaEngine:
+    """Native GGUF inference via llama-cpp-python.
+
+    Wraps llama_cpp.Llama for fast generation, logit extraction,
+    and perplexity scoring on quantized GGUF models.
+    """
+
+    def __init__(
+        self,
+        gguf_path: Path,
+        n_gpu_layers: int = -1,
+        n_ctx: int = 2048,
+    ):
+        from llama_cpp import Llama
+
+        self._path = Path(gguf_path)
+        log.info("Loading GGUF via llama.cpp: %s", self._path.name)
+        self._llm = Llama(
+            model_path=str(self._path),
+            n_gpu_layers=n_gpu_layers,
+            logits_all=True,
+            n_ctx=n_ctx,
+            verbose=False,
+        )
+        self._n_vocab = self._llm.n_vocab()
+        log.info("LlamaEngine ready: %d vocab, ctx=%d", self._n_vocab, n_ctx)
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._llm is not None
+
+    @property
+    def n_vocab(self) -> int:
+        return self._n_vocab
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def close(self) -> None:
+        if self._llm is not None:
+            del self._llm
+            self._llm = None
+            log.info("LlamaEngine closed")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def __del__(self):
+        self.close()
+
+    def tokenize(self, text: str, add_bos: bool = True) -> list[int]:
+        return self._llm.tokenize(text.encode("utf-8"), add_bos=add_bos)
+
+    def detokenize(self, tokens: list[int]) -> str:
+        return self._llm.detokenize(tokens).decode("utf-8", errors="replace")

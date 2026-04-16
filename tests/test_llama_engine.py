@@ -48,3 +48,57 @@ class TestGenerateStep:
         step = GenerateStep(token_id=1, token_str="a", logits=logits)
         assert step.logits is not None
         assert step.logits.shape == (100,)
+
+
+from pathlib import Path
+from llm_surgeon.llama_engine import LlamaEngine
+from llm_surgeon.gguf_reader import resolve_ollama_blob
+
+OLLAMA_DIR = Path("/usr/share/ollama/.ollama/models")
+TINYLLAMA_EXISTS = (
+    OLLAMA_DIR / "manifests/registry.ollama.ai/library/tinyllama/latest"
+).exists()
+
+
+@pytest.mark.skipif(not TINYLLAMA_EXISTS, reason="tinyllama not in Ollama")
+class TestLlamaEngineCore:
+    @pytest.fixture
+    def engine(self):
+        blob = resolve_ollama_blob("tinyllama:latest")
+        eng = LlamaEngine(blob, n_ctx=128)
+        yield eng
+        eng.close()
+
+    def test_is_loaded(self, engine):
+        assert engine.is_loaded
+
+    def test_close(self):
+        blob = resolve_ollama_blob("tinyllama:latest")
+        eng = LlamaEngine(blob, n_ctx=128)
+        eng.close()
+        assert not eng.is_loaded
+
+    def test_context_manager(self):
+        blob = resolve_ollama_blob("tinyllama:latest")
+        with LlamaEngine(blob, n_ctx=128) as eng:
+            assert eng.is_loaded
+        assert not eng.is_loaded
+
+    def test_tokenize(self, engine):
+        tokens = engine.tokenize("Hello world")
+        assert isinstance(tokens, list)
+        assert all(isinstance(t, int) for t in tokens)
+        assert tokens[0] == 1  # BOS token
+
+    def test_tokenize_no_bos(self, engine):
+        tokens = engine.tokenize("Hello world", add_bos=False)
+        assert tokens[0] != 1
+
+    def test_detokenize(self, engine):
+        tokens = engine.tokenize("Hello world")
+        text = engine.detokenize(tokens)
+        assert "Hello" in text
+        assert "world" in text
+
+    def test_n_vocab(self, engine):
+        assert engine.n_vocab == 32000

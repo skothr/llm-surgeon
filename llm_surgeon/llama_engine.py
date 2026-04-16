@@ -97,7 +97,7 @@ class LlamaEngine:
         return self._path
 
     def close(self) -> None:
-        if self._llm is not None:
+        if getattr(self, "_llm", None) is not None:
             del self._llm
             self._llm = None
             log.info("LlamaEngine closed")
@@ -229,3 +229,130 @@ class LlamaEngine:
             count += 1
 
         return float(np.exp(nll_sum / count))
+
+
+def _forward_permute(t: np.ndarray, n_head: int, n_kv_heads: int) -> np.ndarray:
+    """Apply the Q/K head interleaving that llama.cpp expects.
+
+    Inverse of gguf_reader._reverse_permute. Must be applied to Q and K
+    weight matrices when writing GGUF from HuggingFace format.
+    """
+    n = n_kv_heads if n_head != n_kv_heads else n_head
+    dim = t.shape[0] // n // 2
+    return t.reshape(n, 2, dim, *t.shape[1:]).swapaxes(1, 2).reshape(t.shape)
+
+
+_HF_TO_GGUF_GLOBAL = {
+    "model.embed_tokens.weight": "token_embd.weight",
+    "model.norm.weight": "output_norm.weight",
+    "lm_head.weight": "output.weight",
+}
+
+_HF_TO_GGUF_LAYER = {
+    "input_layernorm.weight": "attn_norm.weight",
+    "post_attention_layernorm.weight": "ffn_norm.weight",
+    "self_attn.q_proj.weight": "attn_q.weight",
+    "self_attn.k_proj.weight": "attn_k.weight",
+    "self_attn.v_proj.weight": "attn_v.weight",
+    "self_attn.o_proj.weight": "attn_output.weight",
+    "mlp.gate_proj.weight": "ffn_gate.weight",
+    "mlp.up_proj.weight": "ffn_up.weight",
+    "mlp.down_proj.weight": "ffn_down.weight",
+}
+
+
+def export_hf_to_gguf(model, tokenizer, output_path: Path) -> Path:
+    """Export a HuggingFace LlamaForCausalLM to F16 GGUF.
+
+    Writes metadata, tokenizer, and all weights as F16 tensors using
+    gguf.GGUFWriter. Q and K matrices are forward-permuted to match
+    the layout llama.cpp expects.
+    """
+    import gguf
+
+    output_path = Path(output_path)
+    config = model.config
+    n_heads = config.num_attention_heads
+    n_kv_heads = config.num_key_value_heads
+
+    writer = gguf.GGUFWriter(str(output_path), arch="llama")
+
+    writer.add_block_count(config.num_hidden_layers)
+    writer.add_embedding_length(config.hidden_size)
+    writer.add_head_count(n_heads)
+    writer.add_head_count_kv(n_kv_heads)
+    writer.add_feed_forward_length(config.intermediate_size)
+    writer.add_context_length(config.max_position_embeddings)
+    writer.add_vocab_size(config.vocab_size)
+    if hasattr(config, "rms_norm_eps"):
+        writer.add_layer_norm_rms_eps(config.rms_norm_eps)
+    rope_theta = getattr(config, "rope_theta", None) or 10000.0
+    writer.add_rope_freq_base(rope_theta)
+    head_dim = config.hidden_size // n_heads
+    writer.add_rope_dimension_count(head_dim)
+    writer.add_file_type(gguf.GGMLQuantizationType.F16)
+
+    vocab = tokenizer.get_vocab()
+    tokens = [""] * len(vocab)
+    for tok, idx in vocab.items():
+        if idx < len(tokens):
+            tokens[idx] = tok
+    writer.add_tokenizer_model("llama")
+    writer.add_token_list(tokens)
+
+    scores = [0.0] * len(tokens)
+    token_types = [1] * len(tokens)  # 1 = normal
+    if hasattr(tokenizer, "get_added_vocab"):
+        added = tokenizer.get_added_vocab()
+        for tok_str, idx in added.items():
+            if idx < len(token_types):
+                if tok_str.startswith("<0x"):
+                    token_types[idx] = 6  # byte
+                elif tok_str in ("<unk>",):
+                    token_types[idx] = 2  # unknown
+                elif tok_str in ("<s>", "</s>"):
+                    token_types[idx] = 3  # control
+    writer.add_token_scores(scores)
+    writer.add_token_types(token_types)
+
+    if hasattr(tokenizer, "bos_token_id") and tokenizer.bos_token_id is not None:
+        writer.add_bos_token_id(tokenizer.bos_token_id)
+    if hasattr(tokenizer, "eos_token_id") and tokenizer.eos_token_id is not None:
+        writer.add_eos_token_id(tokenizer.eos_token_id)
+
+    state_dict = model.state_dict()
+    for hf_name, param in state_dict.items():
+        arr = param.float().cpu().numpy()
+
+        if hf_name in _HF_TO_GGUF_GLOBAL:
+            gguf_name = _HF_TO_GGUF_GLOBAL[hf_name]
+        elif hf_name.startswith("model.layers."):
+            parts = hf_name.split(".", 3)
+            layer_idx = parts[2]
+            suffix = parts[3]
+            gguf_suffix = _HF_TO_GGUF_LAYER.get(suffix)
+            if gguf_suffix is None:
+                log.debug("Skipping unmapped tensor: %s", hf_name)
+                continue
+            gguf_name = f"blk.{layer_idx}.{gguf_suffix}"
+        else:
+            log.debug("Skipping unmapped tensor: %s", hf_name)
+            continue
+
+        if ".attn_q." in gguf_name:
+            arr = _forward_permute(arr, n_heads, n_heads)
+        elif ".attn_k." in gguf_name:
+            arr = _forward_permute(arr, n_heads, n_kv_heads)
+
+        if arr.ndim == 1:
+            writer.add_tensor(gguf_name, arr.astype(np.float32))
+        else:
+            writer.add_tensor(gguf_name, arr.astype(np.float16))
+
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file(progress=False)
+    writer.close()
+
+    log.info("Exported F16 GGUF: %s (%.1f MB)", output_path, output_path.stat().st_size / 1e6)
+    return output_path

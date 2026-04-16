@@ -205,3 +205,58 @@ class TestLlamaEnginePerplexity:
         coherent = engine.perplexity("The weather today is sunny and warm.")
         garbage = engine.perplexity("xkcd plonk wibble zarg fleem quux narf.")
         assert coherent < garbage
+
+
+import tempfile
+
+
+@pytest.mark.skipif(not TINYLLAMA_EXISTS, reason="tinyllama not in Ollama")
+class TestExportHfToGguf:
+    def test_round_trip_logits(self):
+        """Load GGUF -> dequant to PyTorch -> export back -> reload -> compare logits."""
+        import gc
+        import torch
+        from llm_surgeon.llama_engine import export_hf_to_gguf
+        from llm_surgeon.surgery import load_model
+
+        model, tokenizer = load_model("tinyllama:latest", mode="fp32")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = Path(tmpdir) / "exported.gguf"
+            export_hf_to_gguf(model, tokenizer, out_path)
+
+            assert out_path.exists()
+            assert out_path.stat().st_size > 1e6
+
+            del model, tokenizer
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            with LlamaEngine(out_path, n_ctx=128) as eng:
+                tokens = eng.tokenize("The capital of France is")
+                logits_exported = eng.logits(tokens)
+
+            blob = resolve_ollama_blob("tinyllama:latest")
+            with LlamaEngine(blob, n_ctx=128) as eng_orig:
+                tokens_orig = eng_orig.tokenize("The capital of France is")
+                logits_original = eng_orig.logits(tokens_orig)
+
+            result = compare_logits(logits_original, logits_exported)
+            assert result["cosine_similarity"] > 0.99
+            assert result["top_k_agreement"] >= 8
+
+    def test_exported_file_is_valid_gguf(self):
+        """Verify the exported file can be parsed as GGUF."""
+        from llm_surgeon.llama_engine import export_hf_to_gguf
+        from llm_surgeon.surgery import load_model
+        from llm_surgeon.gguf_reader import GGUFFile
+
+        model, tokenizer = load_model("tinyllama:latest", mode="fp32")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = Path(tmpdir) / "exported.gguf"
+            export_hf_to_gguf(model, tokenizer, out_path)
+
+            with GGUFFile(out_path) as g:
+                assert g.architecture == "llama"
+                assert len(g.tensor_infos) > 0

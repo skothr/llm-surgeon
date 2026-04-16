@@ -184,3 +184,24 @@ class TestLlamaEngineGenerate:
         steps1 = list(engine.generate(tokens, max_tokens=3, temperature=0))
         steps2 = list(engine.generate(tokens, max_tokens=3, temperature=0))
         assert [s.token_id for s in steps1] == [s.token_id for s in steps2]
+
+
+@pytest.mark.skipif(not TINYLLAMA_EXISTS, reason="tinyllama not in Ollama")
+class TestLlamaEnginePerplexity:
+    @pytest.fixture(scope="class")
+    def engine(self):
+        blob = resolve_ollama_blob("tinyllama:latest")
+        eng = LlamaEngine(blob, n_ctx=512)
+        yield eng
+        eng.close()
+
+    def test_perplexity_is_finite(self, engine):
+        ppl = engine.perplexity("The quick brown fox jumps over the lazy dog.")
+        assert isinstance(ppl, float)
+        assert np.isfinite(ppl)
+        assert ppl > 0
+
+    def test_coherent_lower_than_random(self, engine):
+        coherent = engine.perplexity("The weather today is sunny and warm.")
+        garbage = engine.perplexity("xkcd plonk wibble zarg fleem quux narf.")
+        assert coherent < garbage

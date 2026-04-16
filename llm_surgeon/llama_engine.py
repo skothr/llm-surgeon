@@ -192,3 +192,22 @@ class LlamaEngine:
                 break
 
             self._llm.eval([next_id])
+
+    def perplexity(self, text: str) -> float:
+        """Compute perplexity: exp(-1/N * sum(log P(token_i | context)))."""
+        tokens = self.tokenize(text, add_bos=True)
+        if len(tokens) < 2:
+            return float("inf")
+
+        self._llm.reset()
+        self._llm.eval(tokens)
+
+        nll_sum = 0.0
+        count = 0
+        for i in range(len(tokens) - 1):
+            logits_i = np.array(self._llm.eval_logits[i], dtype=np.float32)
+            log_probs = logits_i - np.logaddexp.reduce(logits_i)
+            nll_sum -= log_probs[tokens[i + 1]]
+            count += 1
+
+        return float(np.exp(nll_sum / count))

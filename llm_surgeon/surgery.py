@@ -576,7 +576,7 @@ def load_model(model_id: str, mode: str = "nf4") -> Tuple:
         blob = resolve_ollama_blob(model_id)
         if blob is not None:
             _GGUF_DTYPE = {
-                "nf4": torch.float16, "int8": torch.float16,
+                "nf4": torch.bfloat16, "int8": torch.bfloat16,
                 "bf16": torch.bfloat16, "fp16": torch.float16,
                 "fp32": torch.float32, "fp32-cpu": torch.float32,
             }

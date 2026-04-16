@@ -199,7 +199,7 @@ def _dequant_q4_k(data: bytes, n: int) -> np.ndarray:
             result[:, j * 64:j * 64 + 32] = d * sc_lo * lo - dmin * m_lo
             result[:, j * 64 + 32:j * 64 + 64] = d * sc_hi * hi - dmin * m_hi
 
-    np.nan_to_num(result, copy=False)
+    np.nan_to_num(result, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     return result.ravel()
 
 
@@ -237,7 +237,7 @@ def _dequant_q5_k(data: bytes, n: int) -> np.ndarray:
             result[:, j * 64:j * 64 + 32] = d * sc_lo * lo - dmin * m_lo
             result[:, j * 64 + 32:j * 64 + 64] = d * sc_hi * hi - dmin * m_hi
 
-    np.nan_to_num(result, copy=False)
+    np.nan_to_num(result, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     return result.ravel()
 
 
@@ -281,7 +281,7 @@ def _dequant_q6_k(data: bytes, n: int) -> np.ndarray:
                 result[:, base + 64 + lo:base + 64 + hi] = d * sc_c[:, si + 4:si + 5] * q3[:, lo:hi]
                 result[:, base + 96 + lo:base + 96 + hi] = d * sc_c[:, si + 6:si + 7] * q4[:, lo:hi]
 
-    np.nan_to_num(result, copy=False)
+    np.nan_to_num(result, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     return result.ravel()
 
 
@@ -437,7 +437,11 @@ class GGUFFile:
     def read_tensor(self, name: str, dtype=torch.float16) -> torch.Tensor:
         """Read and dequantize a tensor, returning a PyTorch tensor."""
         arr = self.read_tensor_numpy(name)
-        return torch.from_numpy(arr.copy()).to(dtype)
+        t = torch.from_numpy(arr.copy())
+        if dtype in (torch.float16, torch.bfloat16):
+            finfo = torch.finfo(dtype)
+            t = t.clamp(finfo.min, finfo.max)
+        return t.to(dtype)
 
     def close(self):
         if self._file:
@@ -646,6 +650,18 @@ def load_gguf_as_hf(
             model = LlamaForCausalLM(config)
 
         model.load_state_dict(state_dict, assign=True, strict=False)  # type: ignore
+
+        # Buffers not in the GGUF state dict (e.g. RoPE inv_freq) remain as
+        # meta tensors after assign=True + strict=False. Reinitialize all
+        # RoPE modules so inv_freq is properly computed from config.
+        from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
+        for name, module in model.named_modules():
+            if isinstance(module, LlamaRotaryEmbedding):
+                parent_name = name.rsplit(".", 1)
+                parent = model.get_submodule(parent_name[0]) if len(parent_name) > 1 else model
+                attr = parent_name[1] if len(parent_name) > 1 else name
+                setattr(parent, attr, LlamaRotaryEmbedding(config, device="cpu"))
+
         model.eval()
         model.requires_grad_(False)
 

@@ -588,6 +588,18 @@ def _build_tokenizer(meta: dict):
     return hf_tok
 
 
+def _reverse_permute(t: torch.Tensor, n_head: int, n_kv_heads: int) -> torch.Tensor:
+    """Reverse the Q/K head interleaving that convert_hf_to_gguf.py applies.
+
+    llama.cpp permutes Q and K weights during HF→GGUF conversion to
+    interleave the first and second halves of each head's dimensions.
+    This undoes that permutation so the weights match HF's layout.
+    """
+    n = n_kv_heads if n_head != n_kv_heads else n_head
+    dim = t.shape[0] // n // 2
+    return t.reshape(n, dim, 2, *t.shape[1:]).swapaxes(1, 2).reshape(t.shape)
+
+
 # ── Main loader ──────────────────────────────────────────────────────
 
 def load_gguf_as_hf(
@@ -627,6 +639,8 @@ def load_gguf_as_hf(
         )
 
         # Build state dict from GGUF tensors
+        n_heads = config.num_attention_heads
+        n_kv_heads = config.num_key_value_heads
         state_dict = {}
         skipped = []
         for info in g.tensor_infos:
@@ -634,7 +648,12 @@ def load_gguf_as_hf(
             if hf_name is None:
                 skipped.append(info.name)
                 continue
-            state_dict[hf_name] = g.read_tensor(info.name, dtype=dtype)
+            t = g.read_tensor(info.name, dtype=dtype)
+            if ".attn_q." in info.name:
+                t = _reverse_permute(t, n_heads, n_heads)
+            elif ".attn_k." in info.name:
+                t = _reverse_permute(t, n_heads, n_kv_heads)
+            state_dict[hf_name] = t
 
         if skipped:
             log.debug("Skipped %d unmapped tensors: %s", len(skipped), skipped[:5])

@@ -488,6 +488,15 @@ def _capture_rms(
     if text is None:
         from datasets import load_dataset  # type: ignore
         ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+        available = len(ds["text"])
+        if available < num_samples:
+            import warnings
+            warnings.warn(
+                f"_capture_rms: requested {num_samples} samples but "
+                f"wikitext-2 train has {available} — RMS stats may be noisy.",
+                UserWarning,
+                stacklevel=2,
+            )
         text = " ".join(ds["text"][:num_samples])
 
     device = model.model.embed_tokens.weight.device
@@ -619,11 +628,6 @@ def load_model(model_id: str, mode: str = "nf4") -> Tuple:
     is_local = os.path.isdir(model_id)
     cache_kwargs = {} if is_local else {"cache_dir": MODEL_CACHE_DIR}
 
-    # Check if model is already cached — if so, go offline to prevent
-    # unnecessary network requests (auto-conversion, telemetry, etc.)
-    if not is_local and _snapshot_dir(model_id, cache_kwargs.get("cache_dir")) is not None:
-        os.environ["HF_HUB_OFFLINE"] = "1"
-
     # If safetensors exist in the snapshot, load from the snapshot directory
     # directly — the hub cache resolver doesn't know about converted files.
     snap = _snapshot_dir(model_id, cache_kwargs.get("cache_dir"))
@@ -634,49 +638,57 @@ def load_model(model_id: str, mode: str = "nf4") -> Tuple:
         load_id = model_id
         load_kwargs = dict(cache_kwargs)
 
-    if mode == "nf4":
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            load_id, quantization_config=bnb_config, device_map="auto",
-            **load_kwargs,
-        )
-    elif mode == "int8":
-        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            load_id, quantization_config=bnb_config, device_map="auto",
-            **load_kwargs,
-        )
-    elif mode == "bf16":
-        model = AutoModelForCausalLM.from_pretrained(
-            load_id, torch_dtype=torch.bfloat16,
-            **load_kwargs,
-        )
-    elif mode == "fp16":
-        model = AutoModelForCausalLM.from_pretrained(
-            load_id, torch_dtype=torch.float16,
-            **load_kwargs,
-        )
-    elif mode == "fp32":
-        model = AutoModelForCausalLM.from_pretrained(
-            load_id, torch_dtype=torch.float32,
-            **load_kwargs,
-        )
-    elif mode == "fp32-cpu":
-        model = AutoModelForCausalLM.from_pretrained(
-            load_id, torch_dtype=torch.float32, device_map="cpu",
-            **load_kwargs,
-        )
-    else:
-        raise ValueError(f"Unknown mode: '{mode}'")
+    # Go offline for this load if the model is cached, but restore env after
+    # so callers that expect online semantics aren't silently latched offline.
+    _saved_offline = os.environ.get("HF_HUB_OFFLINE")
+    if not is_local and snap is not None:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+    try:
+        if mode == "nf4":
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+            )
+            model = AutoModelForCausalLM.from_pretrained(
+                load_id, quantization_config=bnb_config, device_map="auto",
+                **load_kwargs,
+            )
+        elif mode == "int8":
+            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+            model = AutoModelForCausalLM.from_pretrained(
+                load_id, quantization_config=bnb_config, device_map="auto",
+                **load_kwargs,
+            )
+        elif mode == "bf16":
+            model = AutoModelForCausalLM.from_pretrained(
+                load_id, torch_dtype=torch.bfloat16,
+                **load_kwargs,
+            )
+        elif mode == "fp16":
+            model = AutoModelForCausalLM.from_pretrained(
+                load_id, torch_dtype=torch.float16,
+                **load_kwargs,
+            )
+        elif mode == "fp32":
+            model = AutoModelForCausalLM.from_pretrained(
+                load_id, torch_dtype=torch.float32,
+                **load_kwargs,
+            )
+        elif mode == "fp32-cpu":
+            model = AutoModelForCausalLM.from_pretrained(
+                load_id, torch_dtype=torch.float32, device_map="cpu",
+                **load_kwargs,
+            )
+        else:
+            raise ValueError(f"Unknown mode: '{mode}'")
 
-    tok_id = str(snap) if snap else model_id
-    tokenizer = AutoTokenizer.from_pretrained(tok_id, **({} if snap else cache_kwargs))
-
-    # Ensure offline mode for all subsequent loads in this process
-    os.environ["HF_HUB_OFFLINE"] = "1"
+        tok_id = str(snap) if snap else model_id
+        tokenizer = AutoTokenizer.from_pretrained(tok_id, **({} if snap else cache_kwargs))
+    finally:
+        if _saved_offline is None:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = _saved_offline
 
     return model, tokenizer

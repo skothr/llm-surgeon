@@ -182,7 +182,11 @@ def register_ollama(gguf_path: str, name: str) -> None:
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
-    _verify_ollama_registration(name)
+    if not _verify_ollama_registration(name):
+        raise RuntimeError(
+            f"ollama create exited 0 but model '{name}' is not listed by "
+            f"`ollama list` — registration did not take effect."
+        )
 
 
 def full_pipeline(

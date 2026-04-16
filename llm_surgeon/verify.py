@@ -185,6 +185,11 @@ def compare_to_baseline(
     results: Dict[str, List[dict]] = {}
     for prompt in prompts:
         path = _prompt_cache_path(cache_dir, prompt)
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"No cached baseline for prompt {prompt!r} at {path}. "
+                f"Run cache_baseline() with this prompt first."
+            )
         cached_acts = torch.load(path)
         current_acts = _capture_layer_activations(model, tokenizer, prompt)
         results[prompt] = _compare_activation_lists(cached_acts, current_acts)

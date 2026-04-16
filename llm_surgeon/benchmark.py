@@ -160,7 +160,8 @@ def _count_scored_tokens_partial(input_ids: torch.Tensor, max_length: int, strid
         target_begin = max(begin, prev_end)
         target_len = end - target_begin
         if target_len > 0:
-            total += target_len
+            # shift_logits[:, rel_start:] scores (end - target_begin - 1) positions
+            total += max(0, target_len - 1)
         prev_end = end
         if end >= up_to:
             break
@@ -177,8 +178,9 @@ def _count_scored_tokens(input_ids: torch.Tensor, max_length: int, stride: int) 
         target_begin = max(begin, prev_end)
         target_len = end - target_begin
         if target_len > 0:
-            # Subtract 1 because shifted prediction: last token has no label
-            total += max(0, target_len - (1 if end == seq_len and begin == 0 else 0))
+            # shift_logits[:, rel_start:] contributes (end - target_begin - 1)
+            # CE losses — the first target position has no in-window predecessor
+            total += max(0, target_len - 1)
         prev_end = end
         if end == seq_len:
             break

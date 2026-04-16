@@ -103,7 +103,7 @@ def _capture_layer_activations(model, tokenizer, prompt: str) -> List[torch.Tens
         hooks.append(layer.register_forward_hook(make_hook(i)))
 
     try:
-        device = model.model.embed_tokens.weight.device
+        device = model.get_input_embeddings().weight.device
         enc = tokenizer(prompt, return_tensors="pt")
         input_ids = enc["input_ids"].to(device)
         with torch.no_grad():

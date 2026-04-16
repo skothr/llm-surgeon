@@ -176,6 +176,12 @@ def remove_layers(model, layer_indices: List[int]) -> SurgeryLog:
     layers = model.model.layers
     num_before = len(layers)
 
+    # Reject duplicates explicitly — without this, sorted(reverse=True) would
+    # pop the same index twice and silently remove a neighbouring layer.
+    if len(set(layer_indices)) != len(layer_indices):
+        dupes = sorted({i for i in layer_indices if layer_indices.count(i) > 1})
+        raise ValueError(f"Duplicate layer indices in remove_layers: {dupes}")
+
     for idx in layer_indices:
         if idx < 0 or idx >= num_before:
             raise IndexError(f"Layer index {idx} out of range [0, {num_before - 1}]")
@@ -499,7 +505,7 @@ def _capture_rms(
             )
         text = " ".join(ds["text"][:num_samples])
 
-    device = model.model.embed_tokens.weight.device
+    device = model.get_input_embeddings().weight.device
     enc = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
     input_ids = enc["input_ids"].to(device)
 

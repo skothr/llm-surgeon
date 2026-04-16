@@ -80,7 +80,9 @@ def perplexity(
         stride = max_length // 2
 
     seq_len = input_ids.size(1)
-    device = model.model.embed_tokens.weight.device
+    # Use get_input_embeddings() for portability across HF architectures
+    # (not just the LLaMA-specific model.model.embed_tokens path).
+    device = model.get_input_embeddings().weight.device
 
     # ---- Sliding window NLL -------------------------------------------------
     nlls = []

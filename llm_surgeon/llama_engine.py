@@ -43,7 +43,10 @@ def compare_logits(
     pa /= pa.sum()
     pb = np.exp(logits_b - logits_b.max())
     pb /= pb.sum()
-    kl = float(np.sum(pa * np.log(pa / np.clip(pb, 1e-10, None))))
+    # Mask zero entries in pa: 0 * log(0 / anything) is defined as 0, but numpy
+    # computes it as 0 * -inf = NaN. Only sum over positions with positive pa.
+    nz = pa > 0
+    kl = float(np.sum(pa[nz] * np.log(pa[nz] / np.clip(pb[nz], 1e-10, None))))
 
     top_a = set(np.argsort(logits_a)[-top_k:][::-1].tolist())
     top_b = set(np.argsort(logits_b)[-top_k:][::-1].tolist())
@@ -180,16 +183,27 @@ class LlamaEngine:
                     threshold = np.partition(scaled, -top_k)[-top_k]
                     scaled[scaled < threshold] = -np.inf
                 probs = np.exp(scaled - scaled.max())
-                probs /= probs.sum()
-                if top_p < 1.0:
-                    sorted_idx = np.argsort(-probs)
-                    cum = np.cumsum(probs[sorted_idx])
-                    cutoff = np.searchsorted(cum, top_p) + 1
-                    mask = np.ones_like(probs, dtype=bool)
-                    mask[sorted_idx[:cutoff]] = False
-                    probs[mask] = 0.0
-                    probs /= probs.sum()
-                next_id = int(np.random.choice(len(probs), p=probs))
+                s = probs.sum()
+                if not np.isfinite(s) or s <= 0:
+                    # Shouldn't happen after top_k + softmax, but guard so we
+                    # never hand NaN/zero distribution to np.random.choice.
+                    next_id = int(np.argmax(scaled))
+                else:
+                    probs /= s
+                    if top_p < 1.0:
+                        sorted_idx = np.argsort(-probs)
+                        cum = np.cumsum(probs[sorted_idx])
+                        cutoff = np.searchsorted(cum, top_p) + 1
+                        mask = np.ones_like(probs, dtype=bool)
+                        mask[sorted_idx[:cutoff]] = False
+                        probs[mask] = 0.0
+                        s2 = probs.sum()
+                        if s2 > 0:
+                            probs /= s2
+                        else:
+                            probs[:] = 0.0
+                            probs[sorted_idx[0]] = 1.0
+                    next_id = int(np.random.choice(len(probs), p=probs))
 
             token_str = self.detokenize([next_id])
             generated_ids.append(next_id)
@@ -286,7 +300,9 @@ def export_hf_to_gguf(model, tokenizer, output_path: Path) -> Path:
     writer.add_vocab_size(config.vocab_size)
     if hasattr(config, "rms_norm_eps"):
         writer.add_layer_norm_rms_eps(config.rms_norm_eps)
-    rope_theta = getattr(config, "rope_theta", None) or 10000.0
+    rope_theta = getattr(config, "rope_theta", None)
+    if rope_theta is None:
+        rope_theta = 10000.0
     writer.add_rope_freq_base(rope_theta)
     head_dim = config.hidden_size // n_heads
     writer.add_rope_dimension_count(head_dim)

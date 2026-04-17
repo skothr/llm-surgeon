@@ -9,7 +9,7 @@ from llm_surgeon.probe import (
     LogitLensResult, HiddenStates, extract_hidden_states,
     logit_lens, layer_predictions_table, ops,
     Intervention, InterventionResult, intervene,
-    _cell_metrics,
+    _cell_metrics, _pair_metrics, compare_logit_lens,
 )
 
 
@@ -257,6 +257,112 @@ def test_logit_lens_cells_carry_metrics(tiny_llama, tiny_llama_config):
         assert m["top1_margin"] >= 0.0
         assert 0.0 <= m["top1_prob"] <= 1.0
         assert m["entropy"] >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# Pair metrics (A/B comparison)
+# ---------------------------------------------------------------------------
+
+def test_pair_metrics_self_comparison_is_identity():
+    torch.manual_seed(0)
+    logits = torch.randn(256)
+    probs = torch.softmax(logits, dim=-1)
+    m = _pair_metrics(probs, probs)
+    assert m["kl_ab"] == pytest.approx(0.0, abs=1e-5)
+    assert m["js"] == pytest.approx(0.0, abs=1e-5)
+    assert m["cosine"] == pytest.approx(1.0, abs=1e-5)
+    assert m["top1_delta_prob"] == pytest.approx(0.0, abs=1e-6)
+    assert m["top1_match"] is True
+
+
+def test_pair_metrics_js_bounded_and_symmetric():
+    torch.manual_seed(1)
+    log2 = torch.log(torch.tensor(2.0)).item()
+    for _ in range(20):
+        p_a = torch.softmax(torch.randn(128), dim=-1)
+        p_b = torch.softmax(torch.randn(128), dim=-1)
+        m_ab = _pair_metrics(p_a, p_b)
+        m_ba = _pair_metrics(p_b, p_a)
+        assert 0.0 <= m_ab["js"] <= log2 + 1e-5
+        assert m_ab["js"] == pytest.approx(m_ba["js"], abs=1e-5)
+        assert m_ab["cosine"] == pytest.approx(m_ba["cosine"], abs=1e-5)
+        assert m_ab["top1_match"] == m_ba["top1_match"]
+
+
+def test_pair_metrics_kl_is_nonnegative():
+    torch.manual_seed(2)
+    for _ in range(20):
+        p_a = torch.softmax(torch.randn(128), dim=-1)
+        p_b = torch.softmax(torch.randn(128), dim=-1)
+        m = _pair_metrics(p_a, p_b)
+        assert m["kl_ab"] >= -1e-6  # tiny float slop allowed at the boundary
+
+
+def test_pair_metrics_handles_zero_in_a():
+    # If p_a has zero support, xlogy(0, ...) = 0 so those positions contribute nothing.
+    p_a = torch.zeros(16)
+    p_a[3] = 0.7
+    p_a[5] = 0.3
+    p_b = torch.softmax(torch.arange(16, dtype=torch.float32), dim=-1)
+    m = _pair_metrics(p_a, p_b)
+    assert torch.isfinite(torch.tensor(m["kl_ab"]))
+    assert torch.isfinite(torch.tensor(m["js"]))
+
+
+def test_compare_logit_lens_against_self(tiny_llama, tiny_llama_config):
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    result = compare_logit_lens(tiny_llama, tiny_llama, tokenizer, "word4 word5 word6", top_k=3)
+
+    num_layers = tiny_llama_config.num_hidden_layers
+    num_positions = len(result.prompt_tokens)
+    # All (attn, ffn) pairs from every layer should align when comparing against self.
+    assert len(result.aligned_keys) == num_layers * 2
+    assert len(result.comparisons) == num_layers * 2 * num_positions
+
+    for cell in result.comparisons:
+        cmp = cell["compare"]
+        assert cmp["kl_ab"] == pytest.approx(0.0, abs=1e-4)
+        assert cmp["js"] == pytest.approx(0.0, abs=1e-4)
+        assert cmp["cosine"] == pytest.approx(1.0, abs=1e-4)
+        assert cmp["top1_delta_prob"] == pytest.approx(0.0, abs=1e-5)
+        assert cmp["top1_match"] is True
+
+
+def test_compare_logit_lens_streams_via_callback(tiny_llama, tiny_llama_config):
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    calls = []
+    def cb(orig_layer, sublayer, data):
+        calls.append((orig_layer, sublayer))
+        assert "cells" in data
+        for cell in data["cells"]:
+            assert "compare" in cell
+            assert "top_k_a" in cell
+            assert "top_k_b" in cell
+            assert "metrics_a" in cell
+            assert "metrics_b" in cell
+
+    compare_logit_lens(tiny_llama, tiny_llama, tokenizer, "word4 word5", on_layer=cb)
+    assert len(calls) == tiny_llama_config.num_hidden_layers * 2
+
+
+def test_compare_logit_lens_alignment_with_layer_maps(tiny_llama, tiny_llama_config):
+    # Model B has a shifted layer_map: pretend its compressed layers 0..N-1 map to
+    # ORIGINAL layers 5..5+N-1. Alignment by original index means B's captured layer 0
+    # (which is tagged original=5) should only compare against A's layer 5 — and since
+    # A's layer_map is identity, the intersection is layers {5..min(N_a-1, 5+N_b-1)}.
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    num_layers = tiny_llama_config.num_hidden_layers
+    shift = max(1, num_layers // 3)
+    identity = list(range(num_layers))
+    shifted = list(range(shift, shift + num_layers))
+
+    result = compare_logit_lens(
+        tiny_llama, tiny_llama, tokenizer, "word4 word5",
+        top_k=3, layer_map_a=identity, layer_map_b=shifted,
+    )
+    expected_aligned_layers = set(range(shift, num_layers))
+    actual_layers = set(orig for (orig, _sub) in result.aligned_keys)
+    assert actual_layers == expected_aligned_layers
 
 
 def test_layer_predictions_table(tiny_llama, tiny_llama_config):

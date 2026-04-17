@@ -345,6 +345,27 @@ def test_compare_logit_lens_streams_via_callback(tiny_llama, tiny_llama_config):
     assert len(calls) == tiny_llama_config.num_hidden_layers * 2
 
 
+def test_compare_logit_lens_different_models_have_nonzero_divergence(tiny_llama, tiny_llama_config):
+    from transformers import LlamaForCausalLM
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    # A second fresh random-init model — different weights => different distributions.
+    torch.manual_seed(1234)
+    model_b = LlamaForCausalLM(tiny_llama_config)
+    model_b.eval()
+
+    result = compare_logit_lens(tiny_llama, model_b, tokenizer, "word4 word5 word6", top_k=3)
+
+    # With genuinely different models, at least some cells must show non-trivial divergence
+    # and cosine strictly below 1. Averaging protects against the (vanishingly unlikely)
+    # case of a cell happening to match.
+    kls = [cell["compare"]["kl_ab"] for cell in result.comparisons]
+    cosines = [cell["compare"]["cosine"] for cell in result.comparisons]
+    assert max(kls) > 1e-3
+    assert min(cosines) < 0.9999
+    # And KL is non-negative everywhere.
+    assert min(kls) >= -1e-6
+
+
 def test_compare_logit_lens_alignment_with_layer_maps(tiny_llama, tiny_llama_config):
     # Model B has a shifted layer_map: pretend its compressed layers 0..N-1 map to
     # ORIGINAL layers 5..5+N-1. Alignment by original index means B's captured layer 0

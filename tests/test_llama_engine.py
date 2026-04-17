@@ -303,3 +303,21 @@ class TestExportHfToGguf:
                 # Merges are present for BPE-backed fast tokenizers.
                 merges = meta.get("tokenizer.ggml.merges")
                 assert merges is not None and len(merges) > 0
+
+
+class TestExportHfToGgufRopeTheta:
+    def test_raises_on_none_rope_theta(self, tiny_llama):
+        """rope_theta=None must raise — silent fallback to 10000.0 would corrupt
+        LLaMA 3 / Mistral exports where the true base is 500000 / 1000000."""
+        from llm_surgeon.llama_engine import export_hf_to_gguf
+
+        tiny_llama.config.rope_theta = None
+        # Newer transformers stashes rope_theta under rope_parameters too —
+        # null both paths so the fallback chain exhausts.
+        if hasattr(tiny_llama.config, "rope_parameters"):
+            tiny_llama.config.rope_parameters = None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = Path(tmpdir) / "bad.gguf"
+            with pytest.raises(ValueError, match="rope_theta"):
+                export_hf_to_gguf(tiny_llama, None, out_path)

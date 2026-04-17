@@ -434,7 +434,16 @@ def export_hf_to_gguf(model, tokenizer, output_path: Path) -> Path:
         writer.add_layer_norm_rms_eps(config.rms_norm_eps)
     rope_theta = getattr(config, "rope_theta", None)
     if rope_theta is None:
-        rope_theta = 10000.0
+        # Newer transformers stores RoPE config under config.rope_parameters.
+        rope_params = getattr(config, "rope_parameters", None)
+        if isinstance(rope_params, dict):
+            rope_theta = rope_params.get("rope_theta")
+    if rope_theta is None:
+        raise ValueError(
+            "Cannot export model with config.rope_theta=None. "
+            "Set config.rope_theta explicitly before export "
+            "(e.g., 10000.0 for LLaMA 2, 500000.0 for LLaMA 3, 1000000.0 for Mistral)."
+        )
     writer.add_rope_freq_base(rope_theta)
     head_dim = config.hidden_size // n_heads
     writer.add_rope_dimension_count(head_dim)

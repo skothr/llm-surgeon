@@ -15,6 +15,34 @@ from llm_surgeon.surgery import load_model
 from transformers import AutoModelForCausalLM
 
 
+class TestIsCached:
+    def test_returns_false_for_uncached(self, tmp_path):
+        from llm_surgeon.surgery import _is_cached
+        assert _is_cached("nonexistent/repo", cache_dir=str(tmp_path)) is False
+
+    def test_returns_true_when_config_present(self, tmp_path):
+        """Seed the HF cache layout with a minimal config.json and assert hit."""
+        from llm_surgeon.surgery import _is_cached
+        import json
+
+        repo = "TinyOrg/TinyModel"
+        slug = "models--TinyOrg--TinyModel"
+        sha = "a" * 40
+        model_dir = tmp_path / slug
+        (model_dir / "snapshots" / sha).mkdir(parents=True)
+        (model_dir / "refs").mkdir(parents=True)
+        (model_dir / "refs" / "main").write_text(sha)
+        cfg = model_dir / "snapshots" / sha / "config.json"
+        cfg.write_text(json.dumps({"model_type": "llama"}))
+        blob = model_dir / "blobs" / "dummy-blob"
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_text(json.dumps({"model_type": "llama"}))
+        cfg.unlink()
+        cfg.symlink_to(blob)
+
+        assert _is_cached(repo, cache_dir=str(tmp_path)) is True
+
+
 class TestSurgeryOp:
     def test_creation(self):
         op = SurgeryOp(
@@ -370,6 +398,88 @@ class TestLoadModel:
         assert len(MODEL_CACHE_DIR) > 0
 
 
+class TestLoadModelKwargs:
+    """Verify load_model passes the right kwargs to from_pretrained.
+
+    Mocks AutoModelForCausalLM and AutoTokenizer to capture the kwargs
+    without actually loading weights.
+    """
+
+    def _install_mocks(self, monkeypatch):
+        captured = {}
+
+        class _FakeModel:
+            pass
+
+        def fake_model_from_pretrained(load_id, **kwargs):
+            captured["model_load_id"] = load_id
+            captured["model_kwargs"] = kwargs
+            return _FakeModel()
+
+        def fake_tok_from_pretrained(load_id, **kwargs):
+            captured["tok_load_id"] = load_id
+            captured["tok_kwargs"] = kwargs
+            return _FakeModel()
+
+        monkeypatch.setattr(
+            "llm_surgeon.surgery.AutoModelForCausalLM.from_pretrained",
+            fake_model_from_pretrained,
+        )
+        monkeypatch.setattr(
+            "llm_surgeon.surgery.AutoTokenizer.from_pretrained",
+            fake_tok_from_pretrained,
+        )
+        return captured
+
+    def test_hub_id_not_cached(self, monkeypatch):
+        from llm_surgeon import surgery
+        captured = self._install_mocks(monkeypatch)
+        monkeypatch.setattr(surgery, "_is_cached", lambda *a, **kw: False)
+
+        surgery.load_model("Org/Model", mode="fp16")
+
+        assert captured["model_load_id"] == "Org/Model"
+        mkw = captured["model_kwargs"]
+        assert mkw["cache_dir"] == surgery.MODEL_CACHE_DIR
+        assert mkw["revision"] is None
+        assert mkw["local_files_only"] is False
+        assert mkw["use_safetensors"] is True
+        assert mkw["torch_dtype"] is __import__("torch").float16
+
+    def test_hub_id_cached(self, monkeypatch):
+        from llm_surgeon import surgery
+        captured = self._install_mocks(monkeypatch)
+        monkeypatch.setattr(surgery, "_is_cached", lambda *a, **kw: True)
+
+        surgery.load_model("Org/Model", mode="fp16")
+
+        assert captured["model_kwargs"]["local_files_only"] is True
+
+    def test_local_path_no_cache_kwargs(self, monkeypatch, tmp_path):
+        from llm_surgeon import surgery
+        # Create a dummy local path so os.path.isdir returns True
+        (tmp_path / "weights").mkdir()
+        captured = self._install_mocks(monkeypatch)
+
+        surgery.load_model(str(tmp_path / "weights"), mode="fp16")
+
+        mkw = captured["model_kwargs"]
+        assert "cache_dir" not in mkw
+        assert "local_files_only" not in mkw
+        # revision + use_safetensors still propagate for local paths
+        assert mkw["use_safetensors"] is True
+
+    def test_revision_propagates(self, monkeypatch):
+        from llm_surgeon import surgery
+        captured = self._install_mocks(monkeypatch)
+        monkeypatch.setattr(surgery, "_is_cached", lambda *a, **kw: False)
+
+        surgery.load_model("Org/Model", mode="fp16", revision="abc123")
+
+        assert captured["model_kwargs"]["revision"] == "abc123"
+        assert captured["tok_kwargs"]["revision"] == "abc123"
+
+
 class TestChainedOperations:
     def test_remove_then_swap(self, tiny_llama):
         remove_layers(tiny_llama, [6, 7])
@@ -557,3 +667,28 @@ class TestSaveReload:
         reloaded = AutoModelForCausalLM.from_pretrained(save_path)
         w0_after = reloaded.model.layers[0].self_attn.q_proj.weight.data
         assert torch.equal(w0_before, w0_after)
+
+
+def _tinyllama_cached() -> bool:
+    from llm_surgeon.surgery import _is_cached
+    return _is_cached("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+
+
+@pytest.mark.skipif(not _tinyllama_cached(), reason="TinyLlama not cached")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+class TestLoadModelIntegration:
+    def test_tinyllama_fp16(self):
+        from llm_surgeon.surgery import load_model
+        model, tokenizer = load_model("TinyLlama/TinyLlama-1.1B-Chat-v1.0", mode="fp16")
+        assert tokenizer is not None
+        assert model.config.num_hidden_layers == 22
+        assert model.config.hidden_size == 2048
+
+    def test_tinyllama_nf4(self):
+        import bitsandbytes as bnb  # quantization check needs the library
+        from llm_surgeon.surgery import load_model
+        model, tokenizer = load_model("TinyLlama/TinyLlama-1.1B-Chat-v1.0", mode="nf4")
+        assert tokenizer is not None
+        # At least one Linear in an attention block should be Linear4bit.
+        attn = model.model.layers[0].self_attn
+        assert isinstance(attn.q_proj, bnb.nn.Linear4bit)  # pyright: ignore[reportPrivateImportUsage]

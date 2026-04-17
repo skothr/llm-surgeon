@@ -19,84 +19,18 @@ MODEL_CACHE_DIR = os.environ.get(
 )
 
 
-def _snapshot_dir(model_id: str, cache_dir: str | None = None) -> Path | None:
-    """Resolve the snapshot directory for a cached HF model."""
-    base = Path(cache_dir or MODEL_CACHE_DIR)
-    slug = "models--" + model_id.replace("/", "--")
-    model_dir = base / slug
-    if not model_dir.exists():
-        return None
-    refs = model_dir / "refs" / "main"
-    if refs.exists():
-        sha = refs.read_text().strip()
-        snap = model_dir / "snapshots" / sha
-        if snap.exists():
-            return snap
-    snapshots = model_dir / "snapshots"
-    if snapshots.exists():
-        children = sorted(snapshots.iterdir())
-        if children:
-            return children[-1]
-    return None
+def _is_cached(model_id: str, cache_dir: str | None = None) -> bool:
+    """True if a local HF cache has at least a config.json snapshot for model_id.
 
-
-def _has_safetensors(model_id: str, cache_dir: str | None = None) -> bool:
-    """Check if a cached model has safetensors files."""
-    if os.path.isdir(model_id):
-        return any(Path(model_id).glob("*.safetensors"))
-    snap = _snapshot_dir(model_id, cache_dir)
-    if snap is None:
-        return False
-    return any(snap.glob("*.safetensors"))
-
-
-def convert_to_safetensors(model_id: str, cache_dir: str | None = None) -> dict:
-    """Convert a cached model from .bin to safetensors format in-place.
-
-    Loads the model on CPU, saves as safetensors into the same snapshot
-    directory, then removes the old .bin files.
-
-    Returns dict with conversion stats.
+    Wraps huggingface_hub.try_to_load_from_cache. Used as the boolean probe
+    that replaces _snapshot_dir for "is this model present locally?".
     """
-    snap = _snapshot_dir(model_id, cache_dir)
-    if snap is None:
-        raise ValueError(f"No cached snapshot found for '{model_id}'")
-    if any(snap.glob("*.safetensors")):
-        return {"status": "already_safetensors", "model_id": model_id}
-
-    bin_files = list(snap.glob("*.bin"))
-    if not bin_files:
-        raise ValueError(f"No .bin files found in {snap}")
-
-    old_offline = os.environ.get("HF_HUB_OFFLINE")
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    try:
-        model = AutoModelForCausalLM.from_pretrained(
-            str(snap), torch_dtype=torch.float16, device_map="cpu",
-        )
-        model.save_pretrained(str(snap), safe_serialization=True)
-        del model
-    finally:
-        if old_offline is None:
-            os.environ.pop("HF_HUB_OFFLINE", None)
-        else:
-            os.environ["HF_HUB_OFFLINE"] = old_offline
-
-    bin_size = sum(f.stat().st_size for f in bin_files)
-    for f in bin_files:
-        f.unlink()
-
-    safetensor_files = list(snap.glob("*.safetensors"))
-    st_size = sum(f.stat().st_size for f in safetensor_files)
-
-    return {
-        "status": "converted",
-        "model_id": model_id,
-        "removed_bin_files": len(bin_files),
-        "removed_bin_mb": round(bin_size / 1e6, 1),
-        "safetensor_files": len(safetensor_files),
-        "safetensor_mb": round(st_size / 1e6, 1),
-    }
+    from huggingface_hub import try_to_load_from_cache
+    path = try_to_load_from_cache(
+        model_id, filename="config.json",
+        cache_dir=cache_dir or MODEL_CACHE_DIR,
+    )
+    return path is not None
 
 
 @dataclass
@@ -745,7 +679,12 @@ _MODE_ALIASES = {"inspect": "nf4", "eval": "fp16", "export": "fp32-cpu"}
 VALID_MODES = {"nf4", "int8", "bf16", "fp16", "fp32", "fp32-cpu"}
 
 
-def load_model(model_id: str, mode: str = "nf4") -> Tuple:
+def load_model(
+    model_id: str,
+    mode: str = "nf4",
+    *,
+    revision: str | None = None,
+) -> Tuple:
     """Load a model and tokenizer.
 
     Modes:
@@ -758,6 +697,11 @@ def load_model(model_id: str, mode: str = "nf4") -> Tuple:
     Supports HuggingFace Hub IDs, local paths, and Ollama model IDs
     (e.g. 'tinyllama:latest'). Ollama models are loaded from GGUF and
     dequantized into standard HuggingFace models.
+
+    Args:
+        revision: Optional HF Hub commit SHA / branch / tag. Pass to pin an
+            experiment to an exact model snapshot. Ignored for local paths
+            and Ollama IDs.
     """
     mode = _MODE_ALIASES.get(mode, mode)
     if mode not in VALID_MODES:
@@ -785,71 +729,55 @@ def load_model(model_id: str, mode: str = "nf4") -> Tuple:
                 model = _quantize_in_place(model, bnb_config)
             return model, tokenizer
 
-    # Determine if model_id is a local path or a HF Hub repo ID
     is_local = os.path.isdir(model_id)
-    cache_kwargs = {} if is_local else {"cache_dir": MODEL_CACHE_DIR}
+    cached = (not is_local) and _is_cached(model_id)
 
-    # If safetensors exist in the snapshot, load from the snapshot directory
-    # directly — the hub cache resolver doesn't know about converted files.
-    snap = _snapshot_dir(model_id, cache_kwargs.get("cache_dir"))
-    if snap and _has_safetensors(model_id, cache_kwargs.get("cache_dir")):
-        load_id = str(snap)
-        load_kwargs = {"use_safetensors": True}
+    common_kwargs: Dict[str, Any] = {
+        "use_safetensors": True,
+        "revision": revision,
+    }
+    if not is_local:
+        common_kwargs["cache_dir"] = MODEL_CACHE_DIR
+        common_kwargs["local_files_only"] = cached
+
+    if mode == "nf4":
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id, quantization_config=bnb_config, device_map="auto",
+            **common_kwargs,
+        )
+    elif mode == "int8":
+        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id, quantization_config=bnb_config, device_map="auto",
+            **common_kwargs,
+        )
+    elif mode == "bf16":
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id, torch_dtype=torch.bfloat16, **common_kwargs,
+        )
+    elif mode == "fp16":
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id, torch_dtype=torch.float16, **common_kwargs,
+        )
+    elif mode == "fp32":
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id, torch_dtype=torch.float32, **common_kwargs,
+        )
+    elif mode == "fp32-cpu":
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id, torch_dtype=torch.float32, device_map="cpu",
+            **common_kwargs,
+        )
     else:
-        load_id = model_id
-        load_kwargs = dict(cache_kwargs)
+        raise ValueError(f"Unknown mode: '{mode}'")
 
-    # Go offline for this load if the model is cached, but restore env after
-    # so callers that expect online semantics aren't silently latched offline.
-    _saved_offline = os.environ.get("HF_HUB_OFFLINE")
-    if not is_local and snap is not None:
-        os.environ["HF_HUB_OFFLINE"] = "1"
-    try:
-        if mode == "nf4":
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.float16,
-            )
-            model = AutoModelForCausalLM.from_pretrained(
-                load_id, quantization_config=bnb_config, device_map="auto",
-                **load_kwargs,
-            )
-        elif mode == "int8":
-            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
-            model = AutoModelForCausalLM.from_pretrained(
-                load_id, quantization_config=bnb_config, device_map="auto",
-                **load_kwargs,
-            )
-        elif mode == "bf16":
-            model = AutoModelForCausalLM.from_pretrained(
-                load_id, torch_dtype=torch.bfloat16,
-                **load_kwargs,
-            )
-        elif mode == "fp16":
-            model = AutoModelForCausalLM.from_pretrained(
-                load_id, torch_dtype=torch.float16,
-                **load_kwargs,
-            )
-        elif mode == "fp32":
-            model = AutoModelForCausalLM.from_pretrained(
-                load_id, torch_dtype=torch.float32,
-                **load_kwargs,
-            )
-        elif mode == "fp32-cpu":
-            model = AutoModelForCausalLM.from_pretrained(
-                load_id, torch_dtype=torch.float32, device_map="cpu",
-                **load_kwargs,
-            )
-        else:
-            raise ValueError(f"Unknown mode: '{mode}'")
-
-        tok_id = str(snap) if snap else model_id
-        tokenizer = AutoTokenizer.from_pretrained(tok_id, **({} if snap else cache_kwargs))
-    finally:
-        if _saved_offline is None:
-            os.environ.pop("HF_HUB_OFFLINE", None)
-        else:
-            os.environ["HF_HUB_OFFLINE"] = _saved_offline
+    # AutoTokenizer does not accept use_safetensors — strip it.
+    tok_kwargs = {k: v for k, v in common_kwargs.items() if k != "use_safetensors"}
+    tokenizer = AutoTokenizer.from_pretrained(model_id, **tok_kwargs)
 
     return model, tokenizer

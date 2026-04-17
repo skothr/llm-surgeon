@@ -199,3 +199,24 @@ class TestLoadGGUFAsHF:
 
 
 import torch
+
+
+class TestGGUFAlignment:
+    def test_honors_non_default_alignment(self, tmp_path):
+        """Writer with alignment=64 must be readable by GGUFFile."""
+        import gguf
+
+        out = tmp_path / "align64.gguf"
+        writer = gguf.GGUFWriter(str(out), arch="llama")
+        writer.add_custom_alignment(64)
+        vals = np.arange(8, dtype=np.float32)
+        writer.add_tensor("t", vals)
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_tensors_to_file(progress=False)
+        writer.close()
+
+        with GGUFFile(out) as g:
+            assert g.metadata.get("general.alignment") == 64
+            arr = g.read_tensor_numpy("t")
+            np.testing.assert_array_equal(arr.ravel(), vals)

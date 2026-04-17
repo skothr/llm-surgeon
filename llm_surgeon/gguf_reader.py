@@ -372,7 +372,11 @@ class GGUFFile:
             self._tensor_map[name] = info
 
         header_end = f.tell()
-        self._data_offset = (header_end + 31) // 32 * 32  # 32-byte aligned
+        # GGUF writers may specify general.alignment (default 32); data and
+        # per-tensor offsets are padded to this value. Honor it instead of
+        # assuming 32, else non-default alignments shift all tensor reads.
+        align = int(self.metadata.get("general.alignment", 32))
+        self._data_offset = ((header_end + align - 1) // align) * align
 
     def _read_string(self) -> str:
         f = self._file

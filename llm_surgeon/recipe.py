@@ -44,7 +44,7 @@ def _log(msg: str, verbose: bool) -> None:
 
 def _apply_surgery_step(
     model, tokenizer, step: Dict[str, Any], verbose: bool = False,
-    baseline_stats: list = None,
+    baseline_stats: Optional[surgery.CalibrationStats] = None,
 ) -> Optional[surgery.SurgeryLog]:
     """Execute a single surgery step dict and return the SurgeryLog (or None for calibrate)."""
     if "remove_layers" in step:
@@ -137,7 +137,7 @@ def run(
     steps = recipe_data.get("surgery", [])
 
     # If calibration is requested, capture baseline stats BEFORE surgery
-    baseline_stats = None
+    baseline_stats: Optional[surgery.CalibrationStats] = None
     has_calibrate = any("calibrate" in s for s in steps)
     if has_calibrate:
         _log("Capturing baseline calibration stats (pre-surgery)...", verbose)

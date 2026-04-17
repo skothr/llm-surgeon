@@ -171,6 +171,7 @@ for t in get_final_predictions(baseline.predictions, baseline.prompt_tokens)[0][
     print(f"  {t['token']:>15} ({t['prob']:.3f})")
 
 print(f"\nWith layer 10 FFN zeroed:")
+assert modified.logit_lens_result is not None
 mod_final = get_final_predictions(
     modified.logit_lens_result.predictions,
     modified.logit_lens_result.prompt_tokens,
@@ -202,6 +203,7 @@ for std in [0.0, 0.5, 1.0, 2.0, 5.0]:
         capture_logit_lens=True,
         top_k=1,
     )
+    assert r.logit_lens_result is not None
     final = get_final_predictions(
         r.logit_lens_result.predictions,
         r.logit_lens_result.prompt_tokens,

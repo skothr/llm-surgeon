@@ -201,6 +201,31 @@ class TestLoadGGUFAsHF:
 import torch
 
 
+class TestGGUFParseFailureClosesFile:
+    def test_truncated_file_releases_fd(self, tmp_path):
+        """A parse failure must not leak the file descriptor.
+
+        Captures the partially-constructed GGUFFile via a subclass so we
+        can inspect _file without relying on implicit GC of the frame
+        holding the failed __init__.
+        """
+        captured: dict = {}
+
+        class Probe(GGUFFile):
+            def _parse(self):
+                captured["self"] = self
+                super()._parse()
+
+        bad = tmp_path / "truncated.gguf"
+        bad.write_bytes(b"GGUF" + b"\x03\x00\x00\x00")
+
+        with pytest.raises(Exception):
+            Probe(bad)
+
+        obj = captured["self"]
+        assert obj._file is None, "partially-constructed GGUFFile leaked its file handle"
+
+
 class TestGGUFAlignment:
     def test_honors_non_default_alignment(self, tmp_path):
         """Writer with alignment=64 must be readable by GGUFFile."""

@@ -346,37 +346,50 @@ class GGUFFile:
 
     def _parse(self):
         self._file = open(self.path, "rb")
-        f = self._file
+        try:
+            f = self._file
 
-        magic = f.read(4)
-        if magic != b"GGUF":
-            raise ValueError(f"Not a GGUF file (magic={magic!r}): {self.path}")
+            magic = f.read(4)
+            if magic != b"GGUF":
+                raise ValueError(f"Not a GGUF file (magic={magic!r}): {self.path}")
 
-        self.version = struct.unpack("<I", f.read(4))[0]
-        n_tensors = struct.unpack("<Q", f.read(8))[0]
-        n_kv = struct.unpack("<Q", f.read(8))[0]
+            self.version = struct.unpack("<I", f.read(4))[0]
+            n_tensors = struct.unpack("<Q", f.read(8))[0]
+            n_kv = struct.unpack("<Q", f.read(8))[0]
 
-        for _ in range(n_kv):
-            key = self._read_string()
-            vtype = struct.unpack("<I", f.read(4))[0]
-            self.metadata[key] = self._read_value(vtype)
+            for _ in range(n_kv):
+                key = self._read_string()
+                vtype = struct.unpack("<I", f.read(4))[0]
+                self.metadata[key] = self._read_value(vtype)
 
-        for _ in range(n_tensors):
-            name = self._read_string()
-            n_dims = struct.unpack("<I", f.read(4))[0]
-            dims = tuple(struct.unpack("<Q", f.read(8))[0] for _ in range(n_dims))
-            dtype = struct.unpack("<I", f.read(4))[0]
-            offset = struct.unpack("<Q", f.read(8))[0]
-            info = TensorInfo(name=name, shape=dims, ggml_type=dtype, offset=offset)
-            self.tensor_infos.append(info)
-            self._tensor_map[name] = info
+            for _ in range(n_tensors):
+                name = self._read_string()
+                n_dims = struct.unpack("<I", f.read(4))[0]
+                dims = tuple(struct.unpack("<Q", f.read(8))[0] for _ in range(n_dims))
+                dtype = struct.unpack("<I", f.read(4))[0]
+                offset = struct.unpack("<Q", f.read(8))[0]
+                info = TensorInfo(name=name, shape=dims, ggml_type=dtype, offset=offset)
+                self.tensor_infos.append(info)
+                self._tensor_map[name] = info
 
-        header_end = f.tell()
-        # GGUF writers may specify general.alignment (default 32); data and
-        # per-tensor offsets are padded to this value. Honor it instead of
-        # assuming 32, else non-default alignments shift all tensor reads.
-        align = int(self.metadata.get("general.alignment", 32))
-        self._data_offset = ((header_end + align - 1) // align) * align
+            header_end = f.tell()
+            # GGUF writers may specify general.alignment (default 32); data and
+            # per-tensor offsets are padded to this value. Honor it instead of
+            # assuming 32, else non-default alignments shift all tensor reads.
+            align = int(self.metadata.get("general.alignment", 32))
+            self._data_offset = ((header_end + align - 1) // align) * align
+        except Exception:
+            # On parse failure the caller never gets a reference to self, so
+            # __del__-based cleanup on the partially-constructed object is
+            # not guaranteed. Close the fd eagerly — otherwise a service
+            # scanning many session files can run out of descriptors.
+            if self._file is not None:
+                try:
+                    self._file.close()
+                except Exception:
+                    pass
+                self._file = None
+            raise
 
     def _read_string(self) -> str:
         f = self._file

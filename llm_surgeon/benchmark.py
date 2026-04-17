@@ -87,13 +87,13 @@ def perplexity(
 
     # ---- Sliding window NLL -------------------------------------------------
     nlls = []
+    n_scored = 0
     prev_end = 0
     total_windows = (seq_len - 1) // stride + 1
     window_idx = 0
 
     for begin in range(0, seq_len, stride):
         end = min(begin + max_length, seq_len)
-        # The "target" tokens are those not covered by the previous window
         target_begin = max(begin, prev_end)
 
         chunk = input_ids[:, begin:end].to(device)
@@ -106,29 +106,29 @@ def perplexity(
         with torch.no_grad():
             outputs = model(chunk, labels=chunk)
 
-        # outputs.loss is the mean NLL over all positions in the chunk.
-        # We want the NLL only over the non-overlapping suffix.
-        # Re-compute using the logits for precision.
+        # NLL only over the non-overlapping suffix. Re-compute from logits
+        # because outputs.loss is averaged across the full chunk.
         logits = outputs.logits  # (1, chunk_len, vocab)
-        # Shift: logits[0..T-1] predict tokens[1..T]
         shift_logits = logits[:, :-1, :].contiguous()
         shift_labels = chunk[:, 1:].contiguous()
 
-        # Only count positions that fall in the non-overlapping part
-        # relative positions within the chunk: [target_begin - begin : end - begin - 1]
-        rel_start = target_begin - begin  # first position we care about
-        # shift_labels has length (end - begin - 1)
-        # we want positions rel_start .. (end - begin - 1)
-        sl = shift_logits[:, rel_start:, :]  # (1, target_len, vocab) approximately
-        lb = shift_labels[:, rel_start:]     # (1, target_len)
+        rel_start = target_begin - begin
+        sl = shift_logits[:, rel_start:, :]
+        lb = shift_labels[:, rel_start:]
+
+        scored = lb.numel()
+        if scored == 0:
+            prev_end = end
+            continue
 
         loss_fct = nn.CrossEntropyLoss(reduction="sum")
         nll = loss_fct(sl.view(-1, sl.size(-1)), lb.view(-1))
         nlls.append(nll.item())
+        n_scored += scored
         window_idx += 1
 
         if verbose and (window_idx % 8 == 0 or end == seq_len):
-            running_ppl = float(torch.exp(torch.tensor(sum(nlls) / max(1, _count_scored_tokens_partial(input_ids, max_length, stride, end)))).item())
+            running_ppl = float(torch.exp(torch.tensor(sum(nlls) / max(1, n_scored))).item())
             print(f"  [perplexity] window {window_idx}/{total_windows} "
                   f"({end}/{seq_len} tokens, running ppl: {running_ppl:.2f})")
 
@@ -139,60 +139,13 @@ def perplexity(
     if not nlls:
         raise ValueError("No tokens were evaluated — text may be too short.")
 
-    total_nll = sum(nlls)
-    # Total number of predicted tokens (denominator)
-    # prev_end - 1 because the last token has no next token to predict
-    n_tokens = max(prev_end - 1, 1)
-    # More precisely: count tokens we actually scored
-    # Recount from the window logic: it's the sum of target_len values, but
-    # adjusted for the shift.  Approximate with the closed-form version.
-    # Simpler: count tokens directly.
-    avg_nll = total_nll / max(1, _count_scored_tokens(input_ids, max_length, stride))
+    avg_nll = sum(nlls) / max(1, n_scored)
     return float(torch.exp(torch.tensor(avg_nll)).item())
-
-
-def _count_scored_tokens_partial(input_ids: torch.Tensor, max_length: int, stride: int, up_to: int) -> int:
-    """Count scored tokens up to a given position (for running ppl display)."""
-    seq_len = input_ids.size(1)
-    total = 0
-    prev_end = 0
-    for begin in range(0, seq_len, stride):
-        end = min(begin + max_length, seq_len)
-        if end > up_to:
-            end = up_to
-        target_begin = max(begin, prev_end)
-        target_len = end - target_begin
-        if target_len > 0:
-            # shift_logits[:, rel_start:] scores (end - target_begin - 1) positions
-            total += max(0, target_len - 1)
-        prev_end = end
-        if end >= up_to:
-            break
-    return max(total, 1)
-
-
-def _count_scored_tokens(input_ids: torch.Tensor, max_length: int, stride: int) -> int:
-    """Count total non-overlapping tokens scored across all windows."""
-    seq_len = input_ids.size(1)
-    total = 0
-    prev_end = 0
-    for begin in range(0, seq_len, stride):
-        end = min(begin + max_length, seq_len)
-        target_begin = max(begin, prev_end)
-        target_len = end - target_begin
-        if target_len > 0:
-            # shift_logits[:, rel_start:] contributes (end - target_begin - 1)
-            # CE losses — the first target position has no in-window predecessor
-            total += max(0, target_len - 1)
-        prev_end = end
-        if end == seq_len:
-            break
-    return max(total, 1)
 
 
 def _load_dataset_text(name: str, max_samples: Optional[int] = None) -> str:
     """Load and concatenate text from a HuggingFace dataset."""
-    from datasets import load_dataset
+    from datasets import load_dataset  # pyright: ignore[reportMissingImports]
 
     if name == "wikitext2":
         ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")

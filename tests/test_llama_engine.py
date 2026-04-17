@@ -72,11 +72,17 @@ TINYLLAMA_EXISTS = (
 ).exists()
 
 
+def _tinyllama_blob() -> Path:
+    blob = resolve_ollama_blob("tinyllama:latest")
+    assert blob is not None, "TINYLLAMA_EXISTS guard failed to prevent None blob"
+    return blob
+
+
 @pytest.mark.skipif(not TINYLLAMA_EXISTS, reason="tinyllama not in Ollama")
 class TestLlamaEngineCore:
     @pytest.fixture
     def engine(self):
-        blob = resolve_ollama_blob("tinyllama:latest")
+        blob = _tinyllama_blob()
         eng = LlamaEngine(blob, n_ctx=128)
         yield eng
         eng.close()
@@ -85,13 +91,13 @@ class TestLlamaEngineCore:
         assert engine.is_loaded
 
     def test_close(self):
-        blob = resolve_ollama_blob("tinyllama:latest")
+        blob = _tinyllama_blob()
         eng = LlamaEngine(blob, n_ctx=128)
         eng.close()
         assert not eng.is_loaded
 
     def test_context_manager(self):
-        blob = resolve_ollama_blob("tinyllama:latest")
+        blob = _tinyllama_blob()
         with LlamaEngine(blob, n_ctx=128) as eng:
             assert eng.is_loaded
         assert not eng.is_loaded
@@ -120,7 +126,7 @@ class TestLlamaEngineCore:
 class TestLlamaEngineLogits:
     @pytest.fixture(scope="class")
     def engine(self):
-        blob = resolve_ollama_blob("tinyllama:latest")
+        blob = _tinyllama_blob()
         eng = LlamaEngine(blob, n_ctx=128)
         yield eng
         eng.close()
@@ -157,7 +163,7 @@ class TestLlamaEngineLogits:
 class TestLlamaEngineGenerate:
     @pytest.fixture(scope="class")
     def engine(self):
-        blob = resolve_ollama_blob("tinyllama:latest")
+        blob = _tinyllama_blob()
         eng = LlamaEngine(blob, n_ctx=128)
         yield eng
         eng.close()
@@ -202,7 +208,7 @@ class TestLlamaEngineGenerate:
 class TestLlamaEnginePerplexity:
     @pytest.fixture(scope="class")
     def engine(self):
-        blob = resolve_ollama_blob("tinyllama:latest")
+        blob = _tinyllama_blob()
         eng = LlamaEngine(blob, n_ctx=512)
         yield eng
         eng.close()
@@ -248,7 +254,7 @@ class TestExportHfToGguf:
                 tokens = eng.tokenize("The capital of France is")
                 logits_exported = eng.logits(tokens)
 
-            blob = resolve_ollama_blob("tinyllama:latest")
+            blob = _tinyllama_blob()
             with LlamaEngine(blob, n_ctx=128) as eng_orig:
                 tokens_orig = eng_orig.tokenize("The capital of France is")
                 logits_original = eng_orig.logits(tokens_orig)

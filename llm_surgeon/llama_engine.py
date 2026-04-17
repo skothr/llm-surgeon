@@ -78,7 +78,7 @@ class LlamaEngine:
         n_gpu_layers: int = -1,
         n_ctx: int = 2048,
     ):
-        from llama_cpp import Llama
+        from llama_cpp import Llama  # pyright: ignore[reportMissingImports]
 
         self._path = Path(gguf_path)
         log.info("Loading GGUF via llama.cpp: %s", self._path.name)
@@ -414,7 +414,7 @@ def export_hf_to_gguf(model, tokenizer, output_path: Path) -> Path:
     gguf.GGUFWriter. Q and K matrices are forward-permuted to match
     the layout llama.cpp expects.
     """
-    import gguf
+    import gguf  # pyright: ignore[reportMissingImports]
 
     output_path = Path(output_path)
     config = model.config

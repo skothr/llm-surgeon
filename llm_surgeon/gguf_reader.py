@@ -580,7 +580,7 @@ def _build_tokenizer(meta: dict):
             pair = m.split(" ", 1)
             if len(pair) == 2:
                 merge_pairs.append(tuple(pair))
-        tok = Tokenizer(BPE(vocab=vocab, merges=merge_pairs, unk_token=unk))
+        tok = Tokenizer(BPE(vocab=vocab, merges=merge_pairs, unk_token=unk))  # type: ignore
     elif scores:
         tok = Tokenizer(Unigram([(t, s) for t, s in zip(tokens, scores)]))  # type: ignore
     else:

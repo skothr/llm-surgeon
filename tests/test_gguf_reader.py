@@ -229,7 +229,7 @@ class TestGGUFParseFailureClosesFile:
 class TestGGUFAlignment:
     def test_honors_non_default_alignment(self, tmp_path):
         """Writer with alignment=64 must be readable by GGUFFile."""
-        import gguf
+        import gguf  # pyright: ignore[reportMissingImports]
 
         out = tmp_path / "align64.gguf"
         writer = gguf.GGUFWriter(str(out), arch="llama")

@@ -203,6 +203,77 @@ class TestLlamaEngineGenerate:
         steps2 = list(engine.generate(tokens, max_tokens=3, temperature=0))
         assert [s.token_id for s in steps1] == [s.token_id for s in steps2]
 
+    def test_generate_seed_reproducible(self, engine):
+        tokens = engine.tokenize("Once upon a time")
+        s1 = list(engine.generate(tokens, max_tokens=5, temperature=1.0, seed=42))
+        s2 = list(engine.generate(tokens, max_tokens=5, temperature=1.0, seed=42))
+        assert [s.token_id for s in s1] == [s.token_id for s in s2]
+
+    def test_generate_different_seeds_diverge(self, engine):
+        tokens = engine.tokenize("Once upon a time")
+        s1 = list(engine.generate(tokens, max_tokens=10, temperature=1.0, seed=1))
+        s2 = list(engine.generate(tokens, max_tokens=10, temperature=1.0, seed=99))
+        # Not a hard guarantee, but extremely likely over 10 tokens at temp=1.
+        assert [s.token_id for s in s1] != [s.token_id for s in s2]
+
+    def test_generate_top_k_1_is_greedy(self, engine):
+        tokens = engine.tokenize("The capital of France is")
+        greedy = list(engine.generate(tokens, max_tokens=3, temperature=0))
+        top1 = list(engine.generate(tokens, max_tokens=3, temperature=1.0, top_k=1, seed=0))
+        # top_k=1 collapses the distribution to the argmax, so sampling with
+        # any seed should produce the same trajectory as greedy.
+        assert [s.token_id for s in top1] == [s.token_id for s in greedy]
+
+    def test_generate_min_p_filters(self, engine):
+        # With min_p=1.0, only tokens tied with the max prob survive — should
+        # still produce a token every step (falls back to argmax if filter
+        # empties the distribution), and be deterministic given a seed.
+        tokens = engine.tokenize("Hello")
+        s1 = list(engine.generate(tokens, max_tokens=3, temperature=1.0, min_p=1.0, seed=7))
+        s2 = list(engine.generate(tokens, max_tokens=3, temperature=1.0, min_p=1.0, seed=7))
+        assert [s.token_id for s in s1] == [s.token_id for s in s2]
+        assert len(s1) == 3
+
+
+class TestSampleHelper:
+    """Unit tests for the numpy sampler used by both engines.
+
+    Doesn't need a model — operates on synthetic logits."""
+
+    def test_top_k_one_collapses_to_argmax(self):
+        from llm_surgeon.llama_engine import _sample
+        logits = np.array([0.1, 5.0, 0.2, 0.3], dtype=np.float32)
+        rng = np.random.default_rng(0)
+        for _ in range(10):
+            assert _sample(logits, temperature=1.0, top_k=1, rng=rng) == 1
+
+    def test_seed_reproducible(self):
+        from llm_surgeon.llama_engine import _sample
+        logits = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+        r1 = np.random.default_rng(42)
+        r2 = np.random.default_rng(42)
+        seq1 = [_sample(logits, temperature=1.0, rng=r1) for _ in range(20)]
+        seq2 = [_sample(logits, temperature=1.0, rng=r2) for _ in range(20)]
+        assert seq1 == seq2
+
+    def test_min_p_drops_low_prob(self):
+        from llm_surgeon.llama_engine import _sample
+        # Heavily skewed distribution: one dominant mode, long tail.
+        logits = np.array([10.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        rng = np.random.default_rng(0)
+        # min_p=0.5 demands probs ≥ 0.5 × max_prob. Only index 0 qualifies.
+        for _ in range(20):
+            assert _sample(logits, temperature=1.0, min_p=0.5, rng=rng) == 0
+
+    def test_top_p_nucleus_cutoff(self):
+        from llm_surgeon.llama_engine import _sample
+        # logits chosen so softmax ≈ [0.9, 0.05, 0.03, 0.02].
+        logits = np.log(np.array([0.9, 0.05, 0.03, 0.02], dtype=np.float32))
+        rng = np.random.default_rng(123)
+        # top_p=0.5 keeps only index 0 (cumprob already > 0.5 after one step).
+        draws = {_sample(logits, temperature=1.0, top_p=0.5, rng=rng) for _ in range(50)}
+        assert draws == {0}
+
 
 @pytest.mark.skipif(not TINYLLAMA_EXISTS, reason="tinyllama not in Ollama")
 class TestLlamaEnginePerplexity:

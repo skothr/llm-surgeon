@@ -23,6 +23,55 @@ class GenerateStep:
     logits: np.ndarray | None
 
 
+def _sample(
+    logits: np.ndarray,
+    *,
+    temperature: float,
+    top_k: int = 0,
+    top_p: float = 1.0,
+    min_p: float = 0.0,
+    rng: np.random.Generator,
+) -> int:
+    """Sample one token id from ``logits`` using llama.cpp's filter order:
+    temperature → top_k → top_p → min_p → multinomial. Callers should
+    handle temperature == 0 (greedy) themselves; this assumes temperature > 0.
+    """
+    scaled = logits / temperature
+    if top_k > 0 and top_k < scaled.shape[-1]:
+        threshold = np.partition(scaled, -top_k)[-top_k]
+        scaled = np.where(scaled < threshold, -np.inf, scaled)
+    probs = np.exp(scaled - scaled.max())
+    s = probs.sum()
+    if not np.isfinite(s) or s <= 0:
+        # Shouldn't happen after top_k + softmax, but guard so we never hand
+        # NaN/zero distribution to rng.choice.
+        return int(np.argmax(logits))
+    probs = probs / s
+    if top_p < 1.0:
+        sorted_idx = np.argsort(-probs)
+        cum = np.cumsum(probs[sorted_idx])
+        cutoff = int(np.searchsorted(cum, top_p)) + 1
+        mask = np.ones_like(probs, dtype=bool)
+        mask[sorted_idx[:cutoff]] = False
+        probs = np.where(mask, 0.0, probs)
+        s2 = probs.sum()
+        if s2 > 0:
+            probs = probs / s2
+        else:
+            return int(sorted_idx[0])
+    if min_p > 0.0:
+        # Keep tokens with prob ≥ min_p × max(prob). Unlike top_p (quantile),
+        # min_p is a relative-floor filter robust to long-tail distributions.
+        thresh = min_p * probs.max()
+        probs = np.where(probs >= thresh, probs, 0.0)
+        s3 = probs.sum()
+        if s3 > 0:
+            probs = probs / s3
+        else:
+            return int(np.argmax(logits))
+    return int(rng.choice(len(probs), p=probs))
+
+
 def compare_logits(
     logits_a: np.ndarray,
     logits_b: np.ndarray,
@@ -164,16 +213,25 @@ class LlamaEngine:
         temperature: float = 0.7,
         top_k: int = 40,
         top_p: float = 0.9,
+        min_p: float = 0.0,
         repetition_penalty: float = 1.0,
         stop_sequences: list[str] | None = None,
         emit_logits: bool = True,
+        seed: int | None = None,
     ) -> Iterator[GenerateStep]:
-        """Streaming token generation. Greedy when temperature=0."""
+        """Streaming token generation. Greedy when temperature=0.
+
+        Sampler order mirrors llama.cpp: repetition_penalty → temperature →
+        top_k → top_p → min_p → multinomial. Pass ``seed`` for reproducible
+        sampling (temperature > 0 only; greedy is already deterministic).
+        """
         self._require_loaded()
         assert self._llm is not None
         llm = self._llm
         llm.reset()
         llm.eval(tokens)
+
+        rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
 
         generated_ids: list[int] = []
         generated_text = ""
@@ -191,32 +249,14 @@ class LlamaEngine:
             if temperature == 0:
                 next_id = int(np.argmax(logits_arr))
             else:
-                scaled = logits_arr / temperature
-                if top_k > 0:
-                    threshold = np.partition(scaled, -top_k)[-top_k]
-                    scaled[scaled < threshold] = -np.inf
-                probs = np.exp(scaled - scaled.max())
-                s = probs.sum()
-                if not np.isfinite(s) or s <= 0:
-                    # Shouldn't happen after top_k + softmax, but guard so we
-                    # never hand NaN/zero distribution to np.random.choice.
-                    next_id = int(np.argmax(scaled))
-                else:
-                    probs /= s
-                    if top_p < 1.0:
-                        sorted_idx = np.argsort(-probs)
-                        cum = np.cumsum(probs[sorted_idx])
-                        cutoff = np.searchsorted(cum, top_p) + 1
-                        mask = np.ones_like(probs, dtype=bool)
-                        mask[sorted_idx[:cutoff]] = False
-                        probs[mask] = 0.0
-                        s2 = probs.sum()
-                        if s2 > 0:
-                            probs /= s2
-                        else:
-                            probs[:] = 0.0
-                            probs[sorted_idx[0]] = 1.0
-                    next_id = int(np.random.choice(len(probs), p=probs))
+                next_id = _sample(
+                    logits_arr,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    min_p=min_p,
+                    rng=rng,
+                )
 
             token_str = self.detokenize([next_id])
             generated_ids.append(next_id)

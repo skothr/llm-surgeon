@@ -443,11 +443,17 @@ class CalibrationReport:
             either baseline or current stats.
         per_layer_scale_mean: Mean of the applied scale vector per layer/norm
             (diagnostic — values far from 1.0 indicate large drift).
+        layers_fully_skipped: Current-model layer indices where every channel
+            of at least one norm was skipped — i.e. the layer is
+            mathematically untouched. Usually indicates a hook that never
+            fired during stats capture (baseline or current) and is a
+            silent correctness hazard.
     """
     layers_calibrated: int = 0
     channels_clipped: int = 0
     channels_skipped: int = 0
     per_layer_scale_mean: List[float] = field(default_factory=list)
+    layers_fully_skipped: List[int] = field(default_factory=list)
 
 
 def capture_calibration_stats(
@@ -546,6 +552,7 @@ def calibrate(
             continue
 
         layer = current_layers[cur_idx]
+        layer_has_full_skip = False
         for attr, base_list, cur_list in (
             ("input_layernorm", baseline_stats.input_norm, current_stats.input_norm),
             ("post_attention_layernorm", baseline_stats.post_attn_norm, current_stats.post_attn_norm),
@@ -568,12 +575,32 @@ def calibrate(
             hi = scale_clip
             clipped = raw_scale.clamp(min=lo, max=hi)
             report.channels_clipped += int((raw_scale != clipped).sum().item())
-            report.channels_skipped += int((~valid).sum().item())
+            skipped_here = int((~valid).sum().item())
+            report.channels_skipped += skipped_here
             report.per_layer_scale_mean.append(float(clipped.mean().item()))
+
+            # A norm whose every channel was skipped contributes nothing — the
+            # applied scale is identity. This usually means stats capture
+            # produced an all-zero tensor for this layer/norm (hook never fired).
+            if skipped_here == base_ms.numel():
+                layer_has_full_skip = True
 
             with torch.no_grad():
                 norm.weight.data.mul_(clipped.to(norm.weight.dtype))
             report.layers_calibrated += 1
+
+        if layer_has_full_skip:
+            report.layers_fully_skipped.append(cur_idx)
+
+    if report.layers_fully_skipped:
+        warnings.warn(
+            f"calibrate(): layers {report.layers_fully_skipped} were fully skipped "
+            f"(every channel sub-threshold in baseline or current stats). "
+            f"These layers are mathematically unchanged — likely a missed hook "
+            f"during stats capture. Surgery may not be calibrated correctly.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     return report
 
@@ -640,6 +667,22 @@ def _capture_norm_outputs(
             h.remove()
 
     hidden = model.config.hidden_size
+
+    missing = []
+    for i in range(num_layers):
+        if input_ms[i] is None:
+            missing.append((i, "input_layernorm"))
+        if post_ms[i] is None:
+            missing.append((i, "post_attention_layernorm"))
+    if missing:
+        warnings.warn(
+            f"_capture_norm_outputs: forward hook never fired for "
+            f"{len(missing)} layer/norm pairs: {missing}. Their stats will "
+            f"be zero, which calibrate() will flag as fully-skipped layers.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     zeros = lambda: torch.zeros(hidden)  # noqa: E731
     return CalibrationStats(
         input_norm=[v if v is not None else zeros() for v in input_ms],

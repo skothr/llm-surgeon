@@ -461,6 +461,35 @@ class TestCalibrate:
             output = tiny_llama(input_ids)
         assert output.logits.shape == (1, 10, tiny_llama.config.vocab_size)
 
+    def test_calibrate_flags_fully_skipped_layer(self, tiny_llama):
+        """If a baseline layer's norm stats are all zero (e.g. hook never
+        fired), every channel is sub-threshold and the whole layer gets
+        skipped. calibrate() must surface that explicitly in the report
+        rather than silently leaving the layer unchanged."""
+        from llm_surgeon.surgery import (
+            calibrate, capture_calibration_stats, CalibrationStats,
+        )
+        from tests.conftest import _make_tiny_tokenizer
+        tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
+        text = " ".join([f"tok{i}" for i in range(4, 20)])
+
+        baseline = capture_calibration_stats(tiny_llama, tokenizer, text=text)
+        hidden = tiny_llama.config.hidden_size
+        # Simulate a dead/missed capture for layer 2's input_layernorm by
+        # zeroing its per-channel mean-square in the baseline.
+        zeroed_layer = 2
+        poisoned = CalibrationStats(
+            input_norm=[
+                torch.zeros(hidden) if i == zeroed_layer else t
+                for i, t in enumerate(baseline.input_norm)
+            ],
+            post_attn_norm=list(baseline.post_attn_norm),
+        )
+
+        with pytest.warns(UserWarning, match="fully skipped"):
+            report = calibrate(tiny_llama, tokenizer, baseline_stats=poisoned, text=text)
+        assert zeroed_layer in report.layers_fully_skipped
+
     def test_calibrate_restores_post_norm_variance(self, tiny_llama):
         """Post-calibration, per-channel post-norm mean-square should be
         closer to the pre-surgery baseline than before calibration."""

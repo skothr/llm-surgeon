@@ -35,6 +35,18 @@ class TestCompareLogits:
             "max_logit_diff", "mean_logit_diff", "top_k_agreement",
         }
 
+    def test_cosine_invariant_to_constant_offset(self):
+        # softmax is invariant to a constant offset, so logit vectors
+        # differing by an additive constant represent identical
+        # distributions. Cosine similarity should reflect that by
+        # mean-centering before the dot product.
+        rng = np.random.default_rng(0)
+        a = rng.standard_normal(2048).astype(np.float32)
+        b = a + 1000.0
+        result = compare_logits(a, b)
+        assert result["cosine_similarity"] == pytest.approx(1.0, abs=1e-4)
+        assert result["kl_divergence"] == pytest.approx(0.0, abs=1e-5)
+
 
 class TestGenerateStep:
     def test_fields(self):

@@ -33,8 +33,13 @@ def compare_logits(
     Returns dict with cosine_similarity, kl_divergence, max_logit_diff,
     mean_logit_diff, and top_k_agreement.
     """
-    cos_num = np.dot(logits_a, logits_b)
-    cos_den = np.linalg.norm(logits_a) * np.linalg.norm(logits_b)
+    # Mean-center before cosine: softmax(l) == softmax(l + c), so logits that
+    # differ only by a constant describe identical distributions. Raw cosine
+    # does not respect this shift invariance; centered cosine does.
+    a_centered = logits_a - logits_a.mean()
+    b_centered = logits_b - logits_b.mean()
+    cos_num = np.dot(a_centered, b_centered)
+    cos_den = np.linalg.norm(a_centered) * np.linalg.norm(b_centered)
     cosine = float(cos_num / cos_den) if cos_den > 0 else 0.0
 
     diff = np.abs(logits_a - logits_b)

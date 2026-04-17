@@ -407,48 +407,121 @@ def zero_attention(model, layer: int) -> SurgeryLog:
     return log
 
 
+@dataclass
+class CalibrationStats:
+    """Per-layer per-channel mean-square of RMSNorm outputs.
+
+    Produced by :func:`capture_calibration_stats` on a reference (pre-surgery)
+    model. Each tensor has shape ``(hidden_size,)`` and represents
+    ``mean_pos(y_i^2)`` over all token positions in the calibration text,
+    where ``y`` is the output of the corresponding RMSNorm layer.
+
+    Attributes:
+        input_norm: Mean-square of each layer's ``input_layernorm`` output.
+        post_attn_norm: Same for ``post_attention_layernorm``.
+    """
+    input_norm: List[torch.Tensor]
+    post_attn_norm: List[torch.Tensor]
+
+    @property
+    def num_layers(self) -> int:
+        return len(self.input_norm)
+
+    def __len__(self) -> int:
+        return self.num_layers
+
+
+@dataclass
+class CalibrationReport:
+    """Summary of a :func:`calibrate` run.
+
+    Attributes:
+        layers_calibrated: Count of layer/norm pairs whose weight was rescaled.
+        channels_clipped: Total channels whose scale hit the clip bounds
+            (indicates severe variance mismatch — often a dead channel).
+        channels_skipped: Channels skipped due to sub-threshold variance in
+            either baseline or current stats.
+        per_layer_scale_mean: Mean of the applied scale vector per layer/norm
+            (diagnostic — values far from 1.0 indicate large drift).
+    """
+    layers_calibrated: int = 0
+    channels_clipped: int = 0
+    channels_skipped: int = 0
+    per_layer_scale_mean: List[float] = field(default_factory=list)
+
+
 def capture_calibration_stats(
     model,
     tokenizer,
     text: Optional[str] = None,
     dataset: Optional[str] = None,
     num_samples: int = 128,
-) -> List[float]:
-    """Capture per-layer input RMS values for calibration reference.
+) -> CalibrationStats:
+    """Capture per-channel post-norm mean-square for each RMSNorm layer.
 
     Run this BEFORE surgery on the original model. The returned stats are
-    passed to calibrate() after surgery to correct for distribution shift.
+    passed to :func:`calibrate` after surgery to rescale each layer's
+    RMSNorm gain per-channel so the post-norm output distribution
+    downstream layers see matches what they were trained on.
 
     Returns:
-        List of per-layer RMS values (one float per layer).
+        :class:`CalibrationStats` with ``input_norm[i]`` and
+        ``post_attn_norm[i]`` each a ``(hidden_size,)`` tensor on CPU.
     """
-    return _capture_rms(model, tokenizer, text=text, dataset=dataset, num_samples=num_samples)
+    return _capture_norm_outputs(
+        model, tokenizer, text=text, dataset=dataset, num_samples=num_samples
+    )
 
 
 def calibrate(
     model,
     tokenizer,
-    baseline_stats: Optional[List[float]] = None,
+    baseline_stats: Optional[CalibrationStats] = None,
+    *,
+    layer_map: Optional[List[int]] = None,
+    scale_clip: float = 5.0,
+    min_variance: float = 1e-6,
     text: Optional[str] = None,
     dataset: Optional[str] = None,
     num_samples: int = 128,
-) -> None:
-    """Rescale RMSNorm gains to compensate for residual stream shift after surgery.
+) -> CalibrationReport:
+    """Rescale RMSNorm gains per-channel to match pre-surgery post-norm variance.
 
-    Uses a ratio-based approach: compares the per-layer input RMS of the
-    modified model against baseline stats from the original model, then
-    scales each layer's input_layernorm.weight by (baseline_rms / current_rms).
-    This ensures downstream layers see the same magnitude they expect.
+    For each surviving layer's ``input_layernorm`` and
+    ``post_attention_layernorm``, captures the current per-channel
+    mean-square of the norm's output, and multiplies the gain vector
+    element-wise by ``sqrt(baseline_mean_sq / current_mean_sq)``. That is
+    the exact scalar that restores each channel's post-norm magnitude to
+    its pre-surgery value (since RMSNorm's scale is linear in the gain).
+
+    This does NOT correct directional drift in the residual stream — layer
+    removal changes the direction of activations, and no amount of gain
+    scaling fixes that. The goal is more modest: keep each channel's
+    post-norm output in the magnitude regime the downstream layer was
+    trained on, so non-linearities and attention softmaxes don't saturate.
 
     Args:
-        model: The modified model to calibrate.
+        model: The surgically-modified model to calibrate.
         tokenizer: Tokenizer matching the model.
-        baseline_stats: Per-layer RMS from capture_calibration_stats() on the
-            original model. If None, calibration is skipped with a warning.
-        text: Calibration text. If None, loads from dataset.
-        dataset: Dataset name ('wikitext2'). Used if text is None.
-        num_samples: Number of samples from dataset.
+        baseline_stats: :class:`CalibrationStats` from the pre-surgery model.
+            If ``None``, calibration is skipped with a warning.
+        layer_map: Maps current-model layer index → baseline layer index. Use
+            this when ``remove_layers`` or ``reorder_layers`` shifted the
+            correspondence. If ``None``, uses identity mapping up to the
+            shorter depth (assumes no reordering).
+        scale_clip: Per-channel scale factor is clipped to
+            ``[1/scale_clip, scale_clip]`` so dead or near-dead channels
+            don't produce astronomical gains.
+        min_variance: Channels with mean-square below this in either the
+            baseline or the current stats are left untouched (prevents
+            division by noise).
+        text, dataset, num_samples: Calibration corpus. Same text should be
+            used for baseline capture and this call for a fair comparison.
+
+    Returns:
+        :class:`CalibrationReport` summarising what was changed.
     """
+    report = CalibrationReport()
     if baseline_stats is None:
         warnings.warn(
             "calibrate() called without baseline_stats. "
@@ -456,38 +529,70 @@ def calibrate(
             "then pass the result here. Skipping calibration.",
             UserWarning,
         )
-        return
+        return report
 
-    # Capture current RMS values on the modified model
-    current_stats = _capture_rms(model, tokenizer, text=text, dataset=dataset, num_samples=num_samples)
+    current_stats = _capture_norm_outputs(
+        model, tokenizer, text=text, dataset=dataset, num_samples=num_samples
+    )
 
-    # Apply scalar correction per layer: scale weight by baseline/current ratio
-    num_to_correct = min(len(baseline_stats), len(current_stats), len(model.model.layers))
-    for i in range(num_to_correct):
-        layer = model.model.layers[i]
-        if not hasattr(layer, "input_layernorm"):
+    current_layers = model.model.layers
+    if layer_map is None:
+        layer_map = list(range(min(len(current_layers), baseline_stats.num_layers)))
+
+    for cur_idx, base_idx in enumerate(layer_map):
+        if cur_idx >= len(current_layers):
+            break
+        if base_idx >= baseline_stats.num_layers:
             continue
 
-        baseline_rms = baseline_stats[i]
-        current_rms = current_stats[i]
+        layer = current_layers[cur_idx]
+        for attr, base_list, cur_list in (
+            ("input_layernorm", baseline_stats.input_norm, current_stats.input_norm),
+            ("post_attention_layernorm", baseline_stats.post_attn_norm, current_stats.post_attn_norm),
+        ):
+            if not hasattr(layer, attr):
+                continue
+            norm = getattr(layer, attr)
+            if norm.weight is None:
+                continue
 
-        if current_rms < 1e-8:
-            continue
+            base_ms = base_list[base_idx].to(norm.weight.device, dtype=torch.float32)
+            cur_ms = cur_list[cur_idx].to(norm.weight.device, dtype=torch.float32)
 
-        ratio = baseline_rms / current_rms
-        norm_weight = layer.input_layernorm.weight
-        with torch.no_grad():
-            norm_weight.data *= torch.tensor(ratio, device=norm_weight.device, dtype=norm_weight.dtype)
+            # Per-channel scale: g_new = g * sqrt(baseline / current). Channels
+            # below min_variance in either side are skipped (scale = 1).
+            valid = (base_ms > min_variance) & (cur_ms > min_variance)
+            raw_scale = torch.where(valid, torch.sqrt(base_ms / cur_ms.clamp_min(min_variance)),
+                                    torch.ones_like(base_ms))
+            lo = 1.0 / scale_clip
+            hi = scale_clip
+            clipped = raw_scale.clamp(min=lo, max=hi)
+            report.channels_clipped += int((raw_scale != clipped).sum().item())
+            report.channels_skipped += int((~valid).sum().item())
+            report.per_layer_scale_mean.append(float(clipped.mean().item()))
+
+            with torch.no_grad():
+                norm.weight.data.mul_(clipped.to(norm.weight.dtype))
+            report.layers_calibrated += 1
+
+    return report
 
 
-def _capture_rms(
+def _capture_norm_outputs(
     model,
     tokenizer,
     text: Optional[str] = None,
     dataset: Optional[str] = None,
     num_samples: int = 128,
-) -> List[float]:
-    """Capture per-layer input RMS values by running calibration data through the model."""
+) -> CalibrationStats:
+    """Run the calibration corpus through ``model`` and capture per-channel
+    mean-square of each layer's RMSNorm outputs.
+
+    Uses forward hooks on ``input_layernorm`` and ``post_attention_layernorm``
+    so the captured tensors are genuine post-norm activations (not the
+    pre-norm input). All tensors are moved to CPU before returning so callers
+    can keep them around without pinning GPU memory.
+    """
     if text is None and dataset is None:
         dataset = "wikitext2"
 
@@ -496,10 +601,9 @@ def _capture_rms(
         ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
         available = len(ds["text"])
         if available < num_samples:
-            import warnings
             warnings.warn(
-                f"_capture_rms: requested {num_samples} samples but "
-                f"wikitext-2 train has {available} — RMS stats may be noisy.",
+                f"_capture_norm_outputs: requested {num_samples} samples but "
+                f"wikitext-2 train has {available} — calibration stats may be noisy.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -510,19 +614,22 @@ def _capture_rms(
     input_ids = enc["input_ids"].to(device)
 
     num_layers = len(model.model.layers)
-    rms_values: List[float] = [0.0] * num_layers
+    input_ms: List[Optional[torch.Tensor]] = [None] * num_layers
+    post_ms: List[Optional[torch.Tensor]] = [None] * num_layers
     hooks = []
 
-    def _make_hook(idx):
-        def hook(_module, args):
-            hs = args[0].detach().float()  # (batch, seq, hidden)
-            # RMS across all positions: sqrt(mean(x^2))
-            rms = hs.pow(2).mean().sqrt().item()
-            rms_values[idx] = rms
+    def _make_hook(idx: int, target: List[Optional[torch.Tensor]]):
+        def hook(_module, _inp, out):
+            # out: (batch, seq, hidden). Per-channel mean-square over (batch, seq).
+            y = out.detach().float()
+            target[idx] = y.pow(2).mean(dim=(0, 1)).cpu()
         return hook
 
     for i, layer in enumerate(model.model.layers):
-        hooks.append(layer.register_forward_pre_hook(_make_hook(i)))
+        if hasattr(layer, "input_layernorm"):
+            hooks.append(layer.input_layernorm.register_forward_hook(_make_hook(i, input_ms)))
+        if hasattr(layer, "post_attention_layernorm"):
+            hooks.append(layer.post_attention_layernorm.register_forward_hook(_make_hook(i, post_ms)))
 
     try:
         model.eval()
@@ -532,7 +639,12 @@ def _capture_rms(
         for h in hooks:
             h.remove()
 
-    return rms_values
+    hidden = model.config.hidden_size
+    zeros = lambda: torch.zeros(hidden)  # noqa: E731
+    return CalibrationStats(
+        input_norm=[v if v is not None else zeros() for v in input_ms],
+        post_attn_norm=[v if v is not None else zeros() for v in post_ms],
+    )
 
 
 def _is_ollama_id(model_id: str) -> bool:

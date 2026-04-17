@@ -396,15 +396,18 @@ class TestChainedOperations:
 
 
 class TestCalibrate:
-    def test_capture_stats_returns_list(self, tiny_llama):
-        from llm_surgeon.surgery import capture_calibration_stats
+    def test_capture_stats_returns_per_channel_tensors(self, tiny_llama):
+        from llm_surgeon.surgery import capture_calibration_stats, CalibrationStats
         from tests.conftest import _make_tiny_tokenizer
         tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
         text = " ".join([f"tok{i}" for i in range(4, 20)])
         stats = capture_calibration_stats(tiny_llama, tokenizer, text=text)
-        assert isinstance(stats, list)
-        assert len(stats) == 8  # 8 layers in tiny_llama
-        assert all(isinstance(v, float) and v > 0 for v in stats)
+        assert isinstance(stats, CalibrationStats)
+        assert stats.num_layers == 8
+        hidden = tiny_llama.config.hidden_size
+        for t in stats.input_norm + stats.post_attn_norm:
+            assert t.shape == (hidden,)
+            assert (t >= 0).all()  # mean-square is non-negative
 
     def test_calibrate_with_baseline_modifies_norms(self, tiny_llama):
         from llm_surgeon.surgery import calibrate, capture_calibration_stats, remove_layers
@@ -412,20 +415,18 @@ class TestCalibrate:
         tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
         text = " ".join([f"tok{i}" for i in range(4, 20)])
 
-        # Capture baseline BEFORE surgery
         baseline = capture_calibration_stats(tiny_llama, tokenizer, text=text)
 
-        # Surgery
         remove_layers(tiny_llama, [3, 4])
 
-        # Clone norm weights before calibration
         norms_before = [
             layer.input_layernorm.weight.data.clone()
             for layer in tiny_llama.model.layers
         ]
 
-        # Calibrate with baseline
-        calibrate(tiny_llama, tokenizer, baseline_stats=baseline, text=text)
+        layer_map = [0, 1, 2, 5, 6, 7]  # original indices of surviving layers
+        report = calibrate(tiny_llama, tokenizer, baseline_stats=baseline,
+                           layer_map=layer_map, text=text)
 
         norms_after = [
             layer.input_layernorm.weight.data.clone()
@@ -435,6 +436,7 @@ class TestCalibrate:
             not torch.equal(b, a) for b, a in zip(norms_before, norms_after)
         )
         assert changed, "calibrate() did not modify any norm parameters"
+        assert report.layers_calibrated > 0
 
     def test_calibrate_without_baseline_warns(self, tiny_llama):
         from llm_surgeon.surgery import calibrate, remove_layers
@@ -452,11 +454,50 @@ class TestCalibrate:
         text = " ".join([f"tok{i}" for i in range(4, 20)])
         baseline = capture_calibration_stats(tiny_llama, tokenizer, text=text)
         remove_layers(tiny_llama, [3, 4])
-        calibrate(tiny_llama, tokenizer, baseline_stats=baseline, text=text)
+        calibrate(tiny_llama, tokenizer, baseline_stats=baseline,
+                  layer_map=[0, 1, 2, 5, 6, 7], text=text)
         input_ids = torch.randint(0, tiny_llama.config.vocab_size, (1, 10))
         with torch.no_grad():
             output = tiny_llama(input_ids)
         assert output.logits.shape == (1, 10, tiny_llama.config.vocab_size)
+
+    def test_calibrate_restores_post_norm_variance(self, tiny_llama):
+        """Post-calibration, per-channel post-norm mean-square should be
+        closer to the pre-surgery baseline than before calibration."""
+        from llm_surgeon.surgery import (
+            calibrate, capture_calibration_stats, remove_layers,
+            _capture_norm_outputs,
+        )
+        from tests.conftest import _make_tiny_tokenizer
+        tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
+        text = " ".join([f"tok{i}" for i in range(4, 40)])
+
+        baseline = capture_calibration_stats(tiny_llama, tokenizer, text=text)
+        remove_layers(tiny_llama, [3, 4])
+        layer_map = [0, 1, 2, 5, 6, 7]
+
+        pre_cal = _capture_norm_outputs(tiny_llama, tokenizer, text=text)
+
+        def drift(current, base_list, lm):
+            total = 0.0
+            for cur_i, base_i in enumerate(lm):
+                if cur_i >= len(current) or base_i >= len(base_list):
+                    continue
+                diff = (current[cur_i] - base_list[base_i]).abs().mean().item()
+                total += diff
+            return total
+
+        drift_before = drift(pre_cal.input_norm, baseline.input_norm, layer_map)
+
+        calibrate(tiny_llama, tokenizer, baseline_stats=baseline,
+                  layer_map=layer_map, text=text)
+        post_cal = _capture_norm_outputs(tiny_llama, tokenizer, text=text)
+        drift_after = drift(post_cal.input_norm, baseline.input_norm, layer_map)
+
+        assert drift_after < drift_before, (
+            f"calibrate() should shrink post-norm variance drift, "
+            f"but went from {drift_before:.4f} to {drift_after:.4f}"
+        )
 
 
 class TestSaveReload:

@@ -298,7 +298,7 @@ def test_intervene_scale_identity(tiny_llama, tiny_llama_config):
 
     device = tiny_llama.model.embed_tokens.weight.device
     enc = tokenizer(prompt, return_tensors="pt")
-    input_ids = enc["input_ids"].to(device)
+    input_ids = enc["input_ids"].to(device)  # pyright: ignore[reportAttributeAccessIssue]
     with torch.no_grad():
         baseline_logits = tiny_llama(input_ids).logits[0]
 
@@ -317,7 +317,7 @@ def test_intervene_scale_zero_changes_output(tiny_llama, tiny_llama_config):
 
     device = tiny_llama.model.embed_tokens.weight.device
     enc = tokenizer(prompt, return_tensors="pt")
-    input_ids = enc["input_ids"].to(device)
+    input_ids = enc["input_ids"].to(device)  # pyright: ignore[reportAttributeAccessIssue]
     with torch.no_grad():
         baseline_logits = tiny_llama(input_ids).logits[0]
 

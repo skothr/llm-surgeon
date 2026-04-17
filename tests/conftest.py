@@ -45,13 +45,13 @@ def _make_tiny_tokenizer(vocab_size: int):
 def tiny_llama_config():
     """LLaMA config with small dimensions for fast testing."""
     return LlamaConfig(
-        vocab_size=64,
-        hidden_size=32,
-        intermediate_size=64,
-        num_hidden_layers=8,
-        num_attention_heads=4,
-        num_key_value_heads=4,
-        max_position_embeddings=128,
+        vocab_size=64,  # pyright: ignore[reportCallIssue]
+        hidden_size=32,  # pyright: ignore[reportCallIssue]
+        intermediate_size=64,  # pyright: ignore[reportCallIssue]
+        num_hidden_layers=8,  # pyright: ignore[reportCallIssue]
+        num_attention_heads=4,  # pyright: ignore[reportCallIssue]
+        num_key_value_heads=4,  # pyright: ignore[reportCallIssue]
+        max_position_embeddings=128,  # pyright: ignore[reportCallIssue]
     )
 
 
@@ -78,7 +78,7 @@ def tiny_checkpoint(tiny_llama, tmp_path):
     with open(corpus_file, "w") as f:
         f.write("\n".join([f"tok{i}" for i in range(vocab_size)] + ["hello world"]))
 
-    spm.SentencePieceTrainer.train(
+    spm.SentencePieceTrainer.train(  # pyright: ignore[reportAttributeAccessIssue]
         input=corpus_file,
         model_prefix=os.path.join(checkpoint_dir, "tokenizer"),
         vocab_size=vocab_size,

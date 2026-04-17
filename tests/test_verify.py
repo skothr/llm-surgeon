@@ -31,13 +31,13 @@ def tokenizer():
 def tiny_llama_7layer():
     """7-layer LLaMA model (one fewer than tiny_llama) for comparison tests."""
     cfg = LlamaConfig(
-        vocab_size=64,
-        hidden_size=32,
-        intermediate_size=64,
-        num_hidden_layers=7,
-        num_attention_heads=4,
-        num_key_value_heads=4,
-        max_position_embeddings=128,
+        vocab_size=64,  # pyright: ignore[reportCallIssue]
+        hidden_size=32,  # pyright: ignore[reportCallIssue]
+        intermediate_size=64,  # pyright: ignore[reportCallIssue]
+        num_hidden_layers=7,  # pyright: ignore[reportCallIssue]
+        num_attention_heads=4,  # pyright: ignore[reportCallIssue]
+        num_key_value_heads=4,  # pyright: ignore[reportCallIssue]
+        max_position_embeddings=128,  # pyright: ignore[reportCallIssue]
     )
     model = LlamaForCausalLM(cfg)
     model.eval()

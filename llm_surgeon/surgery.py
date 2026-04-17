@@ -673,21 +673,22 @@ def _quantize_in_place(model, bnb_config):
         bias_data = module.bias.data if module.bias is not None else None
 
         if is_4bit:
-            new_mod = bnb.nn.Linear4bit(
+            new_mod = bnb.nn.Linear4bit(  # pyright: ignore[reportPrivateImportUsage]
                 module.in_features, module.out_features,
                 bias=module.bias is not None,
                 compute_dtype=compute_dtype, quant_type=quant_type,
             )
-            new_mod.weight = bnb.nn.Params4bit(
-                w, requires_grad=False, quant_type=quant_type,
-                compress_statistics=True,
+            new_mod.weight = bnb.nn.Params4bit(  # pyright: ignore[reportPrivateImportUsage]
+                w, requires_grad=False,
+                quant_type=quant_type,  # pyright: ignore[reportCallIssue]
+                compress_statistics=True,  # pyright: ignore[reportCallIssue]
             )
         else:
-            new_mod = bnb.nn.Linear8bitLt(
+            new_mod = bnb.nn.Linear8bitLt(  # pyright: ignore[reportPrivateImportUsage]
                 module.in_features, module.out_features,
                 bias=module.bias is not None, has_fp16_weights=False,
             )
-            new_mod.weight = bnb.nn.Int8Params(w, requires_grad=False)
+            new_mod.weight = bnb.nn.Int8Params(w, requires_grad=False)  # pyright: ignore[reportPrivateImportUsage]
 
         if bias_data is not None:
             new_mod.bias = nn.Parameter(bias_data)

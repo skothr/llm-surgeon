@@ -1,7 +1,5 @@
 """Tests for experiment tracking module."""
 
-import pytest
-from llm_surgeon import tracking
 from llm_surgeon.tracking import start, list_experiments, get_experiment, compare_experiments
 from llm_surgeon.surgery import SurgeryLog
 

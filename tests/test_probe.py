@@ -181,7 +181,7 @@ def test_logit_lens_full_logits(tiny_llama, tiny_llama_config):
     assert result.logits is not None
     num_layers = tiny_llama_config.num_hidden_layers
     assert len(result.logits) == num_layers * 2
-    for key, tensor in result.logits.items():
+    for _key, tensor in result.logits.items():
         assert tensor.shape[-1] == tiny_llama_config.vocab_size
 
 

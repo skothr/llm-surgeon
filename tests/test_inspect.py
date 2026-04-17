@@ -2,7 +2,6 @@
 
 import pytest
 import torch
-from transformers import LlamaConfig, LlamaForCausalLM
 
 from llm_surgeon.inspect import (
     block_influence,
@@ -151,13 +150,13 @@ class TestSublayerInfluence:
 
     def test_contribution_norms_non_negative(self, tiny_llama, tokenizer):
         scores = sublayer_influence(tiny_llama, tokenizer, ["word4 word5 word6"])
-        for idx, layer_scores in scores.items():
+        for _idx, layer_scores in scores.items():
             for sublayer in ("attention", "mlp", "total"):
                 assert layer_scores[sublayer]["contribution_norm"] >= 0.0
 
     def test_magnitude_ratios_positive(self, tiny_llama, tokenizer):
         scores = sublayer_influence(tiny_llama, tokenizer, ["word4 word5 word6"])
-        for idx, layer_scores in scores.items():
+        for _idx, layer_scores in scores.items():
             for sublayer in ("attention", "mlp", "total"):
                 assert layer_scores[sublayer]["magnitude_ratio"] > 0.0
 

@@ -4,7 +4,6 @@ import json
 import os
 
 import pytest
-import torch
 from transformers import LlamaConfig, LlamaForCausalLM
 
 

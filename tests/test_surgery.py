@@ -105,12 +105,12 @@ class TestGetLayerInfo:
 
 class TestRemoveLayers:
     def test_removes_single_layer(self, tiny_llama):
-        log = remove_layers(tiny_llama, [3])
+        remove_layers(tiny_llama, [3])
         assert len(tiny_llama.model.layers) == 7
         assert tiny_llama.config.num_hidden_layers == 7
 
     def test_removes_multiple_layers(self, tiny_llama):
-        log = remove_layers(tiny_llama, [2, 4, 6])
+        remove_layers(tiny_llama, [2, 4, 6])
         assert len(tiny_llama.model.layers) == 5
         assert tiny_llama.config.num_hidden_layers == 5
 
@@ -145,7 +145,7 @@ class TestRemoveLayers:
 
 class TestKeepLayers:
     def test_keeps_specified_layers(self, tiny_llama):
-        log = keep_layers(tiny_llama, [0, 1, 2])
+        keep_layers(tiny_llama, [0, 1, 2])
         assert len(tiny_llama.model.layers) == 3
         assert tiny_llama.config.num_hidden_layers == 3
 
@@ -178,7 +178,7 @@ class TestReorderLayers:
     def test_reverses_layers(self, tiny_llama):
         w_first = tiny_llama.model.layers[0].self_attn.q_proj.weight.data.clone()
         w_last = tiny_llama.model.layers[7].self_attn.q_proj.weight.data.clone()
-        log = reorder_layers(tiny_llama, [7, 6, 5, 4, 3, 2, 1, 0])
+        reorder_layers(tiny_llama, [7, 6, 5, 4, 3, 2, 1, 0])
         assert torch.equal(tiny_llama.model.layers[0].self_attn.q_proj.weight.data, w_last)
         assert torch.equal(tiny_llama.model.layers[7].self_attn.q_proj.weight.data, w_first)
 
@@ -247,7 +247,7 @@ class TestSwapLayers:
 
 class TestDuplicateLayer:
     def test_increases_layer_count(self, tiny_llama):
-        log = duplicate_layer(tiny_llama, src=3, dst=4)
+        duplicate_layer(tiny_llama, src=3, dst=4)
         assert len(tiny_llama.model.layers) == 9
         assert tiny_llama.config.num_hidden_layers == 9
 
@@ -359,7 +359,7 @@ class TestLoadModel:
 
         # Force offline — if it tries the network, it will fail
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-        model, tokenizer = load_model(save_path, mode="export")
+        model, _tokenizer = load_model(save_path, mode="export")
         assert len(model.model.layers) == 8
 
     def test_cache_dir_used_for_hub_models(self):

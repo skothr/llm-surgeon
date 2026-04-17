@@ -1,11 +1,9 @@
 """Tests for recipe module."""
 
-import os
 import pytest
 import yaml
 
-from llm_surgeon import recipe
-from llm_surgeon.recipe import parse_recipe, run, run_batch, generate_layer_sweep
+from llm_surgeon.recipe import parse_recipe, run, generate_layer_sweep
 
 
 class TestParsesYaml:

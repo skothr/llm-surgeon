@@ -2,7 +2,6 @@
 
 import pytest
 import torch
-from transformers import LlamaForCausalLM
 
 from llm_surgeon.surgery import zero_heads, scale_heads, swap_heads, zero_mlp, zero_attention
 from llm_surgeon.inspect import inspect_head

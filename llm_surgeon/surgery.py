@@ -1,7 +1,6 @@
 """Model loading and layer surgery operations."""
 
 import copy
-import gc
 import os
 import warnings
 from dataclasses import dataclass, field

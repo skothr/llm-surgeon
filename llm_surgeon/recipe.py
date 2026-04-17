@@ -2,7 +2,6 @@
 
 import glob as _glob
 import os
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml

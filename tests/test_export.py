@@ -78,7 +78,7 @@ class TestSaveCheckpoint:
 
     def test_tokenizer_saved_when_provided(self, tiny_llama, tmp_path):
         mock_tokenizer = MagicMock()
-        out = save_checkpoint(tiny_llama, str(tmp_path / "ckpt"), tokenizer=mock_tokenizer)
+        save_checkpoint(tiny_llama, str(tmp_path / "ckpt"), tokenizer=mock_tokenizer)
         mock_tokenizer.save_pretrained.assert_called_once_with(str(tmp_path / "ckpt"))
 
     def test_tokenizer_not_required(self, tiny_llama, tmp_path):
@@ -126,7 +126,7 @@ class TestToGguf:
 
     def test_f16_intermediate_cleaned_up_after_quantization(self, tiny_checkpoint, tmp_path):
         out_dir = str(tmp_path / "gguf")
-        result = to_gguf(tiny_checkpoint, out_dir, quantization="Q4_K_M")
+        to_gguf(tiny_checkpoint, out_dir, quantization="Q4_K_M")
         gguf_files = list(Path(out_dir).glob("*F16*.gguf"))
         assert len(gguf_files) == 0
 

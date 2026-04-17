@@ -3,28 +3,11 @@
 import copy
 import json
 import math
-import os
-import tempfile
 import warnings
 
 import pytest
-import torch
 
 from llm_surgeon.benchmark import perplexity, eval_downstream
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _make_tiny_tokenizer_and_text(vocab_size: int):
-    """Return (tokenizer, sample_text) using the tiny WordLevel tokenizer."""
-    from tests.conftest import _make_tiny_tokenizer
-
-    tok = _make_tiny_tokenizer(vocab_size)
-    # Build a sample text that the tokenizer can handle
-    text = " ".join([f"word{i % vocab_size}" for i in range(200)])
-    return tok, text
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +44,7 @@ class TestPerplexityBasic:
         tok = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
         text = " ".join([f"word{i % 50}" for i in range(300)])
 
-        ppl_original = perplexity(tiny_llama, tok, text=text)
+        perplexity(tiny_llama, tok, text=text)
 
         # Deep-copy so we operate on an independent model
         modified = copy.deepcopy(tiny_llama)

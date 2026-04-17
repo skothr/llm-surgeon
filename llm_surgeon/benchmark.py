@@ -240,7 +240,7 @@ def eval_downstream(
 
 def _find_and_parse_results(output_dir: str) -> dict:
     """Recursively search for results JSON produced by lm_eval."""
-    for root, dirs, files in os.walk(output_dir):
+    for root, _dirs, files in os.walk(output_dir):
         for fname in sorted(files, reverse=True):
             if fname.startswith("results") and fname.endswith(".json"):
                 path = os.path.join(root, fname)
@@ -411,7 +411,6 @@ def _print_compare_summary(
 ) -> None:
     """Print a human-readable side-by-side comparison of model responses."""
     col_width = 60
-    header = " | ".join(f"{m:<{col_width}}" for m in models)
     separator = "-+-".join("-" * col_width for _ in models)
 
     print("\n=== Generation Comparison ===\n")

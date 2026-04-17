@@ -1,6 +1,5 @@
 """Inspection and activation analysis tools for LLaMA models."""
 
-import math
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -284,11 +283,11 @@ def weight_norms(model) -> List[dict]:
         mlp_tensors = []
 
         # Collect attention weights
-        for name, param in layer.self_attn.named_parameters():
+        for _name, param in layer.self_attn.named_parameters():
             attn_tensors.append(param.detach().float())
 
         # Collect MLP weights
-        for name, param in layer.mlp.named_parameters():
+        for _name, param in layer.mlp.named_parameters():
             mlp_tensors.append(param.detach().float())
 
         def _combined_frob(tensors):
@@ -331,9 +330,6 @@ def weight_svd(model, layers: Optional[List[int]] = None) -> Dict[int, dict]:
     for i in layers:
         layer = model.model.layers[i]
         layer_svd = {}
-
-        attn_projs = {"q_proj", "k_proj", "v_proj", "o_proj"}
-        mlp_projs = {"gate_proj", "up_proj", "down_proj"}
 
         for proj_name in ["q_proj", "k_proj", "v_proj", "o_proj"]:
             proj = getattr(layer.self_attn, proj_name, None)
@@ -478,14 +474,7 @@ def inspect_head(
     orig_attn = getattr(model.config, "_attn_implementation", None)
     model.config._attn_implementation = "eager"
 
-    # Hook to capture the head's output from o_proj input (the concatenated head outputs)
     head_dim = model.config.hidden_size // num_heads
-    head_output = {}
-
-    def _capture_hook(module, inp, out):
-        # inp[0] is the concatenated (batch, seq, num_heads*head_dim) before o_proj
-        # Actually, the attn module output is after o_proj. We need pre-o_proj.
-        pass
 
     # Use a pre-hook on o_proj to capture head outputs before mixing
     o_proj_input = {}

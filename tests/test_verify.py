@@ -1,7 +1,6 @@
 """Tests for verify module."""
 
 import pytest
-import torch
 from transformers import LlamaConfig, LlamaForCausalLM
 
 from llm_surgeon.verify import (
@@ -126,7 +125,7 @@ class TestCheckStructure:
 
 class TestCheckStructureChained:
     def test_verify_after_multiple_ops(self, tiny_llama):
-        log1 = remove_layers(tiny_llama, [6, 7])
+        remove_layers(tiny_llama, [6, 7])
         log2 = swap_layers(tiny_llama, 0, 5)
         report = check_structure(tiny_llama, log2)
         assert report.passed is True

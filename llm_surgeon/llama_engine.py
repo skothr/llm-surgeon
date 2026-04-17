@@ -117,7 +117,13 @@ class LlamaEngine:
         self.close()
 
     def __del__(self):
-        self.close()
+        # During interpreter shutdown, llama_cpp or logging may already be torn
+        # down; swallow any error so __del__ stays silent instead of printing a
+        # spurious traceback.
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _require_loaded(self):
         if self._llm is None:
@@ -125,11 +131,13 @@ class LlamaEngine:
 
     def tokenize(self, text: str, add_bos: bool = True) -> list[int]:
         self._require_loaded()
-        return self._llm.tokenize(text.encode("utf-8"), add_bos=add_bos)  # type: ignore[union-attr]
+        assert self._llm is not None
+        return self._llm.tokenize(text.encode("utf-8"), add_bos=add_bos)
 
     def detokenize(self, tokens: list[int]) -> str:
         self._require_loaded()
-        return self._llm.detokenize(tokens).decode("utf-8", errors="replace")  # type: ignore[union-attr]
+        assert self._llm is not None
+        return self._llm.detokenize(tokens).decode("utf-8", errors="replace")
 
     def logits(self, tokens: list[int]) -> np.ndarray:
         """Full vocab logits for the last token position. Shape: (n_vocab,)"""

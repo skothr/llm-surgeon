@@ -1,5 +1,6 @@
 """Tests for probe module — logit lens, hidden state extraction, intervention."""
 
+import pytest
 import torch
 
 from tests.conftest import _make_tiny_tokenizer
@@ -8,6 +9,7 @@ from llm_surgeon.probe import (
     LogitLensResult, HiddenStates, extract_hidden_states,
     logit_lens, layer_predictions_table, ops,
     Intervention, InterventionResult, intervene,
+    _cell_metrics,
 )
 
 
@@ -202,9 +204,59 @@ def test_logit_lens_callback(tiny_llama, tiny_llama_config):
         calls.append((layer, sublayer))
         assert "hidden_state" in data
         assert "top_k" in data
+        assert "metrics" in data
+        assert len(data["metrics"]) == len(data["top_k"])
     logit_lens(tiny_llama, tokenizer, prompt, top_k=3, on_layer=cb)
     num_layers = tiny_llama_config.num_hidden_layers
     assert len(calls) == num_layers * 2
+
+
+# ---------------------------------------------------------------------------
+# Per-cell metrics (entropy, top1_prob, top1_margin)
+# ---------------------------------------------------------------------------
+
+def test_cell_metrics_uniform_distribution_has_max_entropy():
+    vocab = 128
+    probs = torch.full((vocab,), 1.0 / vocab)
+    m = _cell_metrics(probs)
+    # H(uniform) = log(vocab); top1_prob = 1/vocab; margin = 0.
+    assert m["entropy"] == pytest.approx(torch.log(torch.tensor(float(vocab))).item(), abs=1e-5)
+    assert m["top1_prob"] == pytest.approx(1.0 / vocab, abs=1e-6)
+    assert m["top1_margin"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_cell_metrics_one_hot_distribution_has_zero_entropy():
+    vocab = 128
+    probs = torch.zeros(vocab)
+    probs[42] = 1.0
+    m = _cell_metrics(probs)
+    # xlogy handles p=0 correctly, so entropy is exactly 0 here.
+    assert m["entropy"] == pytest.approx(0.0, abs=1e-6)
+    assert m["top1_prob"] == pytest.approx(1.0, abs=1e-6)
+    assert m["top1_margin"] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_cell_metrics_margin_is_nonnegative():
+    torch.manual_seed(0)
+    for _ in range(20):
+        logits = torch.randn(256)
+        probs = torch.softmax(logits, dim=-1)
+        m = _cell_metrics(probs)
+        assert m["top1_margin"] >= 0.0
+        assert 0.0 <= m["top1_prob"] <= 1.0
+        assert m["entropy"] >= 0.0
+
+
+def test_logit_lens_cells_carry_metrics(tiny_llama, tiny_llama_config):
+    tokenizer = _make_test_tokenizer(tiny_llama_config.vocab_size)
+    result = logit_lens(tiny_llama, tokenizer, "word4 word5 word6", top_k=3)
+    for p in result.predictions:
+        assert "metrics" in p
+        m = p["metrics"]
+        assert set(m.keys()) == {"entropy", "top1_prob", "top1_margin"}
+        assert m["top1_margin"] >= 0.0
+        assert 0.0 <= m["top1_prob"] <= 1.0
+        assert m["entropy"] >= 0.0
 
 
 def test_layer_predictions_table(tiny_llama, tiny_llama_config):

@@ -1,16 +1,69 @@
 """Quantitative evaluation: perplexity and downstream task benchmarks."""
 
 import json
+import math
 import os
 import re
 import subprocess
 import sys
 import tempfile
 import warnings
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+
+
+# ---------------------------------------------------------------------------
+# Downstream-eval defaults and helpers (Phase 2)
+# ---------------------------------------------------------------------------
+
+FAST_TRIPLET: List[str] = ["hellaswag", "arc_easy", "arc_challenge"]
+
+PAPER_STANDARD_FEWSHOT: Dict[str, int] = {
+    "hellaswag": 0,
+    "arc_easy": 0,
+    "arc_challenge": 25,
+    "mmlu": 5,
+}
+
+
+def _resolve_fewshot(
+    tasks: List[str],
+    num_fewshot: Union[int, Dict[str, int], None],
+) -> Dict[str, int]:
+    """Resolve the (tasks, num_fewshot) pair into a full per-task dict.
+
+    None -> PAPER_STANDARD_FEWSHOT per task, fallback 0 for unknown tasks.
+    int -> applied uniformly.
+    dict -> specified tasks use the dict value; unspecified fall back to
+            PAPER_STANDARD_FEWSHOT (then 0).
+    """
+    if num_fewshot is None:
+        return {t: PAPER_STANDARD_FEWSHOT.get(t, 0) for t in tasks}
+    if isinstance(num_fewshot, int):
+        return {t: num_fewshot for t in tasks}
+    # dict: explicit > paper > 0
+    out: Dict[str, int] = {}
+    for t in tasks:
+        if t in num_fewshot:
+            out[t] = num_fewshot[t]
+        else:
+            out[t] = PAPER_STANDARD_FEWSHOT.get(t, 0)
+    return out
+
+
+def _group_by_fewshot(fewshot_map: Dict[str, int]) -> List[Tuple[int, List[str]]]:
+    """Group tasks sharing the same num_fewshot count.
+
+    Returns a sorted list of (count, [task, ...]) pairs. Ordering is
+    deterministic: ascending by count, then by task name inside each group.
+    This lets _in_process_eval call simple_evaluate once per unique count.
+    """
+    buckets: Dict[int, List[str]] = {}
+    for task, n in fewshot_map.items():
+        buckets.setdefault(n, []).append(task)
+    return [(n, sorted(buckets[n])) for n in sorted(buckets)]
 
 
 # ---------------------------------------------------------------------------
@@ -172,28 +225,63 @@ def _load_dataset_text(name: str, max_samples: Optional[int] = None) -> str:
 # ---------------------------------------------------------------------------
 
 def eval_downstream(
-    model_path: str,
-    tasks: List[str],
-    num_fewshot: int = 5,
+    tasks: Optional[List[str]] = None,
+    *,
+    model_path: Optional[str] = None,
+    model: Any = None,
+    tokenizer: Any = None,
+    num_fewshot: Union[int, Dict[str, int], None] = None,
     limit: Optional[int] = None,
 ) -> Dict[str, float]:
     """Evaluate a HuggingFace checkpoint on downstream tasks via lm-eval.
 
-    Shells out to ``lm_eval`` CLI so the harness manages its own model loading.
+    Exactly one of *model_path* or *model* must be given:
 
-    Args:
-        model_path: Local path or HuggingFace model ID.
-        tasks: List of lm-eval task names (e.g. ``["arc_easy", "hellaswag"]``).
-        num_fewshot: Number of few-shot examples (default 5).
-        limit: Cap examples per task (useful for fast testing).
-
-    Returns:
-        ``dict`` mapping task name to accuracy (``float``).
-
-    Raises:
-        RuntimeError: If lm_eval exits with a non-zero return code or the
-            output cannot be parsed.
+    - ``model_path=...`` -> shells out to ``lm_eval`` CLI (legacy path).
+    - ``model=..., tokenizer=...`` -> runs in-process via ``HFLM`` (new).
     """
+    # Validate model-source arguments.
+    if (model_path is None) == (model is None):
+        raise ValueError(
+            "Exactly one of model_path or model must be provided."
+        )
+    if model is not None and tokenizer is None:
+        raise ValueError("tokenizer is required when model is provided.")
+
+    if tasks is None:
+        tasks = list(FAST_TRIPLET)
+
+    if model is not None:
+        full_result = _in_process_eval(
+            model=model, tokenizer=tokenizer,
+            tasks=tasks, num_fewshot=num_fewshot, limit=limit,
+        )
+        return _extract_accuracies(full_result, tasks)
+
+    # Subprocess path (legacy).
+    if isinstance(num_fewshot, dict):
+        raise ValueError(
+            "Dict num_fewshot is only supported with in-memory model; "
+            "pass an int or None for the model_path subprocess path."
+        )
+    effective_nf = num_fewshot if num_fewshot is not None else 0
+    assert model_path is not None
+    return _subprocess_eval(
+        model_path=model_path,
+        tasks=tasks,
+        num_fewshot=effective_nf,
+        limit=limit,
+    )
+
+
+def _subprocess_eval(
+    *,
+    model_path: str,
+    tasks: List[str],
+    num_fewshot: int,
+    limit: Optional[int],
+) -> Dict[str, float]:
+    """Legacy subprocess path: shells out to lm_eval CLI."""
     tasks_str = ",".join(tasks)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -208,8 +296,6 @@ def eval_downstream(
         if limit is not None:
             cmd += ["--limit", str(limit)]
 
-        # Build a clean environment: remove SOCKS/HTTP proxy variables that can
-        # cause socksio ImportError when socksio is not installed.
         env = os.environ.copy()
         for key in list(env):
             if key.upper() in (
@@ -219,10 +305,7 @@ def eval_downstream(
                 env.pop(key, None)
 
         result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            env=env,
+            cmd, capture_output=True, text=True, env=env,
         )
 
         if result.returncode != 0:
@@ -232,10 +315,153 @@ def eval_downstream(
                 f"stderr:\n{result.stderr[-2000:]}"
             )
 
-        # lm_eval writes results JSON to <output_path>/<model_name>/results.json
-        # Walk the tmpdir to find it
         results_data = _find_and_parse_results(tmpdir)
         return _extract_accuracies(results_data, tasks)
+
+
+def _subprocess_eval_full(
+    *,
+    model_path: str,
+    tasks: List[str],
+    num_fewshot: int,
+    limit: Optional[int],
+) -> Dict[str, Any]:
+    """Subprocess path, returning the full lm_eval output dict (not narrowed)."""
+    tasks_str = ",".join(tasks)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cmd = [
+            sys.executable, "-m", "lm_eval",
+            "--model", "hf",
+            "--model_args", f"pretrained={model_path}",
+            "--tasks", tasks_str,
+            "--num_fewshot", str(num_fewshot),
+            "--output_path", tmpdir,
+        ]
+        if limit is not None:
+            cmd += ["--limit", str(limit)]
+        env = os.environ.copy()
+        for key in list(env):
+            if key.upper() in (
+                "ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY",
+                "NO_PROXY", "FTP_PROXY",
+            ):
+                env.pop(key, None)
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"lm_eval failed (exit {result.returncode}).\n"
+                f"stdout:\n{result.stdout[-2000:]}\n"
+                f"stderr:\n{result.stderr[-2000:]}"
+            )
+        return _find_and_parse_results(tmpdir)
+
+
+def _in_process_eval(
+    *,
+    model: Any,
+    tokenizer: Any,
+    tasks: List[str],
+    num_fewshot: Union[int, Dict[str, int], None],
+    limit: Optional[int],
+) -> Dict[str, Any]:
+    """Run lm_eval.simple_evaluate in-process against an in-memory model."""
+    from lm_eval import simple_evaluate  # pyright: ignore[reportMissingImports]
+    from lm_eval.models.huggingface import HFLM  # pyright: ignore[reportMissingImports]
+
+    cfg = getattr(model, "config", None)
+    if getattr(cfg, "quantization_config", None):
+        warnings.warn(
+            "Model has quantization_config set — harness accuracy on "
+            "quantized models is typically 1-3 pp below fp16 reference "
+            "numbers.",
+            UserWarning, stacklevel=3,
+        )
+
+    lm = HFLM(pretrained=model, tokenizer=tokenizer)  # pyright: ignore[reportCallIssue]
+    fewshot_map = _resolve_fewshot(tasks, num_fewshot)
+
+    merged: Dict[str, Any] = {"results": {}, "config": None}
+    for n, group in _group_by_fewshot(fewshot_map):
+        # pyright resolves simple_evaluate through lm_eval's lazy __getattr__
+        # and can't see the real signature — runtime call is correct.
+        partial: Any = simple_evaluate(model=lm, tasks=group, num_fewshot=n, limit=limit)  # pyright: ignore[reportCallIssue, reportArgumentType]
+        merged["results"].update(partial["results"])
+        if merged["config"] is None:
+            merged["config"] = partial.get("config", {})
+    merged["effective_num_fewshot"] = fewshot_map
+    return merged
+
+
+def _serialize_harness_metrics(task_result: Dict[str, Any]) -> Dict[str, float]:
+    """Flatten a single task's harness result into float-valued metrics."""
+    out: Dict[str, float] = {}
+    for k, v in task_result.items():
+        if isinstance(v, (int, float)) and not (
+            isinstance(v, float) and math.isnan(v)
+        ):
+            out[k] = float(v)
+    return out
+
+
+def eval_and_log(
+    experiment: Any,
+    *,
+    model_path: Optional[str] = None,
+    model: Any = None,
+    tokenizer: Any = None,
+    tasks: Optional[List[str]] = None,
+    num_fewshot: Union[int, Dict[str, int], None] = None,
+    limit: Optional[int] = None,
+) -> Dict[str, float]:
+    """Run eval_downstream and persist results to experiment tracking."""
+    if (model_path is None) == (model is None):
+        raise ValueError(
+            "Exactly one of model_path or model must be provided."
+        )
+    if model is not None and tokenizer is None:
+        raise ValueError("tokenizer is required when model is provided.")
+
+    if tasks is None:
+        tasks = list(FAST_TRIPLET)
+
+    if model is not None:
+        full = _in_process_eval(
+            model=model, tokenizer=tokenizer,
+            tasks=tasks, num_fewshot=num_fewshot, limit=limit,
+        )
+    else:
+        if isinstance(num_fewshot, dict):
+            raise ValueError(
+                "Dict num_fewshot is only supported with in-memory model."
+            )
+        effective_nf = num_fewshot if num_fewshot is not None else 0
+        assert model_path is not None
+        full = _subprocess_eval_full(
+            model_path=model_path, tasks=tasks,
+            num_fewshot=effective_nf, limit=limit,
+        )
+
+    for task in tasks:
+        task_result = full.get("results", {}).get(task, {})
+        flat = _serialize_harness_metrics(task_result)
+        for metric_key, value in flat.items():
+            experiment.log_metric(f"harness.{task}.{metric_key}", value)
+
+    from llm_surgeon.tracking import _log_harness_result
+    if isinstance(num_fewshot, int):
+        nf_to_store: Any = num_fewshot
+    else:
+        nf_to_store = _resolve_fewshot(tasks, num_fewshot)
+    _log_harness_result(
+        db_path=experiment.db_path,
+        experiment_name=experiment.name,
+        tasks=tasks,
+        num_fewshot=nf_to_store,
+        limit=limit,
+        result=full,
+    )
+
+    return _extract_accuracies(full, tasks)
 
 
 def _find_and_parse_results(output_dir: str) -> dict:

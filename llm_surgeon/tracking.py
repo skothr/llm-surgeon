@@ -47,6 +47,16 @@ CREATE TABLE IF NOT EXISTS samples (
     experiment_name  TEXT    NOT NULL,
     data             TEXT    NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS harness_results (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    experiment_name TEXT    NOT NULL,
+    tasks_json      TEXT    NOT NULL,
+    num_fewshot     TEXT    NOT NULL,
+    limit_samples   INTEGER,
+    result_json     TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL
+);
 """
 
 
@@ -150,6 +160,7 @@ def start(
         conn.execute("DELETE FROM metrics WHERE experiment_name = ?", (name,))
         conn.execute("DELETE FROM surgery_ops WHERE experiment_name = ?", (name,))
         conn.execute("DELETE FROM samples WHERE experiment_name = ?", (name,))
+        conn.execute("DELETE FROM harness_results WHERE experiment_name = ?", (name,))
         conn.execute("DELETE FROM experiments WHERE name = ?", (name,))
         conn.execute(
             """
@@ -218,3 +229,40 @@ def compare_experiments(names: List[str], db_path: str = _DEFAULT_DB) -> Dict[st
         exp = get_experiment(name, db_path=db_path)
         result[name] = {m["key"]: m["value"] for m in exp["metrics"]}
     return result
+
+
+def _log_harness_result(  # pyright: ignore[reportUnusedFunction]
+    *,
+    db_path: str,
+    experiment_name: str,
+    tasks: List[str],
+    num_fewshot: Any,
+    limit: int | None,
+    result: Dict[str, Any],
+) -> None:
+    """Insert one row into harness_results with the full lm_eval output.
+
+    Called by benchmark.eval_and_log via deferred import (to avoid a
+    tracking -> benchmark cycle), so pyright can't see the cross-module use.
+    """
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO harness_results
+                (experiment_name, tasks_json, num_fewshot, limit_samples,
+                 result_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                experiment_name,
+                json.dumps(tasks),
+                json.dumps(num_fewshot),
+                limit,
+                json.dumps(result),
+                _now(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()

@@ -217,13 +217,11 @@ def _run_evaluation(
         tasks = ds_cfg.get("tasks", [])
         num_fewshot = ds_cfg.get("num_fewshot", 5)
         _log(f"Running downstream eval: {tasks} ({num_fewshot}-shot)...", verbose)
-        # eval_downstream needs a checkpoint path, so save temporarily
-        import tempfile
-        from llm_surgeon import export as _export
-        with tempfile.TemporaryDirectory() as tmpdir:
-            ckpt = os.path.join(tmpdir, "checkpoint")
-            _export.save_checkpoint(model, ckpt, tokenizer=tokenizer)
-            ds_results = benchmark.eval_downstream(ckpt, tasks=tasks, num_fewshot=num_fewshot)
+        ds_results = benchmark.eval_downstream(
+            tasks=tasks,
+            model=model, tokenizer=tokenizer,
+            num_fewshot=num_fewshot,
+        )
         for task, score in ds_results.items():
             exp.log_metric(task, score)
             results[task] = score

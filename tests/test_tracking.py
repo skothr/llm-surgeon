@@ -108,3 +108,65 @@ class TestDbPersists:
         # New call — simulates a fresh process reading the same db
         exps = list_experiments(db_path=db)
         assert any(e["name"] == "persist-exp" for e in exps)
+
+
+class TestHarnessResultsTable:
+    def test_log_harness_result_writes_row(self, tmp_path):
+        """_log_harness_result inserts a harness_results row and _connect
+        creates the table via CREATE TABLE IF NOT EXISTS."""
+        from llm_surgeon.tracking import start, _log_harness_result
+        import sqlite3
+
+        db = str(tmp_path / "t.db")
+        start("exp1", db_path=db)
+
+        _log_harness_result(
+            db_path=db,
+            experiment_name="exp1",
+            tasks=["hellaswag", "arc_easy"],
+            num_fewshot={"hellaswag": 0, "arc_easy": 0},
+            limit=20,
+            result={"results": {"hellaswag": {"acc_norm,none": 0.61}}},
+        )
+
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT experiment_name, tasks_json, num_fewshot, limit_samples, "
+            "result_json, created_at FROM harness_results WHERE experiment_name = ?",
+            ("exp1",),
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == "exp1"
+        import json as _json
+        assert _json.loads(row[1]) == ["hellaswag", "arc_easy"]
+        assert _json.loads(row[2]) == {"hellaswag": 0, "arc_easy": 0}
+        assert row[3] == 20
+        payload = _json.loads(row[4])
+        assert payload["results"]["hellaswag"]["acc_norm,none"] == 0.61
+        assert row[5]  # created_at non-empty
+
+    def test_start_reruns_purge_harness_results(self, tmp_path):
+        """Re-calling start(name) deletes any prior harness_results rows
+        for that experiment, matching the existing metrics/surgery_ops
+        cascade behavior."""
+        from llm_surgeon.tracking import start, _log_harness_result
+        import sqlite3
+
+        db = str(tmp_path / "t.db")
+        start("exp1", db_path=db)
+        _log_harness_result(
+            db_path=db, experiment_name="exp1",
+            tasks=["hellaswag"], num_fewshot=0, limit=None,
+            result={"results": {}},
+        )
+        # Re-run the experiment — prior rows should be wiped.
+        start("exp1", db_path=db)
+
+        conn = sqlite3.connect(db)
+        n = conn.execute(
+            "SELECT COUNT(*) FROM harness_results WHERE experiment_name = ?",
+            ("exp1",),
+        ).fetchone()[0]
+        conn.close()
+        assert n == 0

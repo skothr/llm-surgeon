@@ -128,8 +128,8 @@ class TestEvalDownstream:
         Requires network to download arc_easy dataset from HuggingFace.
         """
         result = eval_downstream(
-            tiny_eval_checkpoint,
             tasks=["arc_easy"],
+            model_path=tiny_eval_checkpoint,
             num_fewshot=0,
             limit=5,
         )
@@ -140,8 +140,8 @@ class TestEvalDownstream:
         """eval_downstream() raises RuntimeError for an unknown task name."""
         with pytest.raises(RuntimeError):
             eval_downstream(
-                tiny_eval_checkpoint,
                 tasks=["this_task_does_not_exist_xyz"],
+                model_path=tiny_eval_checkpoint,
                 num_fewshot=0,
                 limit=5,
             )
@@ -324,3 +324,291 @@ class TestGenerationMetrics:
         assert div_repetitive < div_diverse, (
             f"Expected repetitive ({div_repetitive}) < diverse ({div_diverse})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: in-process eval_downstream + eval_and_log
+# ---------------------------------------------------------------------------
+
+class TestEvalDownstreamValidation:
+    """Validation-error contracts on the new eval_downstream signature."""
+
+    def test_no_model_source_raises(self):
+        from llm_surgeon.benchmark import eval_downstream
+        with pytest.raises(ValueError, match="Exactly one of model_path or model"):
+            eval_downstream(tasks=["hellaswag"])
+
+    def test_both_model_sources_raises(self):
+        from llm_surgeon.benchmark import eval_downstream
+        with pytest.raises(ValueError, match="Exactly one of model_path or model"):
+            eval_downstream(
+                tasks=["hellaswag"],
+                model_path="/tmp/nonexistent",
+                model=object(),
+                tokenizer=object(),
+            )
+
+    def test_model_without_tokenizer_raises(self):
+        from llm_surgeon.benchmark import eval_downstream
+        with pytest.raises(ValueError, match="tokenizer.*required"):
+            eval_downstream(tasks=["hellaswag"], model=object())
+
+
+class TestFewShotResolution:
+    """_resolve_fewshot maps (tasks, num_fewshot) to {task: int} per spec §3."""
+
+    def test_default_uses_paper_standard(self):
+        from llm_surgeon.benchmark import _resolve_fewshot
+        out = _resolve_fewshot(["hellaswag", "arc_challenge"], None)
+        assert out == {"hellaswag": 0, "arc_challenge": 25}
+
+    def test_unknown_task_defaults_to_zero(self):
+        from llm_surgeon.benchmark import _resolve_fewshot
+        out = _resolve_fewshot(["not_in_table"], None)
+        assert out == {"not_in_table": 0}
+
+    def test_int_applies_uniformly(self):
+        from llm_surgeon.benchmark import _resolve_fewshot
+        out = _resolve_fewshot(["hellaswag", "arc_challenge"], 3)
+        assert out == {"hellaswag": 3, "arc_challenge": 3}
+
+    def test_dict_overrides_paper_standard(self):
+        from llm_surgeon.benchmark import _resolve_fewshot
+        out = _resolve_fewshot(
+            ["hellaswag", "arc_challenge"],
+            {"hellaswag": 10},
+        )
+        # Specified task wins; unspecified falls back to PAPER_STANDARD.
+        assert out == {"hellaswag": 10, "arc_challenge": 25}
+
+
+class TestGroupByFewshot:
+    def test_groups_by_count(self):
+        from llm_surgeon.benchmark import _group_by_fewshot
+        groups = _group_by_fewshot(
+            {"hellaswag": 0, "arc_easy": 0, "arc_challenge": 25}
+        )
+        # Sorted by (count, first-task-name) for determinism.
+        assert groups == [(0, ["arc_easy", "hellaswag"]), (25, ["arc_challenge"])]
+
+
+class TestEvalDownstreamInProcess:
+    """Mock simple_evaluate / HFLM; assert kwarg routing and grouping."""
+
+    def _install_mocks(self, monkeypatch):
+        captured = {"calls": []}
+
+        class _FakeHFLM:
+            def __init__(self, pretrained, tokenizer):
+                captured["hflm_pretrained"] = pretrained
+                captured["hflm_tokenizer"] = tokenizer
+
+        def fake_simple_evaluate(**kwargs):
+            captured["calls"].append(kwargs)
+            return {
+                "results": {t: {"acc,none": 0.5, "acc_stderr,none": 0.01}
+                            for t in kwargs["tasks"]},
+                "config": {"model": "mock"},
+            }
+
+        monkeypatch.setattr("lm_eval.models.huggingface.HFLM", _FakeHFLM)
+        monkeypatch.setattr("lm_eval.simple_evaluate", fake_simple_evaluate)
+        return captured
+
+    def test_defaults_to_fast_triplet(self, monkeypatch):
+        from llm_surgeon.benchmark import eval_downstream, FAST_TRIPLET
+        captured = self._install_mocks(monkeypatch)
+
+        class _M:
+            config = None
+
+        result = eval_downstream(model=_M(), tokenizer=object())
+        assert set(result.keys()) == set(FAST_TRIPLET)
+        seen = set()
+        for c in captured["calls"]:
+            seen.update(c["tasks"])
+        assert seen == set(FAST_TRIPLET)
+
+    def test_dispatches_per_task_fewshot(self, monkeypatch):
+        from llm_surgeon.benchmark import eval_downstream
+        captured = self._install_mocks(monkeypatch)
+
+        class _M:
+            config = None
+
+        eval_downstream(
+            tasks=["hellaswag", "arc_challenge"],
+            model=_M(), tokenizer=object(),
+        )
+        calls = captured["calls"]
+        assert len(calls) == 2
+        by_n = {c["num_fewshot"]: c["tasks"] for c in calls}
+        assert by_n[0] == ["hellaswag"]
+        assert by_n[25] == ["arc_challenge"]
+
+    def test_quantized_model_warns(self, monkeypatch):
+        from llm_surgeon.benchmark import eval_downstream
+        self._install_mocks(monkeypatch)
+
+        class _Cfg:
+            quantization_config = {"load_in_4bit": True}
+
+        class _M:
+            config = _Cfg()
+
+        with pytest.warns(UserWarning, match="quantization_config set"):
+            eval_downstream(
+                tasks=["hellaswag"],
+                model=_M(), tokenizer=object(),
+            )
+
+    def test_hflm_receives_model_and_tokenizer(self, monkeypatch):
+        from llm_surgeon.benchmark import eval_downstream
+        captured = self._install_mocks(monkeypatch)
+
+        class _M:
+            config = None
+
+        m, t = _M(), object()
+        eval_downstream(tasks=["hellaswag"], model=m, tokenizer=t)
+        assert captured["hflm_pretrained"] is m
+        assert captured["hflm_tokenizer"] is t
+
+    def test_returns_primary_accuracy_dict(self, monkeypatch):
+        from llm_surgeon.benchmark import eval_downstream
+        self._install_mocks(monkeypatch)
+
+        class _M:
+            config = None
+
+        result = eval_downstream(
+            tasks=["hellaswag"], model=_M(), tokenizer=object(),
+        )
+        assert result == {"hellaswag": 0.5}
+
+
+class TestEvalAndLog:
+    """eval_and_log persists harness results to both metrics (flat) and
+    harness_results (blob) tables via tracking."""
+
+    def _mock_in_process(self, monkeypatch, task_results):
+        def fake(**kwargs):
+            return {
+                "results": task_results,
+                "config": {"model": "mock"},
+                "effective_num_fewshot": {t: 0 for t in kwargs["tasks"]},
+            }
+        monkeypatch.setattr(
+            "llm_surgeon.benchmark._in_process_eval", fake
+        )
+
+    def test_writes_flat_metrics(self, monkeypatch, tmp_path):
+        from llm_surgeon.benchmark import eval_and_log
+        from llm_surgeon.tracking import start, get_experiment
+
+        self._mock_in_process(
+            monkeypatch,
+            {"hellaswag": {"acc,none": 0.5, "acc_stderr,none": 0.01,
+                           "alias": "hellaswag"}},
+        )
+        db = str(tmp_path / "t.db")
+        exp = start("exp1", db_path=db)
+
+        class _M:
+            config = None
+
+        acc = eval_and_log(
+            experiment=exp,
+            model=_M(), tokenizer=object(),
+            tasks=["hellaswag"],
+        )
+        assert acc == {"hellaswag": 0.5}
+
+        metrics = {m["key"]: m["value"]
+                   for m in get_experiment("exp1", db_path=db)["metrics"]}
+        assert metrics["harness.hellaswag.acc,none"] == 0.5
+        assert metrics["harness.hellaswag.acc_stderr,none"] == 0.01
+        assert "harness.hellaswag.alias" not in metrics
+
+    def test_writes_blob(self, monkeypatch, tmp_path):
+        from llm_surgeon.benchmark import eval_and_log
+        from llm_surgeon.tracking import start
+        import sqlite3
+        import json as _json
+
+        self._mock_in_process(
+            monkeypatch,
+            {"hellaswag": {"acc,none": 0.5}},
+        )
+        db = str(tmp_path / "t.db")
+        exp = start("exp1", db_path=db)
+
+        class _M:
+            config = None
+
+        eval_and_log(
+            experiment=exp,
+            model=_M(), tokenizer=object(),
+            tasks=["hellaswag"],
+            limit=20,
+        )
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT tasks_json, num_fewshot, limit_samples, result_json "
+            "FROM harness_results WHERE experiment_name = 'exp1'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert _json.loads(row[0]) == ["hellaswag"]
+        assert _json.loads(row[1]) == {"hellaswag": 0}
+        assert row[2] == 20
+        payload = _json.loads(row[3])
+        assert payload["results"]["hellaswag"]["acc,none"] == 0.5
+
+
+def _tinyllama_cached() -> bool:
+    from llm_surgeon.surgery import _is_cached
+    return _is_cached("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+
+
+import torch  # noqa: E402
+
+
+@pytest.mark.skipif(
+    not _tinyllama_cached() or not torch.cuda.is_available(),
+    reason="requires TinyLlama cache + CUDA GPU",
+)
+class TestEvalAndLogIntegration:
+    """End-to-end: real TinyLlama fp16 load -> arc_easy eval -> SQLite."""
+
+    def test_tinyllama_arc_easy_limit20(self, tmp_path):
+        from llm_surgeon.surgery import load_model
+        from llm_surgeon.benchmark import eval_and_log
+        from llm_surgeon.tracking import start, get_experiment
+        import sqlite3
+
+        db = str(tmp_path / "t.db")
+        exp = start("it1", db_path=db)
+
+        model, tokenizer = load_model(
+            "TinyLlama/TinyLlama-1.1B-Chat-v1.0", mode="fp16",
+        )
+        acc = eval_and_log(
+            experiment=exp,
+            model=model, tokenizer=tokenizer,
+            tasks=["arc_easy"],
+            limit=20,
+        )
+        assert "arc_easy" in acc
+        assert 0.0 <= acc["arc_easy"] <= 1.0
+
+        metrics = {m["key"]: m["value"]
+                   for m in get_experiment("it1", db_path=db)["metrics"]}
+        assert any(k.startswith("harness.arc_easy.") for k in metrics)
+
+        conn = sqlite3.connect(db)
+        n = conn.execute(
+            "SELECT COUNT(*) FROM harness_results WHERE experiment_name = 'it1'"
+        ).fetchone()[0]
+        conn.close()
+        assert n == 1

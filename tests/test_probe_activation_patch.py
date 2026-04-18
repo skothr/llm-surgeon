@@ -278,6 +278,15 @@ class TestActivationPatchLoop:
 # Integration — real TinyLlama on CUDA
 # ---------------------------------------------------------------------------
 
+def _tinyllama_cached() -> bool:
+    from llm_surgeon.surgery import _is_cached
+    return _is_cached("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+
+
+@pytest.mark.skipif(
+    not _tinyllama_cached() or not torch.cuda.is_available(),
+    reason="requires TinyLlama cache + CUDA GPU",
+)
 class TestActivationPatchIntegration:
     """End-to-end: real TinyLlama fp16 → activation patch → sanity check."""
 
@@ -327,6 +336,11 @@ class TestActivationPatchIntegration:
             delta_patched = (patched[clean_id] - patched[corr_id]).item()
             recovery = (delta_patched - delta_corr) / denom
             recovery_by_layer[cell["layer"]] = recovery
+
+        assert len(recovery_by_layer) == num_layers, (
+            f"expected {num_layers} entries in recovery_by_layer, "
+            f"got {len(recovery_by_layer)} — possible cell-dedup bug"
+        )
 
         early_mean = sum(recovery_by_layer[L] for L in range(5)) / 5
         late_mean = sum(recovery_by_layer[L] for L in range(num_layers - 5, num_layers)) / 5

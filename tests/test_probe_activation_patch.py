@@ -272,3 +272,68 @@ class TestActivationPatchLoop:
                 )
         finally:
             del tiny_llama.hf_quantizer  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Integration — real TinyLlama on CUDA
+# ---------------------------------------------------------------------------
+
+class TestActivationPatchIntegration:
+    """End-to-end: real TinyLlama fp16 → activation patch → sanity check."""
+
+    def test_tinyllama_capital_swap(self):
+        """Denoise recovery should be larger at late layers than early.
+
+        Intuition: information about the country aggregates through the
+        stack. Patching a late-layer residual state with clean activations
+        flips the output back toward the clean answer; patching an early
+        layer — before the relevant facts have been integrated — does
+        comparatively little.
+        """
+        from llm_surgeon.surgery import load_model
+        from llm_surgeon.probe import activation_patch
+
+        model, tokenizer = load_model(
+            "TinyLlama/TinyLlama-1.1B-Chat-v1.0", mode="fp16",
+        )
+        num_layers = len(model.model.layers)
+
+        result = activation_patch(
+            model, tokenizer,
+            clean_prompt="The capital of France is",
+            corrupted_prompt="The capital of Italy is",
+            direction="denoise",
+        )
+
+        positions = {c["position"] for c in result.cells}
+        assert len(result.cells) == num_layers * 2 * len(positions)
+
+        clean_id = int(result.clean_baseline_logits.argmax().item())
+        corr_id = int(result.corrupted_baseline_logits.argmax().item())
+        delta_clean = (result.clean_baseline_logits[clean_id] - result.clean_baseline_logits[corr_id]).item()
+        delta_corr = (result.corrupted_baseline_logits[clean_id] - result.corrupted_baseline_logits[corr_id]).item()
+        denom = delta_clean - delta_corr
+        # denom should be >0 — the clean forward actually prefers clean-top-1
+        # over corrupted-top-1. If not, the model didn't learn the contrast
+        # and this test prompt is unsuitable.
+        assert denom > 0, f"bad prompt pair: clean/corrupt deltas collapse (denom={denom})"
+
+        last_pos = max(positions)
+        recovery_by_layer = {}
+        for cell in result.cells:
+            if cell["position"] != last_pos or cell["sublayer"] != "ffn":
+                continue
+            patched = cell["patched_logits"]
+            delta_patched = (patched[clean_id] - patched[corr_id]).item()
+            recovery = (delta_patched - delta_corr) / denom
+            recovery_by_layer[cell["layer"]] = recovery
+
+        early_mean = sum(recovery_by_layer[L] for L in range(5)) / 5
+        late_mean = sum(recovery_by_layer[L] for L in range(num_layers - 5, num_layers)) / 5
+
+        # Loose threshold — point is "we didn't break the algorithm,"
+        # not pin an exact numeric curve.
+        assert late_mean > early_mean + 0.1, (
+            f"expected late-layer recovery to exceed early by ≥0.1, "
+            f"got early={early_mean:.3f} late={late_mean:.3f}"
+        )

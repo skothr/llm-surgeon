@@ -170,3 +170,37 @@ class TestHarnessResultsTable:
         ).fetchone()[0]
         conn.close()
         assert n == 0
+
+    def test_log_harness_result_handles_non_json_types(self, tmp_path):
+        """lm_eval's result dict embeds torch.dtype etc. in its config.
+        _log_harness_result must serialize via default=str, not crash."""
+        from llm_surgeon.tracking import start, _log_harness_result
+        import sqlite3
+        import torch
+
+        db = str(tmp_path / "t.db")
+        start("exp1", db_path=db)
+
+        _log_harness_result(
+            db_path=db,
+            experiment_name="exp1",
+            tasks=["hellaswag"],
+            num_fewshot=0,
+            limit=None,
+            result={
+                "results": {"hellaswag": {"acc,none": 0.5}},
+                "config": {"dtype": torch.float16},
+            },
+        )
+
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT result_json FROM harness_results WHERE experiment_name = ?",
+            ("exp1",),
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        import json as _json
+        payload = _json.loads(row[0])
+        # torch.float16 stringified via default=str.
+        assert "float16" in payload["config"]["dtype"]

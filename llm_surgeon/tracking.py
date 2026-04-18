@@ -259,7 +259,9 @@ def _log_harness_result(  # pyright: ignore[reportUnusedFunction]
                 json.dumps(tasks),
                 json.dumps(num_fewshot),
                 limit,
-                json.dumps(result),
+                # lm_eval's result dict can contain torch.dtype and other
+                # non-JSON types in its config section. Stringify them.
+                json.dumps(result, default=str),
                 _now(),
             ),
         )

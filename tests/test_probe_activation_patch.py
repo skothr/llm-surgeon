@@ -1,6 +1,5 @@
 """Tests for probe.activation_patch — causal attribution via clean/corrupted counterfactual."""
 
-import pytest  # pyright: ignore[reportUnusedImport]
 import torch
 
 from llm_surgeon.probe import _make_position_patch
@@ -8,14 +7,11 @@ from llm_surgeon.probe import _make_position_patch
 
 class TestMakePositionPatch:
     def test_only_replaces_target_position(self):
-        # seq_len=5, d_model=4
         hidden = torch.arange(20, dtype=torch.float32).reshape(5, 4)
         patch_vec = torch.tensor([100.0, 200.0, 300.0, 400.0])
         fn = _make_position_patch(pos=2, clean_vec=patch_vec)
         out = fn(hidden, layer_idx=0)
-        # Position 2 must equal patch_vec.
         assert torch.equal(out[2], patch_vec)
-        # All other positions unchanged.
         for pos in (0, 1, 3, 4):
             assert torch.equal(out[pos], hidden[pos]), f"position {pos} was modified"
 

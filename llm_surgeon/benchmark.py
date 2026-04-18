@@ -274,51 +274,6 @@ def eval_downstream(
     )
 
 
-def _subprocess_eval(
-    *,
-    model_path: str,
-    tasks: List[str],
-    num_fewshot: int,
-    limit: Optional[int],
-) -> Dict[str, float]:
-    """Legacy subprocess path: shells out to lm_eval CLI."""
-    tasks_str = ",".join(tasks)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        cmd = [
-            sys.executable, "-m", "lm_eval",
-            "--model", "hf",
-            "--model_args", f"pretrained={model_path}",
-            "--tasks", tasks_str,
-            "--num_fewshot", str(num_fewshot),
-            "--output_path", tmpdir,
-        ]
-        if limit is not None:
-            cmd += ["--limit", str(limit)]
-
-        env = os.environ.copy()
-        for key in list(env):
-            if key.upper() in (
-                "ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY",
-                "NO_PROXY", "FTP_PROXY",
-            ):
-                env.pop(key, None)
-
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, env=env,
-        )
-
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"lm_eval failed (exit {result.returncode}).\n"
-                f"stdout:\n{result.stdout[-2000:]}\n"
-                f"stderr:\n{result.stderr[-2000:]}"
-            )
-
-        results_data = _find_and_parse_results(tmpdir)
-        return _extract_accuracies(results_data, tasks)
-
-
 def _subprocess_eval_full(
     *,
     model_path: str,
@@ -326,7 +281,11 @@ def _subprocess_eval_full(
     num_fewshot: int,
     limit: Optional[int],
 ) -> Dict[str, Any]:
-    """Subprocess path, returning the full lm_eval output dict (not narrowed)."""
+    """Shell out to ``lm_eval`` CLI and return the full output dict.
+
+    Core subprocess path; both `_subprocess_eval` (narrowed) and
+    `eval_and_log`'s subprocess branch build on this.
+    """
     tasks_str = ",".join(tasks)
     with tempfile.TemporaryDirectory() as tmpdir:
         cmd = [
@@ -354,6 +313,21 @@ def _subprocess_eval_full(
                 f"stderr:\n{result.stderr[-2000:]}"
             )
         return _find_and_parse_results(tmpdir)
+
+
+def _subprocess_eval(
+    *,
+    model_path: str,
+    tasks: List[str],
+    num_fewshot: int,
+    limit: Optional[int],
+) -> Dict[str, float]:
+    """Narrowed-output subprocess path — delegates to `_subprocess_eval_full`."""
+    results_data = _subprocess_eval_full(
+        model_path=model_path, tasks=tasks,
+        num_fewshot=num_fewshot, limit=limit,
+    )
+    return _extract_accuracies(results_data, tasks)
 
 
 def _in_process_eval(
@@ -447,12 +421,12 @@ def eval_and_log(
         for metric_key, value in flat.items():
             experiment.log_metric(f"harness.{task}.{metric_key}", value)
 
-    from llm_surgeon.tracking import _log_harness_result
+    from llm_surgeon.tracking import log_harness_result
     if isinstance(num_fewshot, int):
         nf_to_store: Any = num_fewshot
     else:
         nf_to_store = _resolve_fewshot(tasks, num_fewshot)
-    _log_harness_result(
+    log_harness_result(
         db_path=experiment.db_path,
         experiment_name=experiment.name,
         tasks=tasks,

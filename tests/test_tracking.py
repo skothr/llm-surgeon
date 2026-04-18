@@ -112,15 +112,15 @@ class TestDbPersists:
 
 class TestHarnessResultsTable:
     def test_log_harness_result_writes_row(self, tmp_path):
-        """_log_harness_result inserts a harness_results row and _connect
+        """log_harness_result inserts a harness_results row and _connect
         creates the table via CREATE TABLE IF NOT EXISTS."""
-        from llm_surgeon.tracking import start, _log_harness_result
+        from llm_surgeon.tracking import start, log_harness_result
         import sqlite3
 
         db = str(tmp_path / "t.db")
         start("exp1", db_path=db)
 
-        _log_harness_result(
+        log_harness_result(
             db_path=db,
             experiment_name="exp1",
             tasks=["hellaswag", "arc_easy"],
@@ -150,12 +150,12 @@ class TestHarnessResultsTable:
         """Re-calling start(name) deletes any prior harness_results rows
         for that experiment, matching the existing metrics/surgery_ops
         cascade behavior."""
-        from llm_surgeon.tracking import start, _log_harness_result
+        from llm_surgeon.tracking import start, log_harness_result
         import sqlite3
 
         db = str(tmp_path / "t.db")
         start("exp1", db_path=db)
-        _log_harness_result(
+        log_harness_result(
             db_path=db, experiment_name="exp1",
             tasks=["hellaswag"], num_fewshot=0, limit=None,
             result={"results": {}},
@@ -173,15 +173,15 @@ class TestHarnessResultsTable:
 
     def test_log_harness_result_handles_non_json_types(self, tmp_path):
         """lm_eval's result dict embeds torch.dtype etc. in its config.
-        _log_harness_result must serialize via default=str, not crash."""
-        from llm_surgeon.tracking import start, _log_harness_result
+        log_harness_result must serialize via default=str, not crash."""
+        from llm_surgeon.tracking import start, log_harness_result
         import sqlite3
         import torch
 
         db = str(tmp_path / "t.db")
         start("exp1", db_path=db)
 
-        _log_harness_result(
+        log_harness_result(
             db_path=db,
             experiment_name="exp1",
             tasks=["hellaswag"],

@@ -231,7 +231,7 @@ def compare_experiments(names: List[str], db_path: str = _DEFAULT_DB) -> Dict[st
     return result
 
 
-def _log_harness_result(  # pyright: ignore[reportUnusedFunction]
+def log_harness_result(
     *,
     db_path: str,
     experiment_name: str,
@@ -242,8 +242,9 @@ def _log_harness_result(  # pyright: ignore[reportUnusedFunction]
 ) -> None:
     """Insert one row into harness_results with the full lm_eval output.
 
-    Called by benchmark.eval_and_log via deferred import (to avoid a
-    tracking -> benchmark cycle), so pyright can't see the cross-module use.
+    Called by benchmark.eval_and_log via deferred import to avoid a
+    tracking -> benchmark cycle. Name is semi-public (no leading underscore)
+    to signal cross-module use.
     """
     conn = _connect(db_path)
     try:

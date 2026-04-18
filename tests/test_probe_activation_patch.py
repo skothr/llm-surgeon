@@ -203,6 +203,7 @@ class TestActivationPatchLoop:
             direction="noise",
         )
         assert all(p == "word10 word11" for p in received_prompts)
+        assert len(received_prompts) == 8 * 2 * 2  # L × sub × pos
 
     def test_positions_subset_filters_loop(self, tiny_llama, tokenizer):
         from llm_surgeon.probe import activation_patch

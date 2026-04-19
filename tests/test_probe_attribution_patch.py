@@ -49,10 +49,11 @@ class TestCaptureWithGrad:
 
         model = _MockModel().eval()
         tok = _MockTok()
-        captured, logits, tokens = _capture_residual_stream_with_grad(
+        captured, h_ins, logits, tokens = _capture_residual_stream_with_grad(
             model, tok, "hello", sublayers=("attn", "ffn"), layers=None,
         )
         assert len(captured) == 2 * 2  # 2 layers × 2 sublayers
+        assert len(h_ins) == 2  # one h_in per layer when attn is captured
         for key, tensor in captured.items():
             assert tensor.requires_grad, f"{key} must require grad"
             assert tensor.grad_fn is not None, f"{key} must have grad_fn"
@@ -92,7 +93,7 @@ class TestCaptureWithGrad:
 
         model = _MockModel().eval()
         tok = _MockTok()
-        captured, logits, _ = _capture_residual_stream_with_grad(
+        captured, _h_ins, logits, _ = _capture_residual_stream_with_grad(
             model, tok, "hello", sublayers=("attn", "ffn"), layers=None,
         )
         logits.sum().backward()

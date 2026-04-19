@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Dict, Tuple
+
 import pytest
 import torch
 
 from llm_surgeon.probe import _capture_residual_stream_with_grad, attribution_patch
+
+
+def _tinyllama_cached() -> bool:
+    root = Path(__file__).resolve().parents[1] / ".cache" / "models"
+    return any(root.glob("models--TinyLlama--*"))
 
 
 class TestCaptureWithGrad:
@@ -258,3 +266,76 @@ class TestAttributionPatchLoop:
                 clean_prompt="clean", corrupted_prompt="corrupted",
                 correct_token_id=1, incorrect_token_id=2,
             )
+
+
+class TestApproxVsExactCorrelates:
+    @pytest.mark.skipif(
+        not _tinyllama_cached() or not torch.cuda.is_available(),
+        reason="requires cached TinyLlama and CUDA",
+    )
+    def test_tinyllama_capital_swap_spearman(self):
+        """AP approx rankings must correlate with exact AP rankings (Spearman ≥ 0.5)."""
+        import scipy.stats
+        from llm_surgeon.surgery import load_model
+        from llm_surgeon.probe import activation_patch
+
+        model, tokenizer = load_model("TinyLlama/TinyLlama-1.1B-Chat-v1.0", device="cuda")  # pyright: ignore[reportCallIssue]
+        model.eval()
+
+        clean = "The capital of France is"
+        corrupted = "The capital of Italy is"
+
+        # Resolve target tokens from argmax of clean baseline.
+        with torch.no_grad():
+            clean_ids = tokenizer(clean, return_tensors="pt")["input_ids"].to(model.device)
+            corr_ids = tokenizer(corrupted, return_tensors="pt")["input_ids"].to(model.device)
+            clean_last = model(clean_ids).logits[0, -1]
+            corr_last = model(corr_ids).logits[0, -1]
+        correct_id = int(clean_last.argmax().item())
+        incorrect_id = int(corr_last.argmax().item())
+
+        # --- Exact activation patching ---
+        exact_result = activation_patch(
+            model, tokenizer, clean_prompt=clean, corrupted_prompt=corrupted,
+            direction="denoise", measurement_position=-1,
+        )
+        # Exact produces patched_logits — compute logit_diff_recovery per cell.
+        exact_scores: Dict[Tuple[int, str, int], float] = {}
+        d_clean = float(
+            exact_result.clean_baseline_logits[correct_id]
+            - exact_result.clean_baseline_logits[incorrect_id]
+        )
+        d_corrupted = float(
+            exact_result.corrupted_baseline_logits[correct_id]
+            - exact_result.corrupted_baseline_logits[incorrect_id]
+        )
+        D = d_clean - d_corrupted
+        for cell in exact_result.cells:
+            pl = cell["patched_logits"]
+            d_patched = float(pl[correct_id] - pl[incorrect_id])
+            key = (cell["layer"], cell["sublayer"], cell["position"])
+            exact_scores[key] = (d_patched - d_corrupted) / D
+
+        # --- Approx attribution patching ---
+        approx_result = attribution_patch(
+            model, tokenizer, clean_prompt=clean, corrupted_prompt=corrupted,
+            correct_token_id=correct_id, incorrect_token_id=incorrect_id,
+            direction="denoise", measurement_position=-1,
+        )
+        approx_scores: Dict[Tuple[int, str, int], float] = {
+            (c["layer"], c["sublayer"], c["position"]): c["ap_recovery"]
+            for c in approx_result.cells
+        }
+
+        # --- Spearman rank correlation on shared keys ---
+        shared = sorted(set(exact_scores.keys()) & set(approx_scores.keys()))
+        assert len(shared) > 20, f"too few cells to correlate: {len(shared)}"
+        x = [exact_scores[k] for k in shared]
+        y = [approx_scores[k] for k in shared]
+        result_corr = scipy.stats.spearmanr(x, y)
+        rho = float(result_corr.statistic)  # type: ignore[attr-defined]
+        print(f"\nSpearman(exact, approx) = {rho:.3f} over {len(shared)} cells")
+        assert rho >= 0.5, (
+            f"AP approx rank correlation {rho:.3f} below threshold 0.5; "
+            f"the gradient approximation is not tracking exact patching"
+        )

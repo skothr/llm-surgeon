@@ -123,6 +123,20 @@ class TestPatchingResult:
         assert result.measurement_position == 1
         assert len(result.cells) == 0
 
+    def test_mode_defaults_to_exact(self):
+        """Default mode is 'exact' so existing Phase 3 call sites don't churn."""
+        from llm_surgeon.probe import PatchingResult
+        result = PatchingResult(
+            cells=[],
+            clean_baseline_logits=torch.zeros(10),
+            corrupted_baseline_logits=torch.zeros(10),
+            prompt_tokens_clean=["a"],
+            prompt_tokens_corrupted=["b"],
+            direction="denoise",
+            measurement_position=-1,
+        )
+        assert result.mode == "exact"
+
 
 # ---------------------------------------------------------------------------
 # Core algorithm — tiny_llama fixture (8 layers, 32 hidden)

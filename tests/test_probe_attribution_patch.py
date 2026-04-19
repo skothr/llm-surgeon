@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
-from llm_surgeon.probe import _capture_residual_stream_with_grad
+from llm_surgeon.probe import _capture_residual_stream_with_grad, attribution_patch
 
 
 class TestCaptureWithGrad:
@@ -91,3 +92,46 @@ class TestCaptureWithGrad:
             assert tensor.grad is not None, f"{key} missing grad after backward"
             # At least one element must be non-zero (not a constant-zero grad).
             assert tensor.grad.abs().sum().item() > 0, f"{key} grad is all zeros"
+
+
+class TestValidation:
+    def test_missing_token_ids_raises(self):
+        # A minimal mock model — we just need validation to fire before forward.
+        with pytest.raises(ValueError, match="correct_token_id and incorrect_token_id"):
+            attribution_patch(
+                model=None, tokenizer=None,
+                clean_prompt="a", corrupted_prompt="b",
+                correct_token_id=None, incorrect_token_id=None,  # type: ignore[arg-type]
+            )
+
+    def test_bad_direction_raises(self):
+        with pytest.raises(ValueError, match="direction must be"):
+            attribution_patch(
+                model=None, tokenizer=None,
+                clean_prompt="a", corrupted_prompt="b",
+                correct_token_id=1, incorrect_token_id=2,
+                direction="wobble",
+            )
+
+    def test_bad_sublayer_raises(self):
+        with pytest.raises(ValueError, match="sublayers must be"):
+            attribution_patch(
+                model=None, tokenizer=None,
+                clean_prompt="a", corrupted_prompt="b",
+                correct_token_id=1, incorrect_token_id=2,
+                sublayers=("mlp",),  # type: ignore[arg-type]
+            )
+
+    def test_empty_prompt_raises(self):
+        with pytest.raises(ValueError, match="prompt cannot be empty"):
+            attribution_patch(
+                model=None, tokenizer=None,
+                clean_prompt="", corrupted_prompt="b",
+                correct_token_id=1, incorrect_token_id=2,
+            )
+        with pytest.raises(ValueError, match="prompt cannot be empty"):
+            attribution_patch(
+                model=None, tokenizer=None,
+                clean_prompt="a", corrupted_prompt="",
+                correct_token_id=1, incorrect_token_id=2,
+            )

@@ -279,7 +279,7 @@ class TestApproxVsExactCorrelates:
         from llm_surgeon.surgery import load_model
         from llm_surgeon.probe import activation_patch
 
-        model, tokenizer = load_model("TinyLlama/TinyLlama-1.1B-Chat-v1.0", device="cuda")  # pyright: ignore[reportCallIssue]
+        model, tokenizer = load_model("TinyLlama/TinyLlama-1.1B-Chat-v1.0", mode="fp16")
         model.eval()
 
         clean = "The capital of France is"

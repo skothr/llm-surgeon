@@ -49,7 +49,7 @@ class TestCaptureWithGrad:
 
         model = _MockModel().eval()
         tok = _MockTok()
-        captured, h_ins, logits, tokens, _ = _capture_residual_stream_with_grad(
+        captured, h_ins, logits, tokens, _, _ = _capture_residual_stream_with_grad(
             model, tok, "hello", sublayers=("attn", "ffn"), layers=None,
         )
         assert len(captured) == 2 * 2  # 2 layers × 2 sublayers
@@ -93,7 +93,7 @@ class TestCaptureWithGrad:
 
         model = _MockModel().eval()
         tok = _MockTok()
-        captured, _, logits, _, _ = _capture_residual_stream_with_grad(
+        captured, _, logits, _, _, _ = _capture_residual_stream_with_grad(
             model, tok, "hello", sublayers=("attn", "ffn"), layers=None,
         )
         logits.sum().backward()

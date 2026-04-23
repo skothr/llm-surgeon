@@ -101,7 +101,7 @@ class TestCaptureConcat_z:
         model = _MockModel(num_layers=2, d_model=8).eval()
         tok = _MockTok()
         with torch.enable_grad():
-            _, _, _, _, concat_z = _capture_residual_stream_with_grad(
+            _, _, _, _, concat_z, _ = _capture_residual_stream_with_grad(
                 model, tok, "clean",
                 sublayers=("attn", "ffn"), layers=None,
                 capture_concat_z=True,
@@ -116,7 +116,7 @@ class TestCaptureConcat_z:
         model = _MockModel(num_layers=2, d_model=8).eval()
         tok = _MockTok()
         with torch.enable_grad():
-            _, _, _, _, concat_z = _capture_residual_stream_with_grad(
+            _, _, _, _, concat_z, _ = _capture_residual_stream_with_grad(
                 model, tok, "clean",
                 sublayers=("attn", "ffn"), layers=None,
                 capture_concat_z=True,
@@ -131,7 +131,7 @@ class TestCaptureConcat_z:
         model = _MockModel(num_layers=2, d_model=8).eval()
         tok = _MockTok()
         with torch.enable_grad():
-            _, _, logits, _, concat_z = _capture_residual_stream_with_grad(
+            _, _, logits, _, concat_z, _ = _capture_residual_stream_with_grad(
                 model, tok, "clean",
                 sublayers=("attn", "ffn"), layers=None,
                 capture_concat_z=True,
@@ -147,7 +147,7 @@ class TestCaptureConcat_z:
         model = _MockModel(num_layers=2, d_model=8).eval()
         tok = _MockTok()
         with torch.enable_grad():
-            _, _, _, _, concat_z = _capture_residual_stream_with_grad(
+            _, _, _, _, concat_z, _ = _capture_residual_stream_with_grad(
                 model, tok, "clean",
                 sublayers=("attn", "ffn"), layers=[1],
                 capture_concat_z=True,
@@ -160,7 +160,7 @@ class TestCaptureConcat_z:
         model = _MockModel(num_layers=2, d_model=8).eval()
         tok = _MockTok()
         with torch.enable_grad():
-            _, _, _, _, concat_z = _capture_residual_stream_with_grad(
+            _, _, _, _, concat_z, _ = _capture_residual_stream_with_grad(
                 model, tok, "clean",
                 sublayers=("attn", "ffn"), layers=None,
                 capture_concat_z=False,
@@ -197,13 +197,13 @@ class TestPerHeadAP:
 
         # --- Expected target: (Δattn_out · attn_out.grad) / D, computed directly ---
         with torch.no_grad():
-            from_cap_x, _, from_logits_x, _, _ = _capture_residual_stream_with_grad(
+            from_cap_x, _, from_logits_x, _, _, _ = _capture_residual_stream_with_grad(
                 model, tok, "clean", sublayers=("attn",),
             )
             from_attn_detached = {k: v.detach().clone() for k, v in from_cap_x.items()}
 
         with torch.enable_grad():
-            base_cap_x, _, base_logits_x, _, _ = _capture_residual_stream_with_grad(
+            base_cap_x, _, base_logits_x, _, _, _ = _capture_residual_stream_with_grad(
                 model, tok, "corrupted", sublayers=("attn",),
             )
             d_clean = (from_logits_x[-1, 1] - from_logits_x[-1, 2]).detach()
@@ -438,7 +438,7 @@ class TestTinyLlamaSpearman:
 
         # --- Direct target: (Δattn_out · attn_out.grad) / D per (L, pos) ---
         with torch.no_grad():
-            from_cap, _, from_logits, _, _ = _capture_residual_stream_with_grad(
+            from_cap, _, from_logits, _, _, _ = _capture_residual_stream_with_grad(
                 model, tokenizer, clean, sublayers=("attn",),
             )
             from_attn_detached = {
@@ -446,7 +446,7 @@ class TestTinyLlamaSpearman:
             }
 
         with torch.enable_grad():
-            base_cap, _, base_logits, _, _ = _capture_residual_stream_with_grad(
+            base_cap, _, base_logits, _, _, _ = _capture_residual_stream_with_grad(
                 model, tokenizer, corrupted, sublayers=("attn",),
             )
             d_clean = (

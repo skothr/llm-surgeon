@@ -127,7 +127,7 @@ class TestReaderGradCapture:
         model = _MockModelFull(num_layers=2, d_model=8).eval()
         tok = _MockTok()
         with torch.enable_grad():
-            _, _, _, _, _, reader_inputs = _capture_residual_stream_with_grad(
+            _, _, _, _, _, reader_inputs, _ = _capture_residual_stream_with_grad(
                 model, tok, "clean",
                 sublayers=("attn", "ffn"), layers=None,
                 capture_reader_grads=True,
@@ -141,7 +141,7 @@ class TestReaderGradCapture:
         model = _MockModelFull(num_layers=2, d_model=8).eval()
         tok = _MockTok()
         with torch.enable_grad():
-            _, _, _, _, _, reader_inputs = _capture_residual_stream_with_grad(
+            _, _, _, _, _, reader_inputs, _ = _capture_residual_stream_with_grad(
                 model, tok, "clean",
                 sublayers=("attn", "ffn"), layers=None,
                 capture_reader_grads=True,
@@ -155,7 +155,7 @@ class TestReaderGradCapture:
         model = _MockModelFull(num_layers=2, d_model=8).eval()
         tok = _MockTok()
         with torch.enable_grad():
-            _, _, _, _, _, reader_inputs = _capture_residual_stream_with_grad(
+            _, _, _, _, _, reader_inputs, _ = _capture_residual_stream_with_grad(
                 model, tok, "clean",
                 sublayers=("attn", "ffn"), layers=None,
                 capture_reader_grads=True,
@@ -170,7 +170,7 @@ class TestReaderGradCapture:
         model = _MockModelFull(num_layers=2, d_model=8).eval()
         tok = _MockTok()
         with torch.enable_grad():
-            _, _, logits, _, _, reader_inputs = _capture_residual_stream_with_grad(
+            _, _, logits, _, _, reader_inputs, _ = _capture_residual_stream_with_grad(
                 model, tok, "clean",
                 sublayers=("attn", "ffn"), layers=None,
                 capture_reader_grads=True,
@@ -186,7 +186,7 @@ class TestReaderGradCapture:
         model = _MockModelFull(num_layers=2, d_model=8).eval()
         tok = _MockTok()
         with torch.enable_grad():
-            _, _, _, _, _, reader_inputs = _capture_residual_stream_with_grad(
+            _, _, _, _, _, reader_inputs, _ = _capture_residual_stream_with_grad(
                 model, tok, "clean",
                 sublayers=("attn", "ffn"), layers=None,
                 capture_reader_grads=False,

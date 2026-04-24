@@ -509,3 +509,187 @@ class TestTinyLlamaSpearman:
         assert max_dev < 0.01, (
             f"Max deviation {max_dev:.6f} too large; should be fp epsilon."
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.10.1 — IG extension for per-head AP
+# ---------------------------------------------------------------------------
+
+class _MockMLP(torch.nn.Module):
+    """Minimal MLP with down_proj so IG loop can attach mlp hooks."""
+    def __init__(self, hidden: int = 8, intermediate: int = 16) -> None:
+        super().__init__()
+        self.up_proj = torch.nn.Linear(hidden, intermediate, bias=False)
+        self.act_fn = torch.nn.GELU()
+        self.down_proj = torch.nn.Linear(intermediate, hidden, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.down_proj(self.act_fn(self.up_proj(x)))
+
+
+class _MockLayerFull(torch.nn.Module):
+    """Layer with both self_attn and mlp — needed for IG hook registration."""
+    def __init__(self, d_model: int = 8) -> None:
+        super().__init__()
+        self.self_attn = _MockSelfAttn(d_model)
+        self.mlp = _MockMLP(d_model, d_model * 2)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor]:
+        x = x + self.self_attn(x)[0]
+        x = x + self.mlp(x)
+        return (x,)
+
+
+class _MockModelFull(torch.nn.Module):
+    """Mock model with both self_attn and mlp per layer (needed for IG)."""
+    def __init__(self, num_layers: int = 2, d_model: int = 8, vocab: int = 10) -> None:
+        super().__init__()
+        self.model = torch.nn.Module()
+        self.model.embed_tokens = torch.nn.Embedding(vocab, d_model)  # pyright: ignore[reportAttributeAccessIssue]
+        self.model.layers = torch.nn.ModuleList(  # pyright: ignore[reportAttributeAccessIssue]
+            [_MockLayerFull(d_model) for _ in range(num_layers)]
+        )
+        self.lm_head = torch.nn.Linear(d_model, vocab, bias=False)
+        self.config = type("cfg", (), {  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+            "num_attention_heads": 2,
+            "hidden_size": d_model,
+        })()
+
+    def forward(self, input_ids: torch.Tensor):  # type: ignore[override]
+        h = self.model.embed_tokens(input_ids)  # pyright: ignore[reportAttributeAccessIssue,reportCallIssue]
+        for layer in self.model.layers:  # pyright: ignore[reportAttributeAccessIssue,reportGeneralTypeIssues]
+            h = layer(h)[0]
+        return type("Out", (), {"logits": self.lm_head(h)})()
+
+
+def _pick_head_tokens(model: "_MockModelFull", tok: "_MockTok") -> Tuple[int, int]:
+    """Pick (correct, incorrect) ids guaranteed to give a nonzero AP denominator."""
+    with torch.no_grad():
+        cl = model(tok("clean")["input_ids"]).logits[0, -1]
+        co = model(tok("corrupted")["input_ids"]).logits[0, -1]
+    c_id = int(cl.argmax().item())
+    i_id = int(co.argmax().item())
+    if c_id == i_id:
+        topk = co.topk(2).indices
+        i_id = int(topk[1].item())
+    denom = abs((cl[c_id] - cl[i_id]).item() - (co[c_id] - co[i_id]).item())
+    if denom < 1e-4:
+        vocab = cl.shape[-1]
+        best: Tuple[int, int, float] = (0, 1, 0.0)
+        for ci in range(vocab):
+            for ii in range(vocab):
+                if ii == ci:
+                    continue
+                d = abs((cl[ci] - cl[ii]).item() - (co[ci] - co[ii]).item())
+                if d > best[2]:
+                    best = (ci, ii, d)
+        c_id, i_id = best[0], best[1]
+    return c_id, i_id
+
+
+class TestPerHeadIG:
+    def test_per_head_n_steps_converges(self) -> None:
+        """n_steps=10 differs from n_steps=1 in at least one cell; n_steps returns correctly."""
+        torch.manual_seed(42)
+        model = _MockModelFull(num_layers=2, d_model=8).eval()
+        tok = _MockTok()
+        correct_id, incorrect_id = _pick_head_tokens(model, tok)
+
+        def _run(n: int) -> PatchingResult:
+            return attribution_patch_per_head(
+                model,
+                tok,
+                clean_prompt="clean",
+                corrupted_prompt="corrupted",
+                correct_token_id=correct_id,
+                incorrect_token_id=incorrect_id,
+                direction="denoise",
+                measurement_position=-1,
+                n_steps=n,
+            )
+
+        r1 = _run(1)
+        r10 = _run(10)
+
+        assert r1.n_steps is None, f"n_steps=1 should set n_steps=None on result, got {r1.n_steps}"
+        assert r10.n_steps == 10, f"n_steps=10 should set n_steps=10 on result, got {r10.n_steps}"
+
+        for c in r1.cells:
+            assert isinstance(c["ap_recovery"], float) and not (c["ap_recovery"] != c["ap_recovery"]), \
+                f"Non-finite ap_recovery in r1: {c}"
+        for c in r10.cells:
+            assert isinstance(c["ap_recovery"], float) and not (c["ap_recovery"] != c["ap_recovery"]), \
+                f"Non-finite ap_recovery in r10: {c}"
+
+        r1_map = {(c["layer"], c["unit"], c["position"]): c["ap_recovery"] for c in r1.cells}
+        r10_map = {(c["layer"], c["unit"], c["position"]): c["ap_recovery"] for c in r10.cells}
+        shared_keys = set(r1_map.keys()) & set(r10_map.keys())
+        assert shared_keys, "No shared cells between n_steps=1 and n_steps=10"
+        max_diff = max(abs(r1_map[k] - r10_map[k]) for k in shared_keys)
+        assert max_diff > 1e-4, (
+            f"n_steps=10 and n_steps=1 agree within 1e-4 on all cells (max_diff={max_diff:.2e}); "
+            "IG should differ from first-order on a nonlinear mock."
+        )
+
+
+@pytest.mark.skipif(
+    not _tinyllama_cached() or not torch.cuda.is_available(),
+    reason="requires cached TinyLlama and CUDA",
+)
+def test_per_head_ig_tinyllama() -> None:
+    """Top-20 Spearman between n_steps=1 and n_steps=5 |ap_recovery| rankings > 0.5."""
+    import math
+    import numpy as np
+    import scipy.stats
+    from llm_surgeon.surgery import load_model
+
+    model, tokenizer = load_model(
+        "TinyLlama/TinyLlama-1.1B-Chat-v1.0", mode="fp16"
+    )
+    model.eval()
+
+    clean = "The capital of France is"
+    corrupted = "The capital of Russia is"
+
+    device = next(model.parameters()).device
+    with torch.no_grad():
+        paris_ids = tokenizer(" Paris", return_tensors="pt", add_special_tokens=False)["input_ids"].to(device)
+        moscow_ids = tokenizer(" Moscow", return_tensors="pt", add_special_tokens=False)["input_ids"].to(device)
+    paris_id = int(paris_ids[0, -1].item())
+    moscow_id = int(moscow_ids[0, -1].item())
+
+    def _run_head(n: int) -> PatchingResult:
+        return attribution_patch_per_head(
+            model,
+            tokenizer,
+            clean_prompt=clean,
+            corrupted_prompt=corrupted,
+            correct_token_id=paris_id,
+            incorrect_token_id=moscow_id,
+            direction="denoise",
+            measurement_position=-1,
+            n_steps=n,
+        )
+
+    r1 = _run_head(1)
+    r5 = _run_head(5)
+
+    assert r1.n_steps is None
+    assert r5.n_steps == 5
+
+    r1_map = {(c["layer"], c["unit"], c["position"]): c["ap_recovery"] for c in r1.cells}
+    r5_map = {(c["layer"], c["unit"], c["position"]): c["ap_recovery"] for c in r5.cells}
+
+    shared = sorted(set(r1_map.keys()) & set(r5_map.keys()))
+    assert len(shared) > 20, f"too few shared cells: {len(shared)}"
+
+    top20 = sorted(shared, key=lambda k: abs(r1_map[k]), reverse=True)[:20]
+    x = [abs(r1_map[k]) for k in top20]
+    y = [abs(r5_map[k]) for k in top20]
+    result_corr = scipy.stats.spearmanr(x, y)
+    rho = float(result_corr.statistic)  # type: ignore[attr-defined]
+    print(f"\nper-head IG TinyLlama: Spearman(n1, n5) top-20 = {rho:.4f}")
+    assert rho > 0.5, (
+        f"Spearman ρ={rho:.4f} < 0.5 on top-20 cells; IG per-head rankings diverged unexpectedly."
+    )
+    assert all(math.isfinite(c["ap_recovery"]) for c in r5.cells), "Non-finite ap_recovery in IG result"

@@ -388,3 +388,108 @@ class TestTinyLlamaPerNeuron:
         mags = [abs(c["ap_recovery"]) for c in r.cells]
         assert mags == sorted(mags, reverse=True)
         assert mags[0] > 0.001, "top neuron should have nonzero AP on a real task"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.10.1 — IG extension for per-neuron AP
+# ---------------------------------------------------------------------------
+
+class TestPerNeuronIG:
+    def test_per_neuron_n_steps_converges(self) -> None:
+        """n_steps=10 differs from n_steps=1 in at least one cell; n_steps stored correctly."""
+        model, tok = _make_mock()
+
+        def _run(n: int) -> PatchingResult:
+            return attribution_patch_per_neuron(
+                model,
+                tok,
+                clean_prompt=CLEAN_PROMPT,
+                corrupted_prompt=CORR_PROMPT,
+                correct_token_id=CORRECT_ID,
+                incorrect_token_id=INCORRECT_ID,
+                top_k_neurons=50,
+                n_steps=n,
+            )
+
+        r1 = _run(1)
+        r10 = _run(10)
+
+        assert r1.n_steps is None, f"n_steps=1 should store None, got {r1.n_steps}"
+        assert r10.n_steps == 10, f"n_steps=10 should store 10, got {r10.n_steps}"
+
+        for c in r1.cells:
+            val = c["ap_recovery"]
+            assert isinstance(val, float) and val == val, f"Non-finite ap_recovery in r1: {c}"
+        for c in r10.cells:
+            val = c["ap_recovery"]
+            assert isinstance(val, float) and val == val, f"Non-finite ap_recovery in r10: {c}"
+
+        r1_map = {(c["layer"], c["neuron"], c["position"]): c["ap_recovery"] for c in r1.cells}
+        r10_map = {(c["layer"], c["neuron"], c["position"]): c["ap_recovery"] for c in r10.cells}
+        shared_keys = set(r1_map.keys()) & set(r10_map.keys())
+        assert shared_keys, "No shared cells between n_steps=1 and n_steps=10"
+        max_diff = max(abs(r1_map[k] - r10_map[k]) for k in shared_keys)
+        assert max_diff > 1e-4, (
+            f"n_steps=10 agrees with n_steps=1 within 1e-4 on all cells (max_diff={max_diff:.2e}); "
+            "IG should differ from first-order on a nonlinear mock."
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not _tinyllama_cached(), reason="TinyLlama not cached")
+def test_per_neuron_ig_tinyllama() -> None:
+    """Top-20 Spearman between n_steps=1 and n_steps=5 |ap_recovery| rankings > 0.5."""
+    import math
+    import numpy as np
+    import scipy.stats
+    from llm_surgeon.surgery import load_model
+
+    model, tok = load_model("TinyLlama/TinyLlama-1.1B-Chat-v1.0", mode="fp16")
+    model.eval()
+
+    clean = "The capital of France is"
+    corrupted = "The capital of Russia is"
+
+    device = next(model.parameters()).device
+    with torch.no_grad():
+        paris_ids = tok(" Paris", return_tensors="pt", add_special_tokens=False)["input_ids"].to(device)
+        moscow_ids = tok(" Moscow", return_tensors="pt", add_special_tokens=False)["input_ids"].to(device)
+    paris_id = int(paris_ids[0, -1].item())
+    moscow_id = int(moscow_ids[0, -1].item())
+
+    def _run_neuron(n: int) -> PatchingResult:
+        return attribution_patch_per_neuron(
+            model,
+            tok,
+            clean_prompt=clean,
+            corrupted_prompt=corrupted,
+            correct_token_id=paris_id,
+            incorrect_token_id=moscow_id,
+            direction="denoise",
+            top_k_neurons=50,
+            n_steps=n,
+        )
+
+    r1 = _run_neuron(1)
+    r5 = _run_neuron(5)
+
+    assert r1.n_steps is None
+    assert r5.n_steps == 5
+
+    r1_map = {(c["layer"], c["neuron"], c["position"]): c["ap_recovery"] for c in r1.cells}
+    r5_map = {(c["layer"], c["neuron"], c["position"]): c["ap_recovery"] for c in r5.cells}
+
+    shared = sorted(set(r1_map.keys()) & set(r5_map.keys()))
+    assert len(shared) >= 1, f"no shared cells between n_steps=1 and n_steps=5: {len(shared)}"
+
+    n_top = min(20, len(shared))
+    top20 = sorted(shared, key=lambda k: abs(r1_map[k]), reverse=True)[:n_top]
+    x = [abs(r1_map[k]) for k in top20]
+    y = [abs(r5_map[k]) for k in top20]
+    result_corr = scipy.stats.spearmanr(x, y)
+    rho = float(result_corr.statistic)  # type: ignore[attr-defined]
+    print(f"\nper-neuron IG TinyLlama: Spearman(n1, n5) top-{n_top} = {rho:.4f}")
+    assert rho > 0.5, (
+        f"Spearman ρ={rho:.4f} < 0.5 on top-{n_top} cells; IG per-neuron rankings diverged unexpectedly."
+    )
+    assert all(math.isfinite(c["ap_recovery"]) for c in r5.cells), "Non-finite ap_recovery in IG result"

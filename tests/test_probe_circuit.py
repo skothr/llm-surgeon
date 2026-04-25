@@ -455,6 +455,86 @@ def _tinyllama_cached() -> bool:
     return default.exists()
 
 
+class TestCircuitIntegratedGradients:
+    def test_circuit_n_steps_converges(self) -> None:
+        """n_steps=10 results differ from n_steps=1, are finite, and n_steps is set."""
+        import math
+
+        model, tok = _make_mock()
+        r_1 = extract_circuit(
+            model, tok,
+            clean_prompt=CLEAN_PROMPT,
+            corrupted_prompt=CORR_PROMPT,
+            correct_token_id=CORRECT_ID,
+            incorrect_token_id=INCORRECT_ID,
+            tau=0.0,
+            top_k_candidates=50,
+            n_steps=1,
+        )
+        model2, tok2 = _make_mock()
+        r_10 = extract_circuit(
+            model2, tok2,
+            clean_prompt=CLEAN_PROMPT,
+            corrupted_prompt=CORR_PROMPT,
+            correct_token_id=CORRECT_ID,
+            incorrect_token_id=INCORRECT_ID,
+            tau=0.0,
+            top_k_candidates=50,
+            n_steps=10,
+        )
+        assert r_1.n_steps is None
+        assert r_10.n_steps == 10
+
+        for c in r_10.cells:
+            assert math.isfinite(c["ap_recovery"]), f"non-finite ap_recovery: {c}"
+
+        r1_by_key = {
+            (c["writer_layer"], c["writer_unit"], c["reader_layer"], c["reader_unit"], c["position"]): c["ap_recovery"]
+            for c in r_1.cells
+        }
+        r10_by_key = {
+            (c["writer_layer"], c["writer_unit"], c["reader_layer"], c["reader_unit"], c["position"]): c["ap_recovery"]
+            for c in r_10.cells
+        }
+        shared = set(r1_by_key.keys()) & set(r10_by_key.keys())
+        in_circuit_labels_1 = {
+            (c["writer_layer"], c["writer_unit"], c["reader_layer"], c["reader_unit"], c["position"]): c["in_circuit"]
+            for c in r_1.cells
+        }
+        in_circuit_labels_10 = {
+            (c["writer_layer"], c["writer_unit"], c["reader_layer"], c["reader_unit"], c["position"]): c["in_circuit"]
+            for c in r_10.cells
+        }
+        shared_labels = set(in_circuit_labels_1.keys()) & set(in_circuit_labels_10.keys())
+        labels_differ = any(
+            in_circuit_labels_1[k] != in_circuit_labels_10[k] for k in shared_labels
+        )
+        scores_differ = len(shared) > 0 and max(
+            abs(r1_by_key[k] - r10_by_key[k]) for k in shared
+        ) > 1e-4
+
+        assert labels_differ or scores_differ, (
+            "n_steps=10 produced identical circuit labels and near-identical scores to "
+            "n_steps=1; IG averaging should change at least one quantity"
+        )
+
+    def test_circuit_n_steps_validation(self) -> None:
+        """n_steps outside [1, 50] raises ValueError."""
+        model, tok = _make_mock()
+        with pytest.raises(ValueError, match=r"n_steps must be int in \[1, 50\]"):
+            extract_circuit(
+                model, tok, CLEAN_PROMPT, CORR_PROMPT,
+                correct_token_id=CORRECT_ID, incorrect_token_id=INCORRECT_ID,
+                n_steps=0,
+            )
+        with pytest.raises(ValueError, match=r"n_steps must be int in \[1, 50\]"):
+            extract_circuit(
+                model, tok, CLEAN_PROMPT, CORR_PROMPT,
+                correct_token_id=CORRECT_ID, incorrect_token_id=INCORRECT_ID,
+                n_steps=51,
+            )
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.skipif(not _tinyllama_cached(), reason="TinyLlama not cached")
 class TestTinyLlamaCircuit:
@@ -491,3 +571,85 @@ class TestTinyLlamaCircuit:
         # Cells are sorted by |ap_recovery| desc
         mags = [abs(c["ap_recovery"]) for c in r.cells]
         assert mags == sorted(mags, reverse=True)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not _tinyllama_cached(), reason="TinyLlama not cached")
+def test_circuit_ig_tinyllama() -> None:
+    """Circuit IG sanity check on TinyLlama (top-100 set overlap).
+
+    Same approach as test_edge_ig_tinyllama: top-100 overlap is more
+    robust than rank Spearman for edge-level IG, where signed scores
+    + small samples make rank correlation noisy. Asserts overlap >=
+    25%, finite cells, and a measurable score difference proving IG
+    isn't a no-op.
+    """
+    import math
+    from llm_surgeon.surgery import load_model
+
+    model, tok = load_model("TinyLlama/TinyLlama-1.1B-Chat-v1.0", mode="fp16")
+    model.eval()
+
+    clean = "The capital of France is"
+    corrupted = "The capital of Italy is"
+
+    paris_ids = tok(" Paris", add_special_tokens=False)["input_ids"]
+    rome_ids = tok(" Rome", add_special_tokens=False)["input_ids"]
+    correct_id = int(paris_ids[0])
+    incorrect_id = int(rome_ids[0])
+
+    r1 = extract_circuit(
+        model, tok, clean, corrupted,
+        correct_token_id=correct_id,
+        incorrect_token_id=incorrect_id,
+        tau=0.05,
+        top_k_candidates=2000,
+        n_steps=1,
+    )
+    r5 = extract_circuit(
+        model, tok, clean, corrupted,
+        correct_token_id=correct_id,
+        incorrect_token_id=incorrect_id,
+        tau=0.05,
+        top_k_candidates=2000,
+        n_steps=5,
+    )
+
+    assert r1.n_steps is None
+    assert r5.n_steps == 5
+
+    for c in r5.cells:
+        assert math.isfinite(c["ap_recovery"]), f"non-finite cell: {c}"
+
+    def _edge_key(c: dict) -> tuple:
+        return (c["writer_layer"], c["writer_unit"], c["reader_layer"], c["reader_unit"], c["position"])
+
+    r1_top100 = {
+        _edge_key(c) for c in
+        sorted(r1.cells, key=lambda c: abs(c["ap_recovery"]), reverse=True)[:100]
+    }
+    r5_top100 = {
+        _edge_key(c) for c in
+        sorted(r5.cells, key=lambda c: abs(c["ap_recovery"]), reverse=True)[:100]
+    }
+    overlap = len(r1_top100 & r5_top100)
+    overlap_frac = overlap / 100.0
+    print(
+        f"\nCircuit IG top-100 set overlap(n_steps=1, n_steps=5) = "
+        f"{overlap}/100 ({overlap_frac:.1%})"
+    )
+
+    r1_map = {_edge_key(c): c["ap_recovery"] for c in r1.cells}
+    r5_map = {_edge_key(c): c["ap_recovery"] for c in r5.cells}
+    shared = r1_top100 & r5_top100
+    if shared:
+        max_diff = max(abs(r1_map[k] - r5_map[k]) for k in shared)
+        print(f"max abs score diff on shared top-100 edges: {max_diff:.5f}")
+        assert max_diff > 1e-4, (
+            f"IG appears to be a no-op (max diff {max_diff:.2e} <= 1e-4)"
+        )
+
+    assert overlap_frac >= 0.25, (
+        f"Circuit IG top-100 overlap {overlap_frac:.1%} too low; "
+        f"n_steps=5 should preserve at least 25 of r1's top-100 edges"
+    )

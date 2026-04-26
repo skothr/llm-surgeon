@@ -133,7 +133,7 @@ class TestDecodeResidualUnit:
         app, name = app_with_mock_session
         client = TestClient(app)
         r = client.post(f"/api/sessions/{name}/decode-residual", json={
-            "prompt": "the cat sat", "layer": 0, "sublayer": "embed", "position": 0,
+            "prompt": "the cat sat", "layer": 0, "sublayer": "logits", "position": 0,
         })
         assert r.status_code == 400
         assert "sublayer" in r.json()["detail"]
@@ -184,6 +184,27 @@ class TestDecodeResidualUnit:
         assert top_logits == sorted(top_logits, reverse=True)
         assert bot_logits == sorted(bot_logits)
         assert body["prompt_tokens"] == ["the", "cat", "sat"]
+
+    def test_embed_sublayer_layer_zero_succeeds(self, app_with_mock_session) -> None:
+        app, name = app_with_mock_session
+        client = TestClient(app)
+        r = client.post(f"/api/sessions/{name}/decode-residual", json={
+            "prompt": "the cat sat", "layer": 0, "sublayer": "embed", "position": 1, "top_k": 3,
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["top_tokens"]) == 3
+        assert len(body["bottom_tokens"]) == 3
+
+    def test_embed_sublayer_nonzero_layer_400(self, app_with_mock_session) -> None:
+        app, name = app_with_mock_session
+        client = TestClient(app)
+        r = client.post(f"/api/sessions/{name}/decode-residual", json={
+            "prompt": "the cat sat", "layer": 1, "sublayer": "embed", "position": 1, "top_k": 3,
+        })
+        assert r.status_code == 400
+        assert "embed" in r.json()["detail"]
+        assert "layer=0" in r.json()["detail"]
 
 
 # ----- TinyLlama parity test -----

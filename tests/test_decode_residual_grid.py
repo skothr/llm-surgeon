@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List
+from typing import Dict, List
 
 import os
 
@@ -138,13 +138,21 @@ class TestDecodeResidualGridUnit:
         assert set(body) == {"cells", "prompt_tokens", "num_layers"}
         assert body["num_layers"] == 3
         assert body["prompt_tokens"] == ["the", "cat", "sat"]
-        # 3 layers x 2 sublayers x 3 positions = 18 cells
-        assert len(body["cells"]) == 3 * 2 * 3
+        # 3 layers x 2 sublayers x 3 positions = 18 attn/ffn cells
+        # plus 1 embed sublayer x 3 positions = 3 embed cells -> 21 total
+        assert len(body["cells"]) == 3 * 2 * 3 + 3
+        sublayer_counts: Dict[str, int] = {}
         for cell in body["cells"]:
             assert set(cell) == {"layer", "sublayer", "position", "tokens"}
-            assert cell["sublayer"] in {"attn", "ffn"}
+            assert cell["sublayer"] in {"attn", "ffn", "embed"}
             assert len(cell["tokens"]) == 1
             assert set(cell["tokens"][0]) == {"token", "logit"}
+            sublayer_counts[cell["sublayer"]] = sublayer_counts.get(cell["sublayer"], 0) + 1
+        assert sublayer_counts == {"attn": 9, "ffn": 9, "embed": 3}
+        # All embed cells must have layer == 0.
+        for cell in body["cells"]:
+            if cell["sublayer"] == "embed":
+                assert cell["layer"] == 0
 
     def test_top_k_clamped_to_5(self, app_with_mock_session) -> None:
         app, name = app_with_mock_session
@@ -157,6 +165,20 @@ class TestDecodeResidualGridUnit:
         # Mock vocab is 6, so each cell has min(999, 5, 6) = 5 tokens.
         for cell in body["cells"]:
             assert len(cell["tokens"]) == 5
+
+    def test_embed_cells_present_at_layer_zero(self, app_with_mock_session) -> None:
+        app, name = app_with_mock_session
+        client = TestClient(app)
+        r = client.post(f"/api/sessions/{name}/decode-residual-grid", json={
+            "prompt": "the cat sat", "top_k": 1,
+        })
+        assert r.status_code == 200
+        body = r.json()
+        embed_cells = [c for c in body["cells"] if c["sublayer"] == "embed"]
+        assert len(embed_cells) == 3  # one per position
+        for c in embed_cells:
+            assert c["layer"] == 0
+            assert "token" in c["tokens"][0]
 
 
 def _tinyllama_cached() -> bool:

@@ -235,6 +235,15 @@ class LlamaEngine:
 
         generated_ids: list[int] = []
         generated_text = ""
+        # llama.cpp's detokenize on a single-token list strips the leading
+        # SentencePiece space (▁→space conversion only fires when there's
+        # prior context). Detokenize `[last_prompt_token, *gen_so_far]` and
+        # slice off whatever was already emitted so the first generated
+        # token carries its leading space — otherwise " Paris" arrives as
+        # "Paris" and the panel renders "isParis". O(1) extra cost per step.
+        boundary_id = tokens[-1] if tokens else None
+        boundary_text = self.detokenize([boundary_id]) if boundary_id is not None else ""
+        prev_full = boundary_text
 
         for _ in range(max_tokens):
             logits_arr = np.array(llm.eval_logits[-1], dtype=np.float32)
@@ -258,8 +267,13 @@ class LlamaEngine:
                     rng=rng,
                 )
 
-            token_str = self.detokenize([next_id])
             generated_ids.append(next_id)
+            if boundary_id is not None:
+                full = self.detokenize([boundary_id, *generated_ids])
+            else:
+                full = self.detokenize(generated_ids)
+            token_str = full[len(prev_full):]
+            prev_full = full
             generated_text += token_str
 
             yield GenerateStep(

@@ -181,6 +181,36 @@ class TestLlamaEngineGenerate:
         assert isinstance(step.token_id, int)
         assert isinstance(step.token_str, str)
 
+    def test_generate_first_token_preserves_leading_space(self, engine):
+        """Regression: llama.cpp's per-token detokenize strips the
+        leading SentencePiece space when called on a single-token list.
+        The boundary-token approach inside generate() must restore it
+        so the panel shows 'is Paris', not 'isParis'."""
+        tokens = engine.tokenize("The capital of France is")
+        steps = list(engine.generate(tokens, max_tokens=1, temperature=0))
+        first = steps[0]
+        # The greedy continuation of this prompt is " Paris" with a
+        # leading SP-space — assert the streamed token_str preserves it.
+        assert first.token_str.startswith(" "), (
+            f"expected leading space on first generated token, got {first.token_str!r}"
+        )
+
+    def test_generate_concatenated_text_matches_prompt_continuation(self, engine):
+        """Concatenating prompt + every token_str must yield the same
+        text as detokenize(prompt + generated_ids) — i.e. the stream is
+        a faithful split of the full text. This pins the contract the
+        GenerationOutput panel relies on for prompt+token rendering."""
+        prompt = "The capital of France is"
+        tokens = engine.tokenize(prompt)
+        steps = list(engine.generate(tokens, max_tokens=4, temperature=0))
+        gen_ids = [s.token_id for s in steps]
+        full = engine.detokenize(tokens + gen_ids)
+        # Reconstruct via prompt + concatenated streamed tokens.
+        recon = prompt + "".join(s.token_str for s in steps)
+        assert recon == full, (
+            f"reconstruction mismatch — recon={recon!r} full={full!r}"
+        )
+
     def test_generate_without_logits(self, engine):
         tokens = engine.tokenize("Hello")
         steps = list(engine.generate(tokens, max_tokens=1, temperature=0, emit_logits=False))

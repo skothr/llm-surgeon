@@ -1,6 +1,7 @@
 """Model loading and layer surgery operations."""
 
 import copy
+import logging
 import os
 import warnings
 from dataclasses import dataclass, field
@@ -10,6 +11,8 @@ from typing import Dict, Any, List, Optional, Tuple
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+logger = logging.getLogger("llm_surgeon.surgery")
 
 # Dedicated cache for clean HF model downloads.
 # Override with LLM_SURGEON_CACHE_DIR env var.
@@ -746,35 +749,44 @@ def load_model(
             bnb_4bit_quant_type="nf4",
             bnb_4bit_compute_dtype=torch.float16,
         )
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id, quantization_config=bnb_config, device_map="auto",
-            **common_kwargs,
-        )
+        mode_kwargs: Dict[str, Any] = {"quantization_config": bnb_config, "device_map": "auto"}
     elif mode == "int8":
         bnb_config = BitsAndBytesConfig(load_in_8bit=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id, quantization_config=bnb_config, device_map="auto",
-            **common_kwargs,
-        )
+        mode_kwargs = {"quantization_config": bnb_config, "device_map": "auto"}
     elif mode == "bf16":
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id, torch_dtype=torch.bfloat16, **common_kwargs,
-        )
+        mode_kwargs = {"torch_dtype": torch.bfloat16}
     elif mode == "fp16":
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id, torch_dtype=torch.float16, **common_kwargs,
-        )
+        mode_kwargs = {"torch_dtype": torch.float16}
     elif mode == "fp32":
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id, torch_dtype=torch.float32, **common_kwargs,
-        )
+        mode_kwargs = {"torch_dtype": torch.float32}
     elif mode == "fp32-cpu":
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id, torch_dtype=torch.float32, device_map="cpu",
-            **common_kwargs,
-        )
+        mode_kwargs = {"torch_dtype": torch.float32, "device_map": "cpu"}
     else:
         raise ValueError(f"Unknown mode: '{mode}'")
+
+    # Try safetensors first (the secure default — pickle-format .bin can
+    # exec arbitrary code on load). On a "safetensors not found" failure,
+    # fall back to legacy .bin loading. This handles older Hub models
+    # that never shipped safetensors AND local caches with stale
+    # `.no_exist/<sha>/model.safetensors` markers (HF's negative cache
+    # records "we looked once and the file wasn't there" but doesn't
+    # invalidate when the file later appears).
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id, **common_kwargs, **mode_kwargs,
+        )
+    except (OSError, EnvironmentError) as e:
+        if "safetensors" not in str(e).lower():
+            raise
+        logger.warning(
+            "Model '%s' has no safetensors file accessible — falling back "
+            "to legacy .bin format (less safe but expected for older models)",
+            model_id,
+        )
+        retry_kwargs = {k: v for k, v in common_kwargs.items() if k != "use_safetensors"}
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id, **retry_kwargs, **mode_kwargs,
+        )
 
     # AutoTokenizer does not accept use_safetensors — strip it.
     tok_kwargs = {k: v for k, v in common_kwargs.items() if k != "use_safetensors"}

@@ -8,9 +8,12 @@ back to GGUF format.
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from llama_cpp import Llama  # pyright: ignore[reportMissingImports]
 
 log = logging.getLogger("llm_surgeon.llama_engine")
 
@@ -174,34 +177,27 @@ class LlamaEngine:
         except Exception:
             pass
 
-    def _require_loaded(self):
+    def _engine(self) -> "Llama":
         if self._llm is None:
             raise RuntimeError("LlamaEngine is closed")
+        return self._llm
 
     def tokenize(self, text: str, add_bos: bool = True) -> list[int]:
-        self._require_loaded()
-        assert self._llm is not None
-        return self._llm.tokenize(text.encode("utf-8"), add_bos=add_bos)
+        return self._engine().tokenize(text.encode("utf-8"), add_bos=add_bos)
 
     def detokenize(self, tokens: list[int]) -> str:
-        self._require_loaded()
-        assert self._llm is not None
-        return self._llm.detokenize(tokens).decode("utf-8", errors="replace")
+        return self._engine().detokenize(tokens).decode("utf-8", errors="replace")
 
     def logits(self, tokens: list[int]) -> np.ndarray:
         """Full vocab logits for the last token position. Shape: (n_vocab,)"""
-        self._require_loaded()
-        assert self._llm is not None
-        llm = self._llm
+        llm = self._engine()
         llm.reset()
         llm.eval(tokens)
         return np.array(llm.eval_logits[-1], dtype=np.float32)
 
     def logits_all(self, tokens: list[int]) -> list[np.ndarray]:
         """Full vocab logits for every position. List of (n_vocab,) arrays."""
-        self._require_loaded()
-        assert self._llm is not None
-        llm = self._llm
+        llm = self._engine()
         llm.reset()
         llm.eval(tokens)
         return [np.array(row, dtype=np.float32) for row in llm.eval_logits]
@@ -225,9 +221,7 @@ class LlamaEngine:
         top_k → top_p → min_p → multinomial. Pass ``seed`` for reproducible
         sampling (temperature > 0 only; greedy is already deterministic).
         """
-        self._require_loaded()
-        assert self._llm is not None
-        llm = self._llm
+        llm = self._engine()
         llm.reset()
         llm.eval(tokens)
 
@@ -295,16 +289,14 @@ class LlamaEngine:
         if len(tokens) < 2:
             return float("inf")
 
-        self._require_loaded()
-        assert self._llm is not None
-        llm = self._llm
+        llm = self._engine()
         llm.reset()
         llm.eval(tokens)
 
         nll_sum = 0.0
         count = 0
         for i in range(len(tokens) - 1):
-            logits_i = np.array(self._llm.eval_logits[i], dtype=np.float32)
+            logits_i = np.array(llm.eval_logits[i], dtype=np.float32)
             log_probs = logits_i - np.logaddexp.reduce(logits_i)
             nll_sum -= log_probs[tokens[i + 1]]
             count += 1

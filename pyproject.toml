@@ -35,17 +35,6 @@ eval = [
 [tool.setuptools.packages.find]
 where = ["."]
 
-[tool.pyright]
-pythonVersion = "3.12"
-venvPath = "."
-venv = ".venv"
-extraPaths = ["."]
-reportUnusedImport = "warning"
-reportUnusedVariable = "warning"
-reportUnusedFunction = "warning"
-reportUnusedClass = "warning"
-reportUnusedExpression = "warning"
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

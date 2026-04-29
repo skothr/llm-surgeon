@@ -8,11 +8,11 @@ import torch.nn.functional as F
 
 def _get_input_device(model) -> torch.device:
     """Get the device where input_ids should be sent (embedding layer's device)."""
-    return model.model.embed_tokens.weight.device
+    return model.get_input_embeddings().weight.device
 
 
 # ---------------------------------------------------------------------------
-# Task 1: Block Influence
+# Block Influence
 # ---------------------------------------------------------------------------
 
 def block_influence(model, tokenizer, prompts: List[str]) -> Dict[int, float]:
@@ -268,7 +268,7 @@ def sublayer_influence(
 
 
 # ---------------------------------------------------------------------------
-# Task 2: Weight norms and SVD
+# Weight norms and SVD
 # ---------------------------------------------------------------------------
 
 def weight_norms(model) -> List[dict]:
@@ -349,7 +349,7 @@ def weight_svd(model, layers: Optional[List[int]] = None) -> Dict[int, dict]:
 
 
 # ---------------------------------------------------------------------------
-# Task 3: Activation analysis
+# Activation analysis
 # ---------------------------------------------------------------------------
 
 def attention_entropy(model, tokenizer, prompt: str) -> Dict[int, List[float]]:
@@ -442,7 +442,7 @@ def residual_stream_norms(model, tokenizer, prompt: str) -> List[float]:
 
 
 # ---------------------------------------------------------------------------
-# Task 5: Individual head inspection
+# Individual head inspection
 # ---------------------------------------------------------------------------
 
 def inspect_head(

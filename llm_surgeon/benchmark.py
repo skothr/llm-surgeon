@@ -471,13 +471,11 @@ def _extract_accuracies(data: dict, tasks: List[str]) -> Dict[str, float]:
                 out[task] = float(task_data[key])
                 break
         else:
-            # Return first numeric value
-            for v in task_data.values():
-                if isinstance(v, (int, float)):
-                    out[task] = float(v)
-                    break
-            else:
-                out[task] = float("nan")
+            raise RuntimeError(
+                f"Task '{task}' has no recognized accuracy key. "
+                f"Expected one of acc,none / acc_norm,none / acc / acc_norm. "
+                f"Got: {list(task_data.keys())}"
+            )
 
     return out
 

@@ -141,16 +141,21 @@ def _generate_modelfile(gguf_path: str) -> str:
 
 
 def _verify_ollama_registration(name: str) -> bool:
-    """Check that a model named `name` appears in Ollama's model list."""
+    """Check that a model named `name` appears in Ollama's model list.
+
+    Returns False on connection errors (Ollama not running). Other failures
+    (malformed JSON, unexpected schema) are surfaced — they indicate a real
+    problem rather than a missing daemon.
+    """
+    import requests
     try:
-        import requests
         r = requests.get("http://localhost:11434/api/tags", timeout=5)
-        if r.status_code != 200:
-            return False
-        models = r.json().get("models", [])
-        return any(name in m.get("name", "") for m in models)
-    except Exception:
+    except requests.RequestException:
         return False
+    if r.status_code != 200:
+        return False
+    models = r.json().get("models", [])
+    return any(name in m.get("name", "") for m in models)
 
 
 def register_ollama(gguf_path: str, name: str) -> None:

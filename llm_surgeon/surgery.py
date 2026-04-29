@@ -21,6 +21,10 @@ MODEL_CACHE_DIR = os.environ.get(
     str(Path(__file__).resolve().parent.parent / ".cache" / "models"),
 )
 
+# Threshold above which duplicate_layer issues a memory warning. Sized for a
+# 32 GB host with headroom for activations + Python overhead.
+_FP16_GB_WARN_THRESHOLD = 28.0
+
 
 def _is_cached(model_id: str, cache_dir: str | None = None) -> bool:
     """True if a local HF cache has at least a config.json snapshot for model_id.
@@ -201,7 +205,7 @@ def duplicate_layer(model, src: int, dst: int) -> SurgeryLog:
 
     total_params = sum(p.numel() for p in model.parameters())
     est_gb = total_params * 2 / 1e9
-    if est_gb > 28:
+    if est_gb > _FP16_GB_WARN_THRESHOLD:
         warnings.warn(
             f"Model is ~{est_gb:.1f} GB in fp16, approaching 32 GB RAM limit. "
             f"Duplicating a layer will increase this.",
@@ -619,10 +623,9 @@ def _capture_norm_outputs(
             stacklevel=2,
         )
 
-    zeros = lambda: torch.zeros(hidden)  # noqa: E731
     return CalibrationStats(
-        input_norm=[v if v is not None else zeros() for v in input_ms],
-        post_attn_norm=[v if v is not None else zeros() for v in post_ms],
+        input_norm=[v if v is not None else torch.zeros(hidden) for v in input_ms],
+        post_attn_norm=[v if v is not None else torch.zeros(hidden) for v in post_ms],
     )
 
 

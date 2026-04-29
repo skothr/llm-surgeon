@@ -391,15 +391,18 @@ class GGUFFile:
                 self._file = None
             raise
 
+    def _get_file(self) -> IO[bytes]:
+        if self._file is None:
+            raise RuntimeError(f"GGUFFile is closed: {self.path}")
+        return self._file
+
     def _read_string(self) -> str:
-        f = self._file
-        assert f is not None
+        f = self._get_file()
         length = struct.unpack("<Q", f.read(8))[0]
         return f.read(length).decode("utf-8")
 
     def _read_value(self, vtype: int):
-        f = self._file
-        assert f is not None
+        f = self._get_file()
         readers = {
             0: lambda: struct.unpack("<B", f.read(1))[0],
             1: lambda: struct.unpack("<b", f.read(1))[0],
@@ -442,8 +445,7 @@ class GGUFFile:
                 f"(tensor '{name}'). Supported: {sorted(GGML_TYPE_NAME[k] for k in _DEQUANT)}"
             )
         n_bytes = (n // block_size) * bytes_per_block
-        f = self._file
-        assert f is not None
+        f = self._get_file()
         f.seek(self._data_offset + info.offset)
         raw = f.read(n_bytes)
         flat = fn(raw, n)

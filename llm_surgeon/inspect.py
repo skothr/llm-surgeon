@@ -11,37 +11,27 @@ def _get_input_device(model) -> torch.device:
     return model.get_input_embeddings().weight.device
 
 
-# ---------------------------------------------------------------------------
-# Block Influence
-# ---------------------------------------------------------------------------
+def _capture_layer_io(
+    model, tokenizer, prompts: List[str]
+) -> tuple[Dict[int, List[torch.Tensor]], Dict[int, List[torch.Tensor]]]:
+    """Run a forward pass per prompt and capture each layer's input + output.
 
-def block_influence(model, tokenizer, prompts: List[str]) -> Dict[int, float]:
-    """Compute Block Influence (BI) score for each transformer layer.
-
-    BI = 1 - cosine_similarity(layer_input, layer_output), averaged over
-    all token positions and all prompts.
-
-    Returns a dict mapping layer index -> float score in [0, 1].
+    Returns ``(layer_inputs, layer_outputs)``: dicts mapping layer index
+    to a list of detached tensors of shape ``(batch, seq, hidden)``,
+    one entry per prompt.
     """
     num_layers = len(model.model.layers)
     layer_inputs: Dict[int, List[torch.Tensor]] = {i: [] for i in range(num_layers)}
     layer_outputs: Dict[int, List[torch.Tensor]] = {i: [] for i in range(num_layers)}
 
-    hooks = []
-
-    def make_hook(idx):
-        def hook(module, inp, out):
-            # inp is a tuple; first element is the hidden states
-            hidden_in = inp[0].detach()  # (batch, seq, hidden)
-            # out may be a tuple or a tensor
-            if isinstance(out, tuple):
-                hidden_out = out[0].detach()
-            else:
-                hidden_out = out.detach()
-            layer_inputs[idx].append(hidden_in)
+    def make_hook(idx: int):
+        def hook(_module, inp, out):
+            layer_inputs[idx].append(inp[0].detach())
+            hidden_out = out[0].detach() if isinstance(out, tuple) else out.detach()
             layer_outputs[idx].append(hidden_out)
         return hook
 
+    hooks = []
     for i, layer in enumerate(model.model.layers):
         hooks.append(layer.register_forward_hook(make_hook(i)))
 
@@ -55,6 +45,24 @@ def block_influence(model, tokenizer, prompts: List[str]) -> Dict[int, float]:
     finally:
         for h in hooks:
             h.remove()
+
+    return layer_inputs, layer_outputs
+
+
+# ---------------------------------------------------------------------------
+# Block Influence
+# ---------------------------------------------------------------------------
+
+def block_influence(model, tokenizer, prompts: List[str]) -> Dict[int, float]:
+    """Compute Block Influence (BI) score for each transformer layer.
+
+    BI = 1 - cosine_similarity(layer_input, layer_output), averaged over
+    all token positions and all prompts.
+
+    Returns a dict mapping layer index -> float score in [0, 1].
+    """
+    layer_inputs, layer_outputs = _capture_layer_io(model, tokenizer, prompts)
+    num_layers = len(model.model.layers)
 
     scores: Dict[int, float] = {}
     for i in range(num_layers):
@@ -90,36 +98,8 @@ def magnitude_influence(
             residual contribution, averaged over tokens and prompts.
         bi_score: 1 - cosine_similarity(input, output), same as block_influence.
     """
+    layer_inputs, layer_outputs = _capture_layer_io(model, tokenizer, prompts)
     num_layers = len(model.model.layers)
-    layer_inputs: Dict[int, List[torch.Tensor]] = {i: [] for i in range(num_layers)}
-    layer_outputs: Dict[int, List[torch.Tensor]] = {i: [] for i in range(num_layers)}
-
-    hooks = []
-
-    def make_hook(idx):
-        def hook(module, inp, out):
-            hidden_in = inp[0].detach()
-            if isinstance(out, tuple):
-                hidden_out = out[0].detach()
-            else:
-                hidden_out = out.detach()
-            layer_inputs[idx].append(hidden_in)
-            layer_outputs[idx].append(hidden_out)
-        return hook
-
-    for i, layer in enumerate(model.model.layers):
-        hooks.append(layer.register_forward_hook(make_hook(i)))
-
-    device = _get_input_device(model)
-    try:
-        for prompt in prompts:
-            enc = tokenizer(prompt, return_tensors="pt")
-            input_ids = enc["input_ids"].to(device)
-            with torch.no_grad():
-                model(input_ids)
-    finally:
-        for h in hooks:
-            h.remove()
 
     results: Dict[int, Dict[str, float]] = {}
     for i in range(num_layers):

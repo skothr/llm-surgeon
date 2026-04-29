@@ -63,6 +63,19 @@ class SurgeryLog:
     def add(self, operation: str, description: str, before: int, after: int) -> None:
         self.ops.append(SurgeryOp(operation, description, before, after))
 
+    @classmethod
+    def of(cls, operation: str, description: str, before: int, after: int) -> "SurgeryLog":
+        """Build a single-op log. Use for structural ops where before != after."""
+        log = cls()
+        log.add(operation, description, before, after)
+        return log
+
+    @classmethod
+    def inplace(cls, model, operation: str, description: str) -> "SurgeryLog":
+        """Build a single-op log for in-place ops that don't change layer count."""
+        n = len(model.model.layers)
+        return cls.of(operation, description, n, n)
+
     def __str__(self) -> str:
         if not self.ops:
             return "SurgeryLog: (empty)"
@@ -132,9 +145,9 @@ def remove_layers(model, layer_indices: List[int]) -> SurgeryLog:
     model.config.num_hidden_layers = len(layers)
     _renumber_layers(model)
 
-    log = SurgeryLog()
-    log.add("remove_layers", f"Removed layers {layer_indices}", num_before, len(layers))
-    return log
+    return SurgeryLog.of(
+        "remove_layers", f"Removed layers {layer_indices}", num_before, len(layers)
+    )
 
 
 def keep_layers(model, layer_indices: List[int]) -> SurgeryLog:
@@ -151,9 +164,9 @@ def keep_layers(model, layer_indices: List[int]) -> SurgeryLog:
     model.config.num_hidden_layers = len(new_layers)
     _renumber_layers(model)
 
-    log = SurgeryLog()
-    log.add("keep_layers", f"Kept layers {layer_indices}", num_before, len(new_layers))
-    return log
+    return SurgeryLog.of(
+        "keep_layers", f"Kept layers {layer_indices}", num_before, len(new_layers)
+    )
 
 
 def reorder_layers(model, new_order: List[int]) -> SurgeryLog:
@@ -171,9 +184,9 @@ def reorder_layers(model, new_order: List[int]) -> SurgeryLog:
     model.config.num_hidden_layers = len(new_layers)
     _renumber_layers(model)
 
-    log = SurgeryLog()
-    log.add("reorder_layers", f"Reordered to {new_order}", num_before, len(new_layers))
-    return log
+    return SurgeryLog.of(
+        "reorder_layers", f"Reordered to {new_order}", num_before, len(new_layers)
+    )
 
 
 def swap_layers(model, i: int, j: int) -> SurgeryLog:
@@ -188,9 +201,9 @@ def swap_layers(model, i: int, j: int) -> SurgeryLog:
     layers[i], layers[j] = layers[j], layers[i]
     _renumber_layers(model)
 
-    log = SurgeryLog()
-    log.add("swap_layers", f"Swapped layers {i} and {j}", num_before, len(layers))
-    return log
+    return SurgeryLog.of(
+        "swap_layers", f"Swapped layers {i} and {j}", num_before, len(layers)
+    )
 
 
 def duplicate_layer(model, src: int, dst: int) -> SurgeryLog:
@@ -217,9 +230,9 @@ def duplicate_layer(model, src: int, dst: int) -> SurgeryLog:
     model.config.num_hidden_layers = len(layers)
     _renumber_layers(model)
 
-    log = SurgeryLog()
-    log.add("duplicate_layer", f"Duplicated layer {src} -> position {dst}", num_before, len(layers))
-    return log
+    return SurgeryLog.of(
+        "duplicate_layer", f"Duplicated layer {src} -> position {dst}", num_before, len(layers)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -254,9 +267,7 @@ def zero_heads(model, layer: int, heads: List[int]) -> SurgeryLog:
         for h in heads:
             o_proj.weight.data[:, h * hd : (h + 1) * hd] = 0
 
-    log = SurgeryLog()
-    log.add("zero_heads", f"Zeroed heads {heads} in layer {layer}", len(model.model.layers), len(model.model.layers))
-    return log
+    return SurgeryLog.inplace(model, "zero_heads", f"Zeroed heads {heads} in layer {layer}")
 
 
 def scale_heads(model, layer: int, heads: List[int], factor: float) -> SurgeryLog:
@@ -268,9 +279,9 @@ def scale_heads(model, layer: int, heads: List[int], factor: float) -> SurgeryLo
         for h in heads:
             o_proj.weight.data[:, h * hd : (h + 1) * hd] *= factor
 
-    log = SurgeryLog()
-    log.add("scale_heads", f"Scaled heads {heads} in layer {layer} by {factor}", len(model.model.layers), len(model.model.layers))
-    return log
+    return SurgeryLog.inplace(
+        model, "scale_heads", f"Scaled heads {heads} in layer {layer} by {factor}"
+    )
 
 
 def swap_heads(model, layer: int, h1: int, h2: int) -> SurgeryLog:
@@ -310,9 +321,7 @@ def swap_heads(model, layer: int, h1: int, h2: int) -> SurgeryLog:
             o[:, h1 * hd : (h1 + 1) * hd].clone(),
         )
 
-    log = SurgeryLog()
-    log.add("swap_heads", f"Swapped heads {h1} and {h2} in layer {layer}", len(model.model.layers), len(model.model.layers))
-    return log
+    return SurgeryLog.inplace(model, "swap_heads", f"Swapped heads {h1} and {h2} in layer {layer}")
 
 
 def zero_mlp(model, layer: int) -> SurgeryLog:
@@ -326,9 +335,7 @@ def zero_mlp(model, layer: int) -> SurgeryLog:
         raise IndexError(f"Layer index {layer} out of range [0, {num_layers - 1}]")
     with torch.no_grad():
         model.model.layers[layer].mlp.down_proj.weight.data.zero_()
-    log = SurgeryLog()
-    log.add("zero_mlp", f"Zeroed MLP in layer {layer}", num_layers, num_layers)
-    return log
+    return SurgeryLog.inplace(model, "zero_mlp", f"Zeroed MLP in layer {layer}")
 
 
 def zero_attention(model, layer: int) -> SurgeryLog:
@@ -342,9 +349,7 @@ def zero_attention(model, layer: int) -> SurgeryLog:
         raise IndexError(f"Layer index {layer} out of range [0, {num_layers - 1}]")
     with torch.no_grad():
         model.model.layers[layer].self_attn.o_proj.weight.data.zero_()
-    log = SurgeryLog()
-    log.add("zero_attention", f"Zeroed attention in layer {layer}", num_layers, num_layers)
-    return log
+    return SurgeryLog.inplace(model, "zero_attention", f"Zeroed attention in layer {layer}")
 
 
 @dataclass

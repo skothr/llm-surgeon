@@ -6,19 +6,18 @@ import yaml
 from llm_surgeon.recipe import parse_recipe, run, generate_layer_sweep
 
 
-class TestParsesYaml:
-    def test_parses_yaml(self, tmp_path):
-        recipe_file = tmp_path / "test.yaml"
-        recipe_file.write_text(yaml.dump({
-            "name": "remove-3-4",
-            "base_model": "TinyLlama/TinyLlama-1.1B",
-            "description": "Remove layers 3-4",
-            "surgery": [{"remove_layers": [3, 4]}],
-        }))
-        result = parse_recipe(str(recipe_file))
-        assert result["name"] == "remove-3-4"
-        assert result["base_model"] == "TinyLlama/TinyLlama-1.1B"
-        assert result["surgery"] == [{"remove_layers": [3, 4]}]
+def test_parses_yaml(tmp_path):
+    recipe_file = tmp_path / "test.yaml"
+    recipe_file.write_text(yaml.dump({
+        "name": "remove-3-4",
+        "base_model": "TinyLlama/TinyLlama-1.1B",
+        "description": "Remove layers 3-4",
+        "surgery": [{"remove_layers": [3, 4]}],
+    }))
+    result = parse_recipe(str(recipe_file))
+    assert result["name"] == "remove-3-4"
+    assert result["base_model"] == "TinyLlama/TinyLlama-1.1B"
+    assert result["surgery"] == [{"remove_layers": [3, 4]}]
 
 
 class TestValidatesRequiredFields:
@@ -109,36 +108,35 @@ class TestRunSurgeryOnly:
         assert len(tiny_llama.model.layers) == 6
 
 
-class TestRunWithAnalyze:
-    def test_run_with_analyze(self, tiny_llama, tmp_path):
-        """Recipe with an analyze section runs logit_lens and hidden_states."""
-        from tests.conftest import _make_tiny_tokenizer
+def test_run_with_analyze(tiny_llama, tmp_path):
+    """Recipe with an analyze section runs logit_lens and hidden_states."""
+    from tests.conftest import _make_tiny_tokenizer
 
-        tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
-        db_path = str(tmp_path / "test.db")
+    tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
+    db_path = str(tmp_path / "test.db")
 
-        recipe_data = {
-            "name": "test-analyze",
-            "base_model": "test",
-            "surgery": [{"remove_layers": [7]}],
-            "analyze": {
-                "logit_lens": {"prompt": "word4 word5 word6", "top_k": 3},
-                "hidden_states": {"prompt": "word4 word5 word6"},
-            },
-        }
-        recipe_path = str(tmp_path / "analyze.yaml")
-        with open(recipe_path, "w") as f:
-            yaml.dump(recipe_data, f)
+    recipe_data = {
+        "name": "test-analyze",
+        "base_model": "test",
+        "surgery": [{"remove_layers": [7]}],
+        "analyze": {
+            "logit_lens": {"prompt": "word4 word5 word6", "top_k": 3},
+            "hidden_states": {"prompt": "word4 word5 word6"},
+        },
+    }
+    recipe_path = str(tmp_path / "analyze.yaml")
+    with open(recipe_path, "w") as f:
+        yaml.dump(recipe_data, f)
 
-        result = run(
-            recipe_path,
-            model=tiny_llama,
-            tokenizer=tokenizer,
-            db_path=db_path,
-            skip_export=True,
-            skip_eval=True,
-        )
-        assert result["status"] == "completed"
-        assert "analyze" in result
-        assert "logit_lens" in result["analyze"]
-        assert "hidden_states" in result["analyze"]
+    result = run(
+        recipe_path,
+        model=tiny_llama,
+        tokenizer=tokenizer,
+        db_path=db_path,
+        skip_export=True,
+        skip_eval=True,
+    )
+    assert result["status"] == "completed"
+    assert "analyze" in result
+    assert "logit_lens" in result["analyze"]
+    assert "hidden_states" in result["analyze"]

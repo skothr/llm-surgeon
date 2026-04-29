@@ -60,11 +60,16 @@ CREATE TABLE IF NOT EXISTS harness_results (
 """
 
 
+_SCHEMA_INITIALIZED: set[str] = set()
+
+
 def _connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    conn.executescript(_SCHEMA_SQL)
-    conn.commit()
+    if db_path not in _SCHEMA_INITIALIZED:
+        conn.executescript(_SCHEMA_SQL)
+        conn.commit()
+        _SCHEMA_INITIALIZED.add(db_path)
     return conn
 
 

@@ -560,7 +560,7 @@ def _capture_norm_outputs(
         dataset = "wikitext2"
 
     if text is None:
-        from datasets import load_dataset  # type: ignore
+        from datasets import load_dataset  # pyright: ignore[reportMissingImports]
         ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
         available = len(ds["text"])
         if available < num_samples:

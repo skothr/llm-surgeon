@@ -4,7 +4,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 _DEFAULT_DB = str(Path(__file__).parent.parent / "experiments/experiments.db")
 
@@ -149,7 +149,7 @@ def start(
     name: str,
     description: str = "",
     base_model: str = "",
-    recipe: Any = None,
+    recipe: Optional[Mapping[str, Any]] = None,
     db_path: str = _DEFAULT_DB,
 ) -> Experiment:
     """Create a new experiment record and return an Experiment handle."""
@@ -236,7 +236,7 @@ def log_harness_result(
     db_path: str,
     experiment_name: str,
     tasks: List[str],
-    num_fewshot: Any,
+    num_fewshot: Union[int, Dict[str, int], None],
     limit: int | None,
     result: Dict[str, Any],
 ) -> None:

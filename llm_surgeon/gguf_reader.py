@@ -529,18 +529,18 @@ def _build_config(meta: dict):
     rms_eps = meta.get(prefix + "attention.layer_norm_rms_epsilon", 1e-5)
     rope_theta = meta.get(prefix + "rope.freq_base", 10000.0)
 
-    return LlamaConfig(**{  # type: ignore
-        "vocab_size": vocab_size,
-        "hidden_size": hidden,
-        "intermediate_size": ffn_size,
-        "num_hidden_layers": n_layers,
-        "num_attention_heads": n_heads,
-        "num_key_value_heads": n_kv_heads,
-        "max_position_embeddings": ctx_len,
-        "rms_norm_eps": rms_eps,
-        "rope_theta": rope_theta,
-        "tie_word_embeddings": False,
-    })
+    return LlamaConfig(
+        vocab_size=vocab_size,
+        hidden_size=hidden,
+        intermediate_size=ffn_size,
+        num_hidden_layers=n_layers,
+        num_attention_heads=n_heads,
+        num_key_value_heads=n_kv_heads,
+        max_position_embeddings=ctx_len,
+        rms_norm_eps=rms_eps,
+        rope_theta=rope_theta,
+        tie_word_embeddings=False,
+    )
 
 
 def _build_tokenizer(meta: dict):
@@ -580,16 +580,16 @@ def _build_tokenizer(meta: dict):
             pair = m.split(" ", 1)
             if len(pair) == 2:
                 merge_pairs.append(tuple(pair))
-        tok = Tokenizer(BPE(vocab=vocab, merges=merge_pairs, unk_token=unk))  # type: ignore
+        tok = Tokenizer(BPE(vocab=vocab, merges=merge_pairs, unk_token=unk))
     elif scores:
-        tok = Tokenizer(Unigram([(t, s) for t, s in zip(tokens, scores)]))  # type: ignore
+        tok = Tokenizer(Unigram([(t, s) for t, s in zip(tokens, scores)]))  # pyright: ignore[reportCallIssue]
     else:
         log.warning("No merges or scores in GGUF metadata; returning None for tokenizer")
         return None
 
     if model_type == "llama":
-        tok.pre_tokenizer = Metaspace(replacement="\u2581", prepend_scheme="first")  # type: ignore
-        tok.decoder = MetaspaceDecoder(replacement="\u2581", prepend_scheme="first")  # type: ignore
+        tok.pre_tokenizer = Metaspace(replacement="\u2581", prepend_scheme="first")  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue]
+        tok.decoder = MetaspaceDecoder(replacement="\u2581", prepend_scheme="first")  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue]
 
     chat_template = meta.get("tokenizer.chat_template")
 

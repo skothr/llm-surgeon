@@ -3,7 +3,6 @@
 import hashlib
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 import torch
 import torch.nn.functional as F
@@ -13,7 +12,7 @@ import torch.nn.functional as F
 class VerifyReport:
     """Result of structural verification checks."""
     passed: bool = True
-    checks: List[dict] = field(default_factory=list)
+    checks: list[dict] = field(default_factory=list)
 
     def add_check(self, name: str, passed: bool, detail: str = "") -> None:
         self.checks.append({"name": name, "passed": passed, "detail": detail})
@@ -84,13 +83,13 @@ def check_structure(model, surgery_log=None) -> VerifyReport:
 # Task 4: Activation capture, comparison, and caching
 # ---------------------------------------------------------------------------
 
-def _capture_layer_activations(model, tokenizer, prompt: str) -> List[torch.Tensor]:
+def _capture_layer_activations(model, tokenizer, prompt: str) -> list[torch.Tensor]:
     """Capture the output tensor of each transformer layer for the given prompt.
 
     Returns a list of tensors, one per layer, each of shape (batch, seq, hidden).
     """
     num_layers = len(model.model.layers)
-    activations: List[Optional[torch.Tensor]] = [None] * num_layers
+    activations: list[torch.Tensor | None] = [None] * num_layers
     hooks = []
 
     def make_hook(idx):
@@ -116,9 +115,9 @@ def _capture_layer_activations(model, tokenizer, prompt: str) -> List[torch.Tens
 
 
 def _compare_activation_lists(
-    acts_a: List[torch.Tensor],
-    acts_b: List[torch.Tensor],
-) -> List[dict]:
+    acts_a: list[torch.Tensor],
+    acts_b: list[torch.Tensor],
+) -> list[dict]:
     """Layer-by-layer comparison up to the shorter model's depth."""
     depth = min(len(acts_a), len(acts_b))
     results = []
@@ -140,7 +139,7 @@ def _compare_activation_lists(
     return results
 
 
-def compare_activations(original, modified, tokenizer, prompt: str) -> List[dict]:
+def compare_activations(original, modified, tokenizer, prompt: str) -> list[dict]:
     """Compare layer activations between two models for the same prompt.
 
     Compares layer-by-layer up to the depth of the shallower model.
@@ -159,7 +158,7 @@ def _prompt_cache_path(cache_dir: str, prompt: str) -> str:
     return os.path.join(cache_dir, f"{h}.pt")
 
 
-def cache_baseline(model, tokenizer, prompts: List[str], cache_dir: str) -> None:
+def cache_baseline(model, tokenizer, prompts: list[str], cache_dir: str) -> None:
     """Capture and save activations for each prompt to disk as .pt files.
 
     Each file is named by the sha256 hash of the prompt text and contains
@@ -175,14 +174,14 @@ def cache_baseline(model, tokenizer, prompts: List[str], cache_dir: str) -> None
 def compare_to_baseline(
     model,
     tokenizer,
-    prompts: List[str],
+    prompts: list[str],
     cache_dir: str,
-) -> Dict[str, List[dict]]:
+) -> dict[str, list[dict]]:
     """Load cached activations and compare against the current model.
 
     Returns a dict mapping prompt text -> list of per-layer comparison dicts.
     """
-    results: Dict[str, List[dict]] = {}
+    results: dict[str, list[dict]] = {}
     for prompt in prompts:
         path = _prompt_cache_path(cache_dir, prompt)
         if not os.path.exists(path):

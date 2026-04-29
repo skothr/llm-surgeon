@@ -5,7 +5,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
 
 # Default path to llama.cpp; overridable via env var.
 _DEFAULT_LLAMA_CPP_PATH = str(Path(__file__).resolve().parents[2] / "lib" / "llama.cpp")
@@ -53,8 +52,8 @@ def save_checkpoint(model, output_dir: str, tokenizer=None) -> str:
 def to_gguf(
     checkpoint_path: str,
     output_dir: str,
-    quantization: Optional[str] = "Q4_K_M",
-    llama_cpp_path: Optional[str] = None,
+    quantization: str | None = "Q4_K_M",
+    llama_cpp_path: str | None = None,
 ) -> str:
     """Convert an HF checkpoint to GGUF format.
 
@@ -196,7 +195,7 @@ def register_ollama(gguf_path: str, name: str) -> None:
 def full_pipeline(
     model,
     name: str,
-    quantization: Optional[str],
+    quantization: str | None,
     output_dir: str,
     tokenizer=None,
     register: bool = True,

@@ -10,7 +10,7 @@ import struct
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Optional, Tuple
+from typing import IO
 
 import numpy as np
 import torch
@@ -149,7 +149,7 @@ def _dequant_q8_0(data: bytes, n: int) -> np.ndarray:
     return (qs * scales).ravel()
 
 
-def _unpack_k4_scales(sc: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def _unpack_k4_scales(sc: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Unpack 12-byte K-quant scale/min block into 8 scales + 8 mins.
 
     Used by Q4_K and Q5_K. sc shape: (nb, 12).
@@ -339,7 +339,7 @@ class GGUFFile:
         self.tensor_infos: list[TensorInfo] = []
         self._tensor_map: dict[str, TensorInfo] = {}
         self._data_offset: int = 0
-        self._file: Optional[IO[bytes]] = None
+        self._file: IO[bytes] | None = None
         self._parse()
 
     # ── parsing internals ────────────────────────────────────────
@@ -499,7 +499,7 @@ _GGUF_LAYER = {
 }
 
 
-def _map_tensor_name(gguf_name: str) -> Optional[str]:
+def _map_tensor_name(gguf_name: str) -> str | None:
     """Map a GGUF tensor name to a HuggingFace state_dict key."""
     if gguf_name in _GGUF_GLOBAL:
         return _GGUF_GLOBAL[gguf_name]
@@ -624,7 +624,7 @@ def _reverse_permute(t: torch.Tensor, n_head: int, n_kv_heads: int) -> torch.Ten
 def load_gguf_as_hf(
     gguf_path,
     dtype=torch.float16,
-) -> Tuple:
+) -> tuple:
     """Load a GGUF file and return a (model, tokenizer) tuple.
 
     The returned model is a standard LlamaForCausalLM instance with
@@ -725,7 +725,7 @@ def load_gguf_as_hf(
 
 # ── Ollama resolution ────────────────────────────────────────────────
 
-def resolve_ollama_blob(model_id: str, models_dir: Optional[str] = None) -> Optional[Path]:
+def resolve_ollama_blob(model_id: str, models_dir: str | None = None) -> Path | None:
     """Resolve an Ollama model ID (e.g. 'tinyllama:latest') to a GGUF blob path.
 
     Args:

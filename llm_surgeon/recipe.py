@@ -2,7 +2,7 @@
 
 import glob as _glob
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import yaml
 
@@ -13,7 +13,7 @@ from llm_surgeon import surgery, verify, tracking
 # Parsing
 # ---------------------------------------------------------------------------
 
-def parse_recipe(path: str) -> Dict[str, Any]:
+def parse_recipe(path: str) -> dict[str, Any]:
     """Load a YAML recipe file and validate required fields.
 
     Required fields: name, base_model.
@@ -42,9 +42,9 @@ def _log(msg: str, verbose: bool) -> None:
 
 
 def _apply_surgery_step(
-    model, tokenizer, step: Dict[str, Any], verbose: bool = False,
-    baseline_stats: Optional[surgery.CalibrationStats] = None,
-) -> Optional[surgery.SurgeryLog]:
+    model, tokenizer, step: dict[str, Any], verbose: bool = False,
+    baseline_stats: surgery.CalibrationStats | None = None,
+) -> surgery.SurgeryLog | None:
     """Execute a single surgery step dict and return the SurgeryLog (or None for calibrate)."""
     if "remove_layers" in step:
         _log(f"remove_layers({step['remove_layers']})", verbose)
@@ -86,11 +86,11 @@ def run(
     recipe_path: str,
     model=None,
     tokenizer=None,
-    db_path: Optional[str] = None,
+    db_path: str | None = None,
     skip_export: bool = False,
     skip_eval: bool = False,
     verbose: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Parse a recipe file and execute it.
 
     Steps performed:
@@ -114,7 +114,7 @@ def run(
     _log(f"Base model: {base_model}", verbose)
 
     # Tracking
-    exp_kwargs: Dict[str, Any] = dict(
+    exp_kwargs: dict[str, Any] = dict(
         name=name,
         description=description,
         base_model=base_model,
@@ -124,7 +124,7 @@ def run(
         exp_kwargs["db_path"] = db_path
     exp = tracking.start(**exp_kwargs)
 
-    result: Dict[str, Any] = {"name": name}
+    result: dict[str, Any] = {"name": name}
 
     # Load model if not supplied
     if model is None:
@@ -136,7 +136,7 @@ def run(
     steps = recipe_data.get("surgery", [])
 
     # If calibration is requested, capture baseline stats BEFORE surgery
-    baseline_stats: Optional[surgery.CalibrationStats] = None
+    baseline_stats: surgery.CalibrationStats | None = None
     has_calibrate = any("calibrate" in s for s in steps)
     if has_calibrate:
         _log("Capturing baseline calibration stats (pre-surgery)...", verbose)
@@ -195,8 +195,8 @@ def run(
 
 
 def _run_evaluation(
-    model, tokenizer, eval_cfg: Dict, exp: tracking.Experiment, verbose: bool,
-) -> Dict[str, Any]:
+    model, tokenizer, eval_cfg: dict, exp: tracking.Experiment, verbose: bool,
+) -> dict[str, Any]:
     """Run evaluation steps as specified in the recipe's evaluate section."""
     results = {}
 
@@ -231,8 +231,8 @@ def _run_evaluation(
 
 
 def _run_analyze(
-    model, tokenizer, analyze_cfg: Dict, exp: tracking.Experiment, verbose: bool,
-) -> Dict[str, Any]:
+    model, tokenizer, analyze_cfg: dict, exp: tracking.Experiment, verbose: bool,
+) -> dict[str, Any]:
     """Run analysis steps as specified in the recipe's analyze section."""
     from llm_surgeon import probe
 
@@ -270,8 +270,8 @@ def _run_analyze(
 
 
 def _run_export(
-    model, tokenizer, name: str, export_cfg: Dict, verbose: bool,
-) -> Dict[str, Any]:
+    model, tokenizer, name: str, export_cfg: dict, verbose: bool,
+) -> dict[str, Any]:
     """Run export steps as specified in the recipe's export section."""
     from llm_surgeon import export as _export
 
@@ -294,7 +294,7 @@ def _run_export(
     return result
 
 
-def run_batch(pattern: str, **kwargs) -> List[Dict]:
+def run_batch(pattern: str, **kwargs) -> list[dict]:
     """Run all recipe files matching the glob pattern.
 
     Returns a list of result dicts from each run() call.
@@ -314,7 +314,7 @@ def generate_layer_sweep(
     num_layers: int,
     base_model: str,
     output_dir: str,
-) -> List[str]:
+) -> list[str]:
     """Generate N recipe files, each removing one layer (layer i for file i).
 
     Returns a list of generated file paths.

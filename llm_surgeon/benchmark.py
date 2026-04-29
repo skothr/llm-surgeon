@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import warnings
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -18,9 +18,9 @@ import torch.nn as nn
 # Downstream-eval defaults and helpers (Phase 2)
 # ---------------------------------------------------------------------------
 
-FAST_TRIPLET: List[str] = ["hellaswag", "arc_easy", "arc_challenge"]
+FAST_TRIPLET: list[str] = ["hellaswag", "arc_easy", "arc_challenge"]
 
-PAPER_STANDARD_FEWSHOT: Dict[str, int] = {
+PAPER_STANDARD_FEWSHOT: dict[str, int] = {
     "hellaswag": 0,
     "arc_easy": 0,
     "arc_challenge": 25,
@@ -29,9 +29,9 @@ PAPER_STANDARD_FEWSHOT: Dict[str, int] = {
 
 
 def _resolve_fewshot(
-    tasks: List[str],
-    num_fewshot: Union[int, Dict[str, int], None],
-) -> Dict[str, int]:
+    tasks: list[str],
+    num_fewshot: int | dict[str, int] | None,
+) -> dict[str, int]:
     """Resolve the (tasks, num_fewshot) pair into a full per-task dict.
 
     None -> PAPER_STANDARD_FEWSHOT per task, fallback 0 for unknown tasks.
@@ -44,7 +44,7 @@ def _resolve_fewshot(
     if isinstance(num_fewshot, int):
         return {t: num_fewshot for t in tasks}
     # dict: explicit > paper > 0
-    out: Dict[str, int] = {}
+    out: dict[str, int] = {}
     for t in tasks:
         if t in num_fewshot:
             out[t] = num_fewshot[t]
@@ -53,14 +53,14 @@ def _resolve_fewshot(
     return out
 
 
-def _group_by_fewshot(fewshot_map: Dict[str, int]) -> List[Tuple[int, List[str]]]:
+def _group_by_fewshot(fewshot_map: dict[str, int]) -> list[tuple[int, list[str]]]:
     """Group tasks sharing the same num_fewshot count.
 
     Returns a sorted list of (count, [task, ...]) pairs. Ordering is
     deterministic: ascending by count, then by task name inside each group.
     This lets _in_process_eval call simple_evaluate once per unique count.
     """
-    buckets: Dict[int, List[str]] = {}
+    buckets: dict[int, list[str]] = {}
     for task, n in fewshot_map.items():
         buckets.setdefault(n, []).append(task)
     return [(n, sorted(buckets[n])) for n in sorted(buckets)]
@@ -73,10 +73,10 @@ def _group_by_fewshot(fewshot_map: Dict[str, int]) -> List[Tuple[int, List[str]]
 def perplexity(
     model,
     tokenizer,
-    text: Optional[str] = None,
-    dataset: Optional[str] = None,
-    max_samples: Optional[int] = None,
-    stride: Optional[int] = None,
+    text: str | None = None,
+    dataset: str | None = None,
+    max_samples: int | None = None,
+    stride: int | None = None,
     verbose: bool = False,
 ) -> float:
     """Compute perplexity of *model* on the given text or dataset.
@@ -196,7 +196,7 @@ def perplexity(
     return float(torch.exp(torch.tensor(avg_nll)).item())
 
 
-def _load_dataset_text(name: str, max_samples: Optional[int] = None) -> str:
+def _load_dataset_text(name: str, max_samples: int | None = None) -> str:
     """Load and concatenate text from a HuggingFace dataset."""
     from datasets import load_dataset  # pyright: ignore[reportMissingImports]
 
@@ -225,14 +225,14 @@ def _load_dataset_text(name: str, max_samples: Optional[int] = None) -> str:
 # ---------------------------------------------------------------------------
 
 def eval_downstream(
-    tasks: Optional[List[str]] = None,
+    tasks: list[str] | None = None,
     *,
-    model_path: Optional[str] = None,
+    model_path: str | None = None,
     model: Any = None,
     tokenizer: Any = None,
-    num_fewshot: Union[int, Dict[str, int], None] = None,
-    limit: Optional[int] = None,
-) -> Dict[str, float]:
+    num_fewshot: int | dict[str, int] | None = None,
+    limit: int | None = None,
+) -> dict[str, float]:
     """Evaluate a HuggingFace checkpoint on downstream tasks via lm-eval.
 
     Exactly one of *model_path* or *model* must be given:
@@ -277,10 +277,10 @@ def eval_downstream(
 def _subprocess_eval_full(
     *,
     model_path: str,
-    tasks: List[str],
+    tasks: list[str],
     num_fewshot: int,
-    limit: Optional[int],
-) -> Dict[str, Any]:
+    limit: int | None,
+) -> dict[str, Any]:
     """Shell out to ``lm_eval`` CLI and return the full output dict.
 
     Core subprocess path; both `_subprocess_eval` (narrowed) and
@@ -318,10 +318,10 @@ def _subprocess_eval_full(
 def _subprocess_eval(
     *,
     model_path: str,
-    tasks: List[str],
+    tasks: list[str],
     num_fewshot: int,
-    limit: Optional[int],
-) -> Dict[str, float]:
+    limit: int | None,
+) -> dict[str, float]:
     """Narrowed-output subprocess path — delegates to `_subprocess_eval_full`."""
     results_data = _subprocess_eval_full(
         model_path=model_path, tasks=tasks,
@@ -334,10 +334,10 @@ def _in_process_eval(
     *,
     model: Any,
     tokenizer: Any,
-    tasks: List[str],
-    num_fewshot: Union[int, Dict[str, int], None],
-    limit: Optional[int],
-) -> Dict[str, Any]:
+    tasks: list[str],
+    num_fewshot: int | dict[str, int] | None,
+    limit: int | None,
+) -> dict[str, Any]:
     """Run lm_eval.simple_evaluate in-process against an in-memory model."""
     from lm_eval import simple_evaluate  # pyright: ignore[reportMissingImports]
     from lm_eval.models.huggingface import HFLM  # pyright: ignore[reportMissingImports]
@@ -354,7 +354,7 @@ def _in_process_eval(
     lm = HFLM(pretrained=model, tokenizer=tokenizer)  # pyright: ignore[reportCallIssue]
     fewshot_map = _resolve_fewshot(tasks, num_fewshot)
 
-    merged: Dict[str, Any] = {"results": {}, "config": None}
+    merged: dict[str, Any] = {"results": {}, "config": None}
     for n, group in _group_by_fewshot(fewshot_map):
         # pyright resolves simple_evaluate through lm_eval's lazy __getattr__
         # and can't see the real signature — runtime call is correct.
@@ -366,9 +366,9 @@ def _in_process_eval(
     return merged
 
 
-def _serialize_harness_metrics(task_result: Dict[str, Any]) -> Dict[str, float]:
+def _serialize_harness_metrics(task_result: dict[str, Any]) -> dict[str, float]:
     """Flatten a single task's harness result into float-valued metrics."""
-    out: Dict[str, float] = {}
+    out: dict[str, float] = {}
     for k, v in task_result.items():
         if isinstance(v, (int, float)) and not (
             isinstance(v, float) and math.isnan(v)
@@ -380,13 +380,13 @@ def _serialize_harness_metrics(task_result: Dict[str, Any]) -> Dict[str, float]:
 def eval_and_log(
     experiment: Any,
     *,
-    model_path: Optional[str] = None,
+    model_path: str | None = None,
     model: Any = None,
     tokenizer: Any = None,
-    tasks: Optional[List[str]] = None,
-    num_fewshot: Union[int, Dict[str, int], None] = None,
-    limit: Optional[int] = None,
-) -> Dict[str, float]:
+    tasks: list[str] | None = None,
+    num_fewshot: int | dict[str, int] | None = None,
+    limit: int | None = None,
+) -> dict[str, float]:
     """Run eval_downstream and persist results to experiment tracking."""
     if (model_path is None) == (model is None):
         raise ValueError(
@@ -452,10 +452,10 @@ def _find_and_parse_results(output_dir: str) -> dict:
     )
 
 
-def _extract_accuracies(data: dict, tasks: List[str]) -> Dict[str, float]:
+def _extract_accuracies(data: dict, tasks: list[str]) -> dict[str, float]:
     """Extract per-task accuracy from lm_eval JSON output."""
     results = data.get("results", {})
-    out: Dict[str, float] = {}
+    out: dict[str, float] = {}
 
     for task in tasks:
         if task not in results:
@@ -484,7 +484,7 @@ def _extract_accuracies(data: dict, tasks: List[str]) -> Dict[str, float]:
 # Generation comparison via Ollama
 # ---------------------------------------------------------------------------
 
-def _load_prompts(path: str) -> List[Dict[str, str]]:
+def _load_prompts(path: str) -> list[dict[str, str]]:
     """Load a prompt list from a JSON file.
 
     Args:
@@ -499,12 +499,12 @@ def _load_prompts(path: str) -> List[Dict[str, str]]:
 
 
 def compare(
-    models: List[str],
-    prompts: Union[List[Dict[str, str]], str],
+    models: list[str],
+    prompts: list[dict[str, str]] | str,
     temperature: float = 0.0,
     max_tokens: int = 256,
-    output_file: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    output_file: str | None = None,
+) -> list[dict[str, Any]]:
     """Compare multiple ollama models across a set of prompts.
 
     Sends each prompt to each model via the Ollama HTTP API and collects the
@@ -545,13 +545,13 @@ def compare(
     if isinstance(prompts, str):
         prompts = _load_prompts(prompts)
 
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
 
     for prompt_entry in prompts:
         prompt_text = prompt_entry["prompt"]
         category = prompt_entry.get("category", "")
 
-        responses: Dict[str, Dict[str, Any]] = {}
+        responses: dict[str, dict[str, Any]] = {}
 
         for model in models:
             payload = {
@@ -604,8 +604,8 @@ def compare(
 
 
 def _print_compare_summary(
-    results: List[Dict[str, Any]],
-    models: List[str],
+    results: list[dict[str, Any]],
+    models: list[str],
 ) -> None:
     """Print a human-readable side-by-side comparison of model responses."""
     col_width = 60
@@ -630,7 +630,7 @@ def _print_compare_summary(
 # Automated generation quality metrics
 # ---------------------------------------------------------------------------
 
-def generation_metrics(results: List[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
+def generation_metrics(results: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
     """Compute per-model failure-detection metrics from compare() output.
 
     These are diagnostic metrics intended to detect obvious generation
@@ -655,16 +655,16 @@ def generation_metrics(results: List[Dict[str, Any]]) -> Dict[str, Dict[str, flo
     if not results:
         return {}
 
-    model_names: List[str] = list(results[0]["responses"].keys())
+    model_names: list[str] = list(results[0]["responses"].keys())
 
     # Collect all texts per model
-    texts_per_model: Dict[str, List[str]] = {m: [] for m in model_names}
+    texts_per_model: dict[str, list[str]] = {m: [] for m in model_names}
     for entry in results:
         for model in model_names:
             text = entry["responses"].get(model, {}).get("text", "")
             texts_per_model[model].append(text)
 
-    out: Dict[str, Dict[str, float]] = {}
+    out: dict[str, dict[str, float]] = {}
     for model, texts in texts_per_model.items():
         out[model] = {
             "mean_output_length": _mean_output_length(texts),
@@ -676,16 +676,16 @@ def generation_metrics(results: List[Dict[str, Any]]) -> Dict[str, Dict[str, flo
     return out
 
 
-def _mean_output_length(texts: List[str]) -> float:
+def _mean_output_length(texts: list[str]) -> float:
     """Average character length across a list of response strings."""
     if not texts:
         return 0.0
     return sum(len(t) for t in texts) / len(texts)
 
 
-def _vocab_diversity(texts: List[str]) -> float:
+def _vocab_diversity(texts: list[str]) -> float:
     """Ratio of unique words to total words across all texts (0–1)."""
-    all_words: List[str] = []
+    all_words: list[str] = []
     for text in texts:
         words = re.findall(r"\b\w+\b", text.lower())
         all_words.extend(words)
@@ -694,14 +694,14 @@ def _vocab_diversity(texts: List[str]) -> float:
     return len(set(all_words)) / len(all_words)
 
 
-def _repetition_rate(texts: List[str]) -> float:
+def _repetition_rate(texts: list[str]) -> float:
     """Fraction of 3-grams that are repeated within the combined text.
 
     A 3-gram is "repeated" if it appears more than once.  The rate is
     ``repeated_3gram_count / total_3gram_count``, or 0 if there are
     fewer than 3 words total.
     """
-    all_words: List[str] = []
+    all_words: list[str] = []
     for text in texts:
         words = re.findall(r"\b\w+\b", text.lower())
         all_words.extend(words)
@@ -714,7 +714,7 @@ def _repetition_rate(texts: List[str]) -> float:
         for i in range(len(all_words) - 2)
     ]
     total = len(trigrams)
-    counts: Dict[tuple, int] = {}
+    counts: dict[tuple, int] = {}
     for tg in trigrams:
         counts[tg] = counts.get(tg, 0) + 1
 
@@ -722,7 +722,7 @@ def _repetition_rate(texts: List[str]) -> float:
     return repeated / total
 
 
-def _coherence(texts: List[str]) -> float:
+def _coherence(texts: list[str]) -> float:
     """Fraction of responses that are non-empty and contain printable text."""
     if not texts:
         return 0.0

@@ -1,6 +1,6 @@
 """Inspection and activation analysis tools for LLaMA models."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -12,8 +12,8 @@ def _get_input_device(model) -> torch.device:
 
 
 def _capture_layer_io(
-    model, tokenizer, prompts: List[str]
-) -> tuple[Dict[int, List[torch.Tensor]], Dict[int, List[torch.Tensor]]]:
+    model, tokenizer, prompts: list[str]
+) -> tuple[dict[int, list[torch.Tensor]], dict[int, list[torch.Tensor]]]:
     """Run a forward pass per prompt and capture each layer's input + output.
 
     Returns ``(layer_inputs, layer_outputs)``: dicts mapping layer index
@@ -21,8 +21,8 @@ def _capture_layer_io(
     one entry per prompt.
     """
     num_layers = len(model.model.layers)
-    layer_inputs: Dict[int, List[torch.Tensor]] = {i: [] for i in range(num_layers)}
-    layer_outputs: Dict[int, List[torch.Tensor]] = {i: [] for i in range(num_layers)}
+    layer_inputs: dict[int, list[torch.Tensor]] = {i: [] for i in range(num_layers)}
+    layer_outputs: dict[int, list[torch.Tensor]] = {i: [] for i in range(num_layers)}
 
     def make_hook(idx: int):
         def hook(_module, inp, out):
@@ -53,7 +53,7 @@ def _capture_layer_io(
 # Block Influence
 # ---------------------------------------------------------------------------
 
-def block_influence(model, tokenizer, prompts: List[str]) -> Dict[int, float]:
+def block_influence(model, tokenizer, prompts: list[str]) -> dict[int, float]:
     """Compute Block Influence (BI) score for each transformer layer.
 
     BI = 1 - cosine_similarity(layer_input, layer_output), averaged over
@@ -64,7 +64,7 @@ def block_influence(model, tokenizer, prompts: List[str]) -> Dict[int, float]:
     layer_inputs, layer_outputs = _capture_layer_io(model, tokenizer, prompts)
     num_layers = len(model.model.layers)
 
-    scores: Dict[int, float] = {}
+    scores: dict[int, float] = {}
     for i in range(num_layers):
         sims = []
         for h_in, h_out in zip(layer_inputs[i], layer_outputs[i]):
@@ -84,8 +84,8 @@ def block_influence(model, tokenizer, prompts: List[str]) -> Dict[int, float]:
 
 
 def magnitude_influence(
-    model, tokenizer, prompts: List[str]
-) -> Dict[int, Dict[str, float]]:
+    model, tokenizer, prompts: list[str]
+) -> dict[int, dict[str, float]]:
     """Compute magnitude-aware influence metrics for each transformer layer.
 
     Complements block_influence (angle-only) with magnitude information.
@@ -101,7 +101,7 @@ def magnitude_influence(
     layer_inputs, layer_outputs = _capture_layer_io(model, tokenizer, prompts)
     num_layers = len(model.model.layers)
 
-    results: Dict[int, Dict[str, float]] = {}
+    results: dict[int, dict[str, float]] = {}
     for i in range(num_layers):
         mag_ratios = []
         contrib_norms = []
@@ -140,7 +140,7 @@ def magnitude_influence(
     return results
 
 
-def _compute_metrics(flat_in: torch.Tensor, flat_out: torch.Tensor) -> Dict[str, float]:
+def _compute_metrics(flat_in: torch.Tensor, flat_out: torch.Tensor) -> dict[str, float]:
     """Compute magnitude_ratio, contribution_norm, bi_score for a pair of tensors.
 
     Both inputs should be shaped (num_tokens, hidden_dim) in float.
@@ -161,8 +161,8 @@ def _compute_metrics(flat_in: torch.Tensor, flat_out: torch.Tensor) -> Dict[str,
 
 
 def sublayer_influence(
-    model, tokenizer, prompts: List[str]
-) -> Dict[int, Dict[str, Dict[str, float]]]:
+    model, tokenizer, prompts: list[str]
+) -> dict[int, dict[str, dict[str, float]]]:
     """Decompose per-layer influence into attention and MLP contributions.
 
     Each LLaMA block does:
@@ -178,9 +178,9 @@ def sublayer_influence(
         total:     {magnitude_ratio, contribution_norm, bi_score} for h_in -> h_out
     """
     num_layers = len(model.model.layers)
-    layer_h_in: Dict[int, List[torch.Tensor]] = {i: [] for i in range(num_layers)}
-    layer_h_mid: Dict[int, List[torch.Tensor]] = {i: [] for i in range(num_layers)}
-    layer_h_out: Dict[int, List[torch.Tensor]] = {i: [] for i in range(num_layers)}
+    layer_h_in: dict[int, list[torch.Tensor]] = {i: [] for i in range(num_layers)}
+    layer_h_mid: dict[int, list[torch.Tensor]] = {i: [] for i in range(num_layers)}
+    layer_h_out: dict[int, list[torch.Tensor]] = {i: [] for i in range(num_layers)}
 
     hooks = []
 
@@ -214,7 +214,7 @@ def sublayer_influence(
         for h in hooks:
             h.remove()
 
-    results: Dict[int, Dict[str, Dict[str, float]]] = {}
+    results: dict[int, dict[str, dict[str, float]]] = {}
     for i in range(num_layers):
         attn_metrics_list = []
         mlp_metrics_list = []
@@ -251,7 +251,7 @@ def sublayer_influence(
 # Weight norms and SVD
 # ---------------------------------------------------------------------------
 
-def weight_norms(model) -> List[dict]:
+def weight_norms(model) -> list[dict]:
     """Compute Frobenius norms of attention and MLP parameter groups per layer.
 
     Returns a list of dicts:
@@ -291,7 +291,7 @@ def weight_norms(model) -> List[dict]:
     return results
 
 
-def weight_svd(model, layers: Optional[List[int]] = None) -> Dict[int, dict]:
+def weight_svd(model, layers: list[int] | None = None) -> dict[int, dict]:
     """Compute singular values of key weight matrices for specified layers.
 
     Args:
@@ -306,7 +306,7 @@ def weight_svd(model, layers: Optional[List[int]] = None) -> Dict[int, dict]:
     if layers is None:
         layers = list(range(num_layers))
 
-    result: Dict[int, dict] = {}
+    result: dict[int, dict] = {}
     for i in layers:
         layer = model.model.layers[i]
         layer_svd = {}
@@ -332,7 +332,7 @@ def weight_svd(model, layers: Optional[List[int]] = None) -> Dict[int, dict]:
 # Activation analysis
 # ---------------------------------------------------------------------------
 
-def attention_entropy(model, tokenizer, prompt: str) -> Dict[int, List[float]]:
+def attention_entropy(model, tokenizer, prompt: str) -> dict[int, list[float]]:
     """Compute entropy of attention distributions per head per layer.
 
     Uses model(input_ids, output_attentions=True) to obtain attention weights.
@@ -358,7 +358,7 @@ def attention_entropy(model, tokenizer, prompt: str) -> Dict[int, List[float]]:
 
     # out.attentions: tuple of (batch, heads, seq_q, seq_k) per layer
     eps = 1e-10
-    result: Dict[int, List[float]] = {}
+    result: dict[int, list[float]] = {}
     for layer_idx, attn_weights in enumerate(out.attentions):
         # attn_weights: (batch, num_heads, seq_q, seq_k)
         # Work with first (only) batch element
@@ -375,7 +375,7 @@ def attention_entropy(model, tokenizer, prompt: str) -> Dict[int, List[float]]:
     return result
 
 
-def residual_stream_norms(model, tokenizer, prompt: str) -> List[float]:
+def residual_stream_norms(model, tokenizer, prompt: str) -> list[float]:
     """Compute L2 norm of the residual stream at each stage of the model.
 
     Captures:
@@ -385,7 +385,7 @@ def residual_stream_norms(model, tokenizer, prompt: str) -> List[float]:
     Returns a list of length num_layers + 1.
     """
     num_layers = len(model.model.layers)
-    activations: List[Optional[torch.Tensor]] = [None] * (num_layers + 1)
+    activations: list[torch.Tensor | None] = [None] * (num_layers + 1)
     hooks = []
 
     def embed_hook(module, inp, out):
@@ -431,7 +431,7 @@ def inspect_head(
     prompt: str,
     layer: int,
     head: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Inspect a single attention head: its attention pattern, output norm, and entropy.
 
     Returns dict with:

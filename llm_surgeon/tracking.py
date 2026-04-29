@@ -4,7 +4,8 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Union
+from collections.abc import Mapping
+from typing import Any
 
 _DEFAULT_DB = str(Path(__file__).parent.parent / "experiments/experiments.db")
 
@@ -117,7 +118,7 @@ class Experiment:
         finally:
             conn.close()
 
-    def log_samples(self, samples: List[str]) -> None:
+    def log_samples(self, samples: list[str]) -> None:
         """Record generation samples as a single JSON blob."""
         conn = _connect(self.db_path)
         try:
@@ -154,7 +155,7 @@ def start(
     name: str,
     description: str = "",
     base_model: str = "",
-    recipe: Optional[Mapping[str, Any]] = None,
+    recipe: Mapping[str, Any] | None = None,
     db_path: str = _DEFAULT_DB,
 ) -> Experiment:
     """Create a new experiment record and return an Experiment handle."""
@@ -180,7 +181,7 @@ def start(
     return Experiment(name=name, db_path=db_path)
 
 
-def list_experiments(db_path: str = _DEFAULT_DB) -> List[Dict]:
+def list_experiments(db_path: str = _DEFAULT_DB) -> list[dict]:
     """Return all experiments as a list of dicts."""
     conn = _connect(db_path)
     try:
@@ -190,7 +191,7 @@ def list_experiments(db_path: str = _DEFAULT_DB) -> List[Dict]:
         conn.close()
 
 
-def get_experiment(name: str, db_path: str = _DEFAULT_DB) -> Dict:
+def get_experiment(name: str, db_path: str = _DEFAULT_DB) -> dict:
     """Return a single experiment with its metrics, ops, and samples."""
     conn = _connect(db_path)
     try:
@@ -223,7 +224,7 @@ def get_experiment(name: str, db_path: str = _DEFAULT_DB) -> Dict:
         conn.close()
 
 
-def compare_experiments(names: List[str], db_path: str = _DEFAULT_DB) -> Dict[str, Dict]:
+def compare_experiments(names: list[str], db_path: str = _DEFAULT_DB) -> dict[str, dict]:
     """Return side-by-side metric dicts for the named experiments.
 
     Returns:
@@ -240,10 +241,10 @@ def log_harness_result(
     *,
     db_path: str,
     experiment_name: str,
-    tasks: List[str],
-    num_fewshot: Union[int, Dict[str, int], None],
+    tasks: list[str],
+    num_fewshot: int | dict[str, int] | None,
     limit: int | None,
-    result: Dict[str, Any],
+    result: dict[str, Any],
 ) -> None:
     """Insert one row into harness_results with the full lm_eval output.
 

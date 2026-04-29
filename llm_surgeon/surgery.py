@@ -6,7 +6,7 @@ import os
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -58,7 +58,7 @@ class SurgeryOp:
 @dataclass
 class SurgeryLog:
     """Log of surgery operations performed on a model."""
-    ops: List[SurgeryOp] = field(default_factory=list)
+    ops: list[SurgeryOp] = field(default_factory=list)
 
     def add(self, operation: str, description: str, before: int, after: int) -> None:
         self.ops.append(SurgeryOp(operation, description, before, after))
@@ -97,7 +97,7 @@ def _renumber_layers(model) -> None:
             layer.self_attn.layer_idx = i
 
 
-def get_layer_info(model) -> Dict[str, Any]:
+def get_layer_info(model) -> dict[str, Any]:
     """Print and return summary of model layer structure."""
     layers = model.model.layers
     total_params = sum(p.numel() for p in model.parameters())
@@ -124,7 +124,7 @@ def get_layer_info(model) -> Dict[str, Any]:
     }
 
 
-def remove_layers(model, layer_indices: List[int]) -> SurgeryLog:
+def remove_layers(model, layer_indices: list[int]) -> SurgeryLog:
     """Remove layers at the specified indices. Indices are current positions."""
     layers = model.model.layers
     num_before = len(layers)
@@ -150,7 +150,7 @@ def remove_layers(model, layer_indices: List[int]) -> SurgeryLog:
     )
 
 
-def keep_layers(model, layer_indices: List[int]) -> SurgeryLog:
+def keep_layers(model, layer_indices: list[int]) -> SurgeryLog:
     """Keep only the layers at the specified indices, remove all others."""
     layers = model.model.layers
     num_before = len(layers)
@@ -169,7 +169,7 @@ def keep_layers(model, layer_indices: List[int]) -> SurgeryLog:
     )
 
 
-def reorder_layers(model, new_order: List[int]) -> SurgeryLog:
+def reorder_layers(model, new_order: list[int]) -> SurgeryLog:
     """Rearrange layers to the specified order. new_order must be a permutation."""
     layers = model.model.layers
     num_before = len(layers)
@@ -254,7 +254,7 @@ def _head_dim(model) -> int:
     return model.config.hidden_size // model.config.num_attention_heads
 
 
-def zero_heads(model, layer: int, heads: List[int]) -> SurgeryLog:
+def zero_heads(model, layer: int, heads: list[int]) -> SurgeryLog:
     """Zero out specific attention heads by zeroing their o_proj columns.
 
     The head still exists structurally but contributes nothing to the
@@ -270,7 +270,7 @@ def zero_heads(model, layer: int, heads: List[int]) -> SurgeryLog:
     return SurgeryLog.inplace(model, "zero_heads", f"Zeroed heads {heads} in layer {layer}")
 
 
-def scale_heads(model, layer: int, heads: List[int], factor: float) -> SurgeryLog:
+def scale_heads(model, layer: int, heads: list[int], factor: float) -> SurgeryLog:
     """Scale specific heads' contribution by multiplying their o_proj columns."""
     _validate_head_args(model, layer, heads)
     hd = _head_dim(model)
@@ -365,8 +365,8 @@ class CalibrationStats:
         input_norm: Mean-square of each layer's ``input_layernorm`` output.
         post_attn_norm: Same for ``post_attention_layernorm``.
     """
-    input_norm: List[torch.Tensor]
-    post_attn_norm: List[torch.Tensor]
+    input_norm: list[torch.Tensor]
+    post_attn_norm: list[torch.Tensor]
 
     @property
     def num_layers(self) -> int:
@@ -397,15 +397,15 @@ class CalibrationReport:
     layers_calibrated: int = 0
     channels_clipped: int = 0
     channels_skipped: int = 0
-    per_layer_scale_mean: List[float] = field(default_factory=list)
-    layers_fully_skipped: List[int] = field(default_factory=list)
+    per_layer_scale_mean: list[float] = field(default_factory=list)
+    layers_fully_skipped: list[int] = field(default_factory=list)
 
 
 def capture_calibration_stats(
     model,
     tokenizer,
-    text: Optional[str] = None,
-    dataset: Optional[str] = None,
+    text: str | None = None,
+    dataset: str | None = None,
     num_samples: int = 128,
 ) -> CalibrationStats:
     """Capture per-channel post-norm mean-square for each RMSNorm layer.
@@ -427,13 +427,13 @@ def capture_calibration_stats(
 def calibrate(
     model,
     tokenizer,
-    baseline_stats: Optional[CalibrationStats] = None,
+    baseline_stats: CalibrationStats | None = None,
     *,
-    layer_map: Optional[List[int]] = None,
+    layer_map: list[int] | None = None,
     scale_clip: float = 5.0,
     min_variance: float = 1e-6,
-    text: Optional[str] = None,
-    dataset: Optional[str] = None,
+    text: str | None = None,
+    dataset: str | None = None,
     num_samples: int = 128,
 ) -> CalibrationReport:
     """Rescale RMSNorm gains per-channel to match pre-surgery post-norm variance.
@@ -553,8 +553,8 @@ def calibrate(
 def _capture_norm_outputs(
     model,
     tokenizer,
-    text: Optional[str] = None,
-    dataset: Optional[str] = None,
+    text: str | None = None,
+    dataset: str | None = None,
     num_samples: int = 128,
 ) -> CalibrationStats:
     """Run the calibration corpus through ``model`` and capture per-channel
@@ -586,11 +586,11 @@ def _capture_norm_outputs(
     input_ids = enc["input_ids"].to(device)
 
     num_layers = len(model.model.layers)
-    input_ms: List[Optional[torch.Tensor]] = [None] * num_layers
-    post_ms: List[Optional[torch.Tensor]] = [None] * num_layers
+    input_ms: list[torch.Tensor | None] = [None] * num_layers
+    post_ms: list[torch.Tensor | None] = [None] * num_layers
     hooks = []
 
-    def _make_hook(idx: int, target: List[Optional[torch.Tensor]]):
+    def _make_hook(idx: int, target: list[torch.Tensor | None]):
         def hook(_module, _inp, out):
             # out: (batch, seq, hidden). Per-channel mean-square over (batch, seq).
             y = out.detach().float()
@@ -695,7 +695,7 @@ def load_model(
     mode: str = "nf4",
     *,
     revision: str | None = None,
-) -> Tuple:
+) -> tuple:
     """Load a model and tokenizer.
 
     Modes:
@@ -743,7 +743,7 @@ def load_model(
     is_local = os.path.isdir(model_id)
     cached = (not is_local) and _is_cached(model_id)
 
-    common_kwargs: Dict[str, Any] = {
+    common_kwargs: dict[str, Any] = {
         "use_safetensors": True,
         "revision": revision,
     }
@@ -757,7 +757,7 @@ def load_model(
             bnb_4bit_quant_type="nf4",
             bnb_4bit_compute_dtype=torch.float16,
         )
-        mode_kwargs: Dict[str, Any] = {"quantization_config": bnb_config, "device_map": "auto"}
+        mode_kwargs: dict[str, Any] = {"quantization_config": bnb_config, "device_map": "auto"}
     elif mode == "int8":
         bnb_config = BitsAndBytesConfig(load_in_8bit=True)
         mode_kwargs = {"quantization_config": bnb_config, "device_map": "auto"}

@@ -387,7 +387,7 @@ class TestReverseBFSCorrectness:
                 2,
             )
 
-        monkeypatch.setattr("llm_surgeon.probe._compute_all_edges", fake_compute)
+        monkeypatch.setattr("llm_surgeon.probe._attribution._compute_all_edges", fake_compute)
 
         model, tok = _make_mock()
         result = extract_circuit(
@@ -430,7 +430,7 @@ class TestReverseBFSCorrectness:
                 0,
                 2,
             )
-        monkeypatch.setattr("llm_surgeon.probe._compute_all_edges", fake_compute)
+        monkeypatch.setattr("llm_surgeon.probe._attribution._compute_all_edges", fake_compute)
         model, tok = _make_mock()
         result = extract_circuit(
             model, tok, "x", "y",

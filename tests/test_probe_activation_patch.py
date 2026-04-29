@@ -189,7 +189,7 @@ class TestActivationPatchLoop:
             received_prompts.append(prompt)
             return original_intervene(model, tok, prompt, interventions, **kwargs)
 
-        monkeypatch.setattr(probe, "intervene", spy)
+        monkeypatch.setattr("llm_surgeon.probe._intervention.intervene", spy)
         probe.activation_patch(
             tiny_llama, tokenizer,
             clean_prompt="word10 word11",
@@ -209,7 +209,7 @@ class TestActivationPatchLoop:
             received_prompts.append(prompt)
             return original_intervene(model, tok, prompt, interventions, **kwargs)
 
-        monkeypatch.setattr(probe, "intervene", spy)
+        monkeypatch.setattr("llm_surgeon.probe._intervention.intervene", spy)
         probe.activation_patch(
             tiny_llama, tokenizer,
             clean_prompt="word10 word11",

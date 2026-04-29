@@ -10,9 +10,7 @@ from typing import Any
 _DEFAULT_DB = str(Path(__file__).parent.parent / "experiments/experiments.db")
 
 
-# ---------------------------------------------------------------------------
 # Schema
-# ---------------------------------------------------------------------------
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS experiments (
@@ -78,9 +76,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# ---------------------------------------------------------------------------
 # Experiment class
-# ---------------------------------------------------------------------------
 
 class Experiment:
     """Handle for a running experiment — log ops, metrics, and samples."""
@@ -147,9 +143,7 @@ class Experiment:
             conn.close()
 
 
-# ---------------------------------------------------------------------------
 # Public API
-# ---------------------------------------------------------------------------
 
 def start(
     name: str,

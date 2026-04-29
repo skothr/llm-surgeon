@@ -14,9 +14,7 @@ import torch
 import torch.nn as nn
 
 
-# ---------------------------------------------------------------------------
 # Downstream-eval defaults and helpers (Phase 2)
-# ---------------------------------------------------------------------------
 
 FAST_TRIPLET: list[str] = ["hellaswag", "arc_easy", "arc_challenge"]
 
@@ -66,9 +64,7 @@ def _group_by_fewshot(fewshot_map: dict[str, int]) -> list[tuple[int, list[str]]
     return [(n, sorted(buckets[n])) for n in sorted(buckets)]
 
 
-# ---------------------------------------------------------------------------
 # Perplexity
-# ---------------------------------------------------------------------------
 
 def perplexity(
     model,
@@ -220,9 +216,7 @@ def _load_dataset_text(name: str, max_samples: int | None = None) -> str:
     return "\n\n".join(t for t in texts if t and t.strip())
 
 
-# ---------------------------------------------------------------------------
 # Downstream evaluation via lm-evaluation-harness
-# ---------------------------------------------------------------------------
 
 def eval_downstream(
     tasks: list[str] | None = None,
@@ -480,9 +474,7 @@ def _extract_accuracies(data: dict, tasks: list[str]) -> dict[str, float]:
     return out
 
 
-# ---------------------------------------------------------------------------
 # Generation comparison via Ollama
-# ---------------------------------------------------------------------------
 
 def _load_prompts(path: str) -> list[dict[str, str]]:
     """Load a prompt list from a JSON file.
@@ -626,9 +618,7 @@ def _print_compare_summary(
         print()
 
 
-# ---------------------------------------------------------------------------
 # Automated generation quality metrics
-# ---------------------------------------------------------------------------
 
 def generation_metrics(results: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
     """Compute per-model failure-detection metrics from compare() output.

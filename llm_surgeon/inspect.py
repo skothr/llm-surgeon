@@ -49,9 +49,7 @@ def _capture_layer_io(
     return layer_inputs, layer_outputs
 
 
-# ---------------------------------------------------------------------------
 # Block Influence
-# ---------------------------------------------------------------------------
 
 def block_influence(model, tokenizer, prompts: list[str]) -> dict[int, float]:
     """Compute Block Influence (BI) score for each transformer layer.
@@ -247,9 +245,7 @@ def sublayer_influence(
     return results
 
 
-# ---------------------------------------------------------------------------
 # Weight norms and SVD
-# ---------------------------------------------------------------------------
 
 def weight_norms(model) -> list[dict]:
     """Compute Frobenius norms of attention and MLP parameter groups per layer.
@@ -328,9 +324,7 @@ def weight_svd(model, layers: list[int] | None = None) -> dict[int, dict]:
     return result
 
 
-# ---------------------------------------------------------------------------
 # Activation analysis
-# ---------------------------------------------------------------------------
 
 def attention_entropy(model, tokenizer, prompt: str) -> dict[int, list[float]]:
     """Compute entropy of attention distributions per head per layer.
@@ -421,9 +415,7 @@ def residual_stream_norms(model, tokenizer, prompt: str) -> list[float]:
     return norms
 
 
-# ---------------------------------------------------------------------------
 # Individual head inspection
-# ---------------------------------------------------------------------------
 
 def inspect_head(
     model,

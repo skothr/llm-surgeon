@@ -9,9 +9,7 @@ import yaml
 from llm_surgeon import surgery, verify, tracking
 
 
-# ---------------------------------------------------------------------------
 # Parsing
-# ---------------------------------------------------------------------------
 
 def parse_recipe(path: str) -> dict[str, Any]:
     """Load a YAML recipe file and validate required fields.
@@ -32,9 +30,7 @@ def parse_recipe(path: str) -> dict[str, Any]:
     return data
 
 
-# ---------------------------------------------------------------------------
 # Execution helpers
-# ---------------------------------------------------------------------------
 
 def _log(msg: str, verbose: bool) -> None:
     if verbose:
@@ -78,9 +74,7 @@ def _apply_surgery_step(
     raise ValueError(f"Unknown surgery step: {list(step.keys())}")
 
 
-# ---------------------------------------------------------------------------
 # Public API
-# ---------------------------------------------------------------------------
 
 def run(
     recipe_path: str,

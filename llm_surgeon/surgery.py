@@ -235,9 +235,7 @@ def duplicate_layer(model, src: int, dst: int) -> SurgeryLog:
     )
 
 
-# ---------------------------------------------------------------------------
 # Attention head surgery
-# ---------------------------------------------------------------------------
 
 def _validate_head_args(model, layer: int, heads: list) -> None:
     """Validate layer index and head indices."""

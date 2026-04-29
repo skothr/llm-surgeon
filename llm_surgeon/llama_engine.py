@@ -315,23 +315,12 @@ def _forward_permute(t: np.ndarray, n_head: int, n_kv_heads: int) -> np.ndarray:
     return t.reshape(n, 2, dim, *t.shape[1:]).swapaxes(1, 2).reshape(t.shape)
 
 
-_HF_TO_GGUF_GLOBAL = {
-    "model.embed_tokens.weight": "token_embd.weight",
-    "model.norm.weight": "output_norm.weight",
-    "lm_head.weight": "output.weight",
-}
+# Inverse of llm_surgeon.gguf_reader's GGUF→HF maps. Imported and inverted
+# rather than duplicated so the two modules can't drift.
+from llm_surgeon.gguf_reader import _GGUF_GLOBAL, _GGUF_LAYER
 
-_HF_TO_GGUF_LAYER = {
-    "input_layernorm.weight": "attn_norm.weight",
-    "post_attention_layernorm.weight": "ffn_norm.weight",
-    "self_attn.q_proj.weight": "attn_q.weight",
-    "self_attn.k_proj.weight": "attn_k.weight",
-    "self_attn.v_proj.weight": "attn_v.weight",
-    "self_attn.o_proj.weight": "attn_output.weight",
-    "mlp.gate_proj.weight": "ffn_gate.weight",
-    "mlp.up_proj.weight": "ffn_up.weight",
-    "mlp.down_proj.weight": "ffn_down.weight",
-}
+_HF_TO_GGUF_GLOBAL = {v: k for k, v in _GGUF_GLOBAL.items()}
+_HF_TO_GGUF_LAYER = {v: k for k, v in _GGUF_LAYER.items()}
 
 
 import re as _re

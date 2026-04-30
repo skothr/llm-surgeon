@@ -2,9 +2,10 @@
 
 import json
 import sqlite3
+from collections.abc import Generator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Mapping
 from typing import Any
 
 _DEFAULT_DB = str(Path(__file__).parent.parent / "experiments/experiments.db")
@@ -72,6 +73,21 @@ def _connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+@contextmanager
+def _connection(db_path: str) -> Generator[sqlite3.Connection]:
+    """Open a connection, run a transaction, close.
+
+    Wraps the body in ``with conn:`` so writes commit on success and roll
+    back on exception. Caller does **not** call ``conn.commit()``.
+    """
+    conn = _connect(db_path)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -87,8 +103,7 @@ class Experiment:
 
     def log_surgery(self, surgery_log) -> None:
         """Record all ops from a SurgeryLog."""
-        conn = _connect(self.db_path)
-        try:
+        with _connection(self.db_path) as conn:
             for op in surgery_log.ops:
                 conn.execute(
                     """
@@ -98,38 +113,26 @@ class Experiment:
                     """,
                     (self.name, op.operation, op.description, op.layer_count_before, op.layer_count_after),
                 )
-            conn.commit()
-        finally:
-            conn.close()
 
     def log_metric(self, key: str, value: float) -> None:
         """Record a scalar metric."""
-        conn = _connect(self.db_path)
-        try:
+        with _connection(self.db_path) as conn:
             conn.execute(
                 "INSERT INTO metrics (experiment_name, key, value) VALUES (?, ?, ?)",
                 (self.name, key, float(value)),
             )
-            conn.commit()
-        finally:
-            conn.close()
 
     def log_samples(self, samples: list[str]) -> None:
         """Record generation samples as a single JSON blob."""
-        conn = _connect(self.db_path)
-        try:
+        with _connection(self.db_path) as conn:
             conn.execute(
                 "INSERT INTO samples (experiment_name, data) VALUES (?, ?)",
                 (self.name, json.dumps(samples)),
             )
-            conn.commit()
-        finally:
-            conn.close()
 
     def finish(self, notes: str = "") -> None:
         """Mark experiment completed."""
-        conn = _connect(self.db_path)
-        try:
+        with _connection(self.db_path) as conn:
             conn.execute(
                 """
                 UPDATE experiments
@@ -138,9 +141,6 @@ class Experiment:
                 """,
                 (notes, _now(), self.name),
             )
-            conn.commit()
-        finally:
-            conn.close()
 
 
 # Public API
@@ -154,13 +154,10 @@ def start(
 ) -> Experiment:
     """Create a new experiment record and return an Experiment handle."""
     recipe_yaml = json.dumps(recipe) if recipe is not None else None
-    conn = _connect(db_path)
-    try:
-        # If experiment with this name already exists, delete the old one
-        conn.execute("DELETE FROM metrics WHERE experiment_name = ?", (name,))
-        conn.execute("DELETE FROM surgery_ops WHERE experiment_name = ?", (name,))
-        conn.execute("DELETE FROM samples WHERE experiment_name = ?", (name,))
-        conn.execute("DELETE FROM harness_results WHERE experiment_name = ?", (name,))
+    with _connection(db_path) as conn:
+        # If an experiment with this name already exists, replace it
+        for tbl in ("metrics", "surgery_ops", "samples", "harness_results"):
+            conn.execute(f"DELETE FROM {tbl} WHERE experiment_name = ?", (name,))
         conn.execute("DELETE FROM experiments WHERE name = ?", (name,))
         conn.execute(
             """
@@ -169,26 +166,19 @@ def start(
             """,
             (name, description, base_model, recipe_yaml, _now()),
         )
-        conn.commit()
-    finally:
-        conn.close()
     return Experiment(name=name, db_path=db_path)
 
 
 def list_experiments(db_path: str = _DEFAULT_DB) -> list[dict]:
     """Return all experiments as a list of dicts."""
-    conn = _connect(db_path)
-    try:
+    with _connection(db_path) as conn:
         rows = conn.execute("SELECT * FROM experiments ORDER BY created_at").fetchall()
         return [dict(row) for row in rows]
-    finally:
-        conn.close()
 
 
 def get_experiment(name: str, db_path: str = _DEFAULT_DB) -> dict:
     """Return a single experiment with its metrics, ops, and samples."""
-    conn = _connect(db_path)
-    try:
+    with _connection(db_path) as conn:
         exp_row = conn.execute(
             "SELECT * FROM experiments WHERE name = ?", (name,)
         ).fetchone()
@@ -214,8 +204,6 @@ def get_experiment(name: str, db_path: str = _DEFAULT_DB) -> dict:
             ).fetchall()
         ]
         return result
-    finally:
-        conn.close()
 
 
 def compare_experiments(names: list[str], db_path: str = _DEFAULT_DB) -> dict[str, dict]:
@@ -246,8 +234,7 @@ def log_harness_result(
     tracking -> benchmark cycle. Name is semi-public (no leading underscore)
     to signal cross-module use.
     """
-    conn = _connect(db_path)
-    try:
+    with _connection(db_path) as conn:
         conn.execute(
             """
             INSERT INTO harness_results
@@ -266,6 +253,3 @@ def log_harness_result(
                 _now(),
             ),
         )
-        conn.commit()
-    finally:
-        conn.close()

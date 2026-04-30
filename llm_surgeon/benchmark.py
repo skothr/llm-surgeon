@@ -127,7 +127,6 @@ def perplexity(
     max_length: int = int(getattr(model.config, "max_position_embeddings", 512))
     if stride is None:
         stride = max_length // 2
-    assert stride is not None
 
     seq_len = input_ids.size(1)
     # Use get_input_embeddings() for portability across HF architectures

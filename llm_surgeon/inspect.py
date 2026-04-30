@@ -52,33 +52,15 @@ def _capture_layer_io(
 # Block Influence
 
 def block_influence(model, tokenizer, prompts: list[str]) -> dict[int, float]:
-    """Compute Block Influence (BI) score for each transformer layer.
+    """Compute Block Influence (BI) score per layer: 1 - cos(input, output).
 
-    BI = 1 - cosine_similarity(layer_input, layer_output), averaged over
-    all token positions and all prompts.
-
+    Equivalent to the ``bi_score`` field of :func:`magnitude_influence`.
     Returns a dict mapping layer index -> float score in [0, 1].
     """
-    layer_inputs, layer_outputs = _capture_layer_io(model, tokenizer, prompts)
-    num_layers = len(model.model.layers)
-
-    scores: dict[int, float] = {}
-    for i in range(num_layers):
-        sims = []
-        for h_in, h_out in zip(layer_inputs[i], layer_outputs[i]):
-            # h_in, h_out: (batch, seq, hidden)
-            # flatten to (batch*seq, hidden)
-            flat_in = h_in.reshape(-1, h_in.shape[-1]).float()
-            flat_out = h_out.reshape(-1, h_out.shape[-1]).float()
-            # cosine similarity per token
-            cos_sim = F.cosine_similarity(flat_in, flat_out, dim=-1)  # (batch*seq,)
-            sims.append(cos_sim.mean().item())
-        avg_sim = sum(sims) / len(sims) if sims else 0.0
-        scores[i] = 1.0 - avg_sim
-        # clamp to [0, 1] for numerical safety
-        scores[i] = max(0.0, min(1.0, scores[i]))
-
-    return scores
+    return {
+        i: m["bi_score"]
+        for i, m in magnitude_influence(model, tokenizer, prompts).items()
+    }
 
 
 def magnitude_influence(
@@ -475,12 +457,9 @@ def inspect_head(
 
     # Extract this head's output (before o_proj mixing)
     # o_proj_input shape: (batch, seq, num_heads * head_dim)
-    if "val" in o_proj_input:
-        full_output = o_proj_input["val"][0].float()  # (seq, num_heads * head_dim)
-        head_slice = full_output[:, head * head_dim : (head + 1) * head_dim]  # (seq, head_dim)
-        output_norm = head_slice.norm(dim=-1).mean().item()
-    else:
-        output_norm = 0.0
+    full_output = o_proj_input["val"][0].float()  # (seq, num_heads * head_dim)
+    head_slice = full_output[:, head * head_dim : (head + 1) * head_dim]  # (seq, head_dim)
+    output_norm = head_slice.norm(dim=-1).mean().item()
 
     # Entropy of attention distribution
     eps = 1e-10

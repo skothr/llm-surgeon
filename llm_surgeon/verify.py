@@ -30,7 +30,10 @@ class VerifyReport:
 
 def check_structure(model, surgery_log=None) -> VerifyReport:
     """Validate model structural integrity after surgery.
-    Raises ValueError if any critical check fails.
+
+    Returns the populated report on success; raises ``ValueError`` (with the
+    report rendered into the message) if any check fails — callers therefore
+    only ever observe a passing report.
     """
     report = VerifyReport()
 

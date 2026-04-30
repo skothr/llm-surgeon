@@ -282,7 +282,7 @@ class TestPerNeuronMock:
             from_ffn_out_L = from_captured[(L, "ffn_out")]
             if base_ffn_out.grad is None:
                 continue
-            W_down = model.model.layers[L].mlp.down_proj.weight  # pyright: ignore[reportAttributeAccessIssue]
+            W_down: torch.Tensor = model.model.layers[L].mlp.down_proj.weight  # pyright: ignore[reportAttributeAccessIssue, reportAssignmentType]
             for pos in range(base_ffn_out.shape[1]):
                 grad_ffn_out = base_ffn_out.grad[0, pos].detach()
                 delta_ffn_out = (from_ffn_out_L[0, pos] - base_ffn_out[0, pos].detach())

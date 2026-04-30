@@ -137,7 +137,7 @@ def _capture_residual_stream_with_grad(
         When capture_ffn_out=True, captured also contains (L, "ffn_out") keys
         holding the raw MLP output before the residual add; retain_grad() is
         called on the ffn_out tensor so .grad is populated after backward()
-        (needed for Phase 3.9 per-neuron attribution).
+        (needed for per-neuron attribution).
         ffn_acts is empty when capture_ffn_act=False; otherwise holds the
         input tensor to each mlp.down_proj (i.e. the MLP intermediate
         activation, shape [batch, seq, intermediate_size]) keyed by layer

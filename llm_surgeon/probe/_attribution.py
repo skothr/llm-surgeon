@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import torch
 
 from llm_surgeon.probe._capture import _capture_residual_stream_with_grad
 from llm_surgeon.probe._hooks import (
     _attach_reader_grad_hooks,
     _get_input_device,
-    _make_capture_input_hook,
 )
 from llm_surgeon.probe._types import PatchingResult
 
@@ -48,8 +49,7 @@ def _integrated_gradients_loop(
 
     When "attn" not in sublayers we cannot reconstruct ffn_out without h_in,
     so ffn-only IG is not supported; an empty avg_grad is returned for ffn
-    rows in that case. (Phase 3.10 requires "attn" in sublayers for IG;
-    caller can document the constraint.)
+    rows in that case.
     """
     num_layers = len(model.model.layers)
     target_layers_set = (
@@ -188,7 +188,7 @@ def attribution_patch(
     n_steps: int = 1,
     on_cell: Callable[[int, str, int, dict], None] | None = None,
 ) -> PatchingResult:
-    """Gradient-based attribution patching (Phase 3.5).
+    """Gradient-based attribution patching.
 
     One forward + one backward pass produces a per-cell AP score that
     approximates exact activation_patch's logit_diff_recovery. Much cheaper
@@ -285,7 +285,7 @@ def attribution_patch(
             )
 
         if n_steps == 1:
-            # --- Step 3: Metric scalar on base-side logits, backward (Phase 3.5 path) ---
+            # --- Step 3: Metric scalar on base-side logits, backward ---
             metric = (
                 base_logits[meas_pos, correct_token_id]
                 - base_logits[meas_pos, incorrect_token_id]
@@ -384,20 +384,20 @@ def attribution_patch_per_head(
     n_steps: int = 1,
     on_cell: Callable[[int, str, int, dict], None] | None = None,
 ) -> PatchingResult:
-    """Per-attention-head gradient attribution patching (Phase 3.6).
+    """Per-attention-head gradient attribution patching.
 
     Decomposes attn_out's contribution to the metric into per-head scores via
     chain rule through W_O (o_proj). Produces per-(layer, head, position) AP
     values plus FFN anchor rows. One forward + one backward pass, same cost as
-    Phase 3.5.
+    the per-cell variant.
 
     Unit strings in on_cell / cells: "attn.h{N}" (0-indexed) for head N,
     "ffn" for FFN anchor.
 
     Note: sum_h AP_head(L,h,pos) == (delta_attn_out · attn_out.grad) / D, which
-    equals Phase 3.5's AP_attn(L,pos) ONLY when h_in is identical between the
+    equals the per-cell AP_attn(L,pos) ONLY when h_in is identical between the
     clean and corrupted prompts (trivially at L=0 for same-length tokenizations
-    but not at deeper layers). Phase 3.5 AP_attn linearizes at the full residual
+    but not at deeper layers). Per-cell AP_attn linearizes at the full residual
     stream h_post_attn = h_in + attn_out to match exact AP's patched quantity;
     per-head AP decomposes attn_out alone, which is the right unit for
     mechanistic interpretability of individual heads.
@@ -514,7 +514,7 @@ def attribution_patch_per_head(
     cells: list[dict] = []
 
     for L in target_layers:
-        # --- FFN anchor (identical math to Phase 3.5) ---
+        # --- FFN anchor (identical math to per-cell AP) ---
         if (L, "ffn") in base_captured:
             base_ffn = base_captured[(L, "ffn")]    # [1, seq, hidden]
             ffn_grad = base_ffn.grad if n_steps == 1 else (avg_grad_head.get((L, "ffn")) if avg_grad_head is not None else None)
@@ -604,7 +604,7 @@ def attribution_patch_per_neuron(
     n_steps: int = 1,
     on_cell: Callable[[dict], None] | None = None,
 ) -> PatchingResult:
-    """Per-neuron FFN attribution patching (Phase 3.9).
+    """Per-neuron FFN attribution patching.
 
     Decomposes Δffn_out's contribution to the metric into per-
     (layer, neuron, position) AP scores via chain rule through W_down.
@@ -1058,7 +1058,7 @@ def edge_attribution_patch(
     n_steps: int = 1,
     on_cell: Callable[[dict], None] | None = None,
 ) -> PatchingResult:
-    """Per-edge gradient attribution patching (Phase 3.7).
+    """Per-edge gradient attribution patching.
 
     Decomposes the residual stream's additive structure into per-(writer, reader,
     position) AP scores. One forward + one backward pass. Each edge score measures
@@ -1142,7 +1142,7 @@ def extract_circuit(
 ) -> PatchingResult:
     """Cheap-ACDC circuit extraction (Syed et al. 2023, arXiv 2310.10348).
 
-    Runs the Phase 3.7 edge attribution pass, then annotates the top
+    Runs the edge attribution pass, then annotates the top
     `top_k_candidates` edges with `in_circuit: bool` based on:
       1. |ap_recovery| >= tau (filter)
       2. reader is reverse-reachable from 'logits' through surviving edges

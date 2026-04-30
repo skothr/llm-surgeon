@@ -79,7 +79,7 @@ def check_structure(model, surgery_log=None) -> VerifyReport:
     return report
 
 
-# Task 4: Activation capture, comparison, and caching
+# Activation capture, comparison, and caching
 
 def _capture_layer_activations(model, tokenizer, prompt: str) -> list[torch.Tensor]:
     """Capture the output tensor of each transformer layer for the given prompt.

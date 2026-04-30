@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 
 
-# Downstream-eval defaults and helpers (Phase 2)
+# Downstream-eval defaults and helpers
 
 FAST_TRIPLET: list[str] = ["hellaswag", "arc_easy", "arc_challenge"]
 

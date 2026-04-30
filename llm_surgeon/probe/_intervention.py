@@ -74,6 +74,43 @@ class _Ops:
         return _Op(fn, "project_out(<direction>)")
 
 
+def _apply_block_intervention(
+    state: torch.Tensor,
+    layer_idx: int,
+    sublayer: str,
+    intervention_map: dict[tuple[int, str], Callable],
+    captured_states: dict[tuple[int, str], torch.Tensor] | None,
+    on_layer: Callable[[int, str, dict], None] | None,
+) -> tuple[torch.Tensor, bool]:
+    """Apply intervention at ``(layer_idx, sublayer)`` and fire side-effects.
+
+    Returns ``(new_state, modified)`` — the (possibly-replaced) hidden state
+    cast back to the original dtype/device and a flag indicating whether the
+    intervention map fired. Captures the post-intervention state into
+    ``captured_states`` and invokes ``on_layer`` when supplied. The shared
+    body of the per-block forward hooks; only the result-construction step
+    differs between attn and ffn paths.
+    """
+    orig_dtype = state.dtype
+    orig_device = state.device
+    modified = False
+    key = (layer_idx, sublayer)
+    if key in intervention_map:
+        state = intervention_map[key](state, layer_idx).to(
+            dtype=orig_dtype, device=orig_device,
+        )
+        modified = True
+    if captured_states is not None:
+        captured_states[key] = state
+    if on_layer is not None:
+        on_layer(layer_idx, sublayer, {
+            "hidden_state": state,
+            "modified": modified,
+            "top_k": None,
+        })
+    return state, modified
+
+
 def _make_position_patch(pos: int, clean_vec: torch.Tensor) -> _Op:
     """Build an intervention op that replaces hidden_state[pos] with clean_vec,
     leaving all other positions untouched.
@@ -122,73 +159,44 @@ def intervene(
     hooks = []
     layer_block_inputs: dict[int, torch.Tensor] = {}
 
-    for i in range(num_layers):
-        def make_pre(idx):
-            def hook(module, args):
-                layer_block_inputs[idx] = args[0].detach()
-            return hook
-        hooks.append(model.model.layers[i].register_forward_pre_hook(make_pre(i)))
+    def make_pre(idx):
+        def hook(_mod, args):
+            layer_block_inputs[idx] = args[0].detach()
+        return hook
+
+    def make_attn_hook(idx):
+        def hook(_mod, _inp, out):
+            attn_out = out[0] if isinstance(out, tuple) else out
+            state = (layer_block_inputs[idx] + attn_out.detach())[0]
+            state, modified = _apply_block_intervention(
+                state, idx, "attn", intervention_map, captured_states, on_layer,
+            )
+            if modified:
+                new_attn_out = state.unsqueeze(0) - layer_block_inputs[idx]
+                if isinstance(out, tuple):
+                    return (new_attn_out,) + out[1:]
+                return new_attn_out
+        return hook
+
+    def make_ffn_hook(idx):
+        def hook(_mod, _inp, out):
+            hidden = out[0] if isinstance(out, tuple) else out
+            state = hidden[0].detach()
+            state, modified = _apply_block_intervention(
+                state, idx, "ffn", intervention_map, captured_states, on_layer,
+            )
+            if modified:
+                new_out = state.unsqueeze(0)
+                if isinstance(out, tuple):
+                    return (new_out,) + out[1:]
+                return new_out
+        return hook
 
     for i in range(num_layers):
-        def make_attn_hook(idx):
-            def hook(module, inp, out):
-                attn_out = out[0] if isinstance(out, tuple) else out
-                h_post_attn = layer_block_inputs[idx] + attn_out.detach()
-                state = h_post_attn[0]
-
-                modified = False
-                if (idx, "attn") in intervention_map:
-                    state = intervention_map[(idx, "attn")](state, idx)
-                    state = state.to(dtype=attn_out.dtype, device=attn_out.device)
-                    modified = True
-
-                if captured_states is not None:
-                    captured_states[(idx, "attn")] = state
-
-                if on_layer is not None:
-                    on_layer(idx, "attn", {
-                        "hidden_state": state,
-                        "modified": modified,
-                        "top_k": None,
-                    })
-
-                if modified:
-                    new_attn_out = state.unsqueeze(0) - layer_block_inputs[idx]
-                    if isinstance(out, tuple):
-                        return (new_attn_out,) + out[1:]
-                    return new_attn_out
-            return hook
-        hooks.append(model.model.layers[i].self_attn.register_forward_hook(make_attn_hook(i)))
-
-    for i in range(num_layers):
-        def make_ffn_hook(idx):
-            def hook(module, inp, out):
-                hidden = out[0] if isinstance(out, tuple) else out
-                state = hidden[0].detach()
-
-                modified = False
-                if (idx, "ffn") in intervention_map:
-                    state = intervention_map[(idx, "ffn")](state, idx)
-                    state = state.to(dtype=hidden.dtype, device=hidden.device)
-                    modified = True
-
-                if captured_states is not None:
-                    captured_states[(idx, "ffn")] = state
-
-                if on_layer is not None:
-                    on_layer(idx, "ffn", {
-                        "hidden_state": state,
-                        "modified": modified,
-                        "top_k": None,
-                    })
-
-                if modified:
-                    new_out = state.unsqueeze(0)
-                    if isinstance(out, tuple):
-                        return (new_out,) + out[1:]
-                    return new_out
-            return hook
-        hooks.append(model.model.layers[i].register_forward_hook(make_ffn_hook(i)))
+        layer = model.model.layers[i]
+        hooks.append(layer.register_forward_pre_hook(make_pre(i)))
+        hooks.append(layer.self_attn.register_forward_hook(make_attn_hook(i)))
+        hooks.append(layer.register_forward_hook(make_ffn_hook(i)))
 
     try:
         with torch.no_grad():
@@ -354,10 +362,12 @@ def activation_patch(
 
     # -- Resolve iteration sets -------------------------------------------
     target_positions = list(range(seq_len)) if positions is None else list(positions)
+
     # captured_* keys are already filtered by sublayers/layers; iterate them.
     # Sort: layer-major, attn before ffn within each layer.
-    sort_key = lambda k: (k[0], 0 if k[1] == "attn" else 1)
-    triples = sorted(patch_source.keys(), key=sort_key)
+    def _sort_key(k: tuple[int, str]) -> tuple[int, int]:
+        return (k[0], 0 if k[1] == "attn" else 1)
+    triples = sorted(patch_source.keys(), key=_sort_key)
 
     # -- Patching loop ----------------------------------------------------
     cells: list[dict] = []

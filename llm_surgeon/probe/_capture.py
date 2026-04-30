@@ -14,6 +14,7 @@ from llm_surgeon.probe._hooks import (
     _get_input_device,
     _make_capture_input_hook,
     _make_capture_output_hook,
+    _unwrap_hook_output,
 )
 
 def _capture_residual_stream(model, tokenizer, prompt, sublayers=("ffn",), layers=None):
@@ -45,38 +46,32 @@ def _capture_residual_stream(model, tokenizer, prompt, sublayers=("ffn",), layer
     hooks = []
 
     if capture_embed:
-        def embed_hook(module, inp, out):
-            hidden = out[0].detach() if isinstance(out, tuple) else out.detach()
-            captured[(0, "embed")] = hidden[0]
+        def embed_hook(_mod, _inp, out):
+            captured[(0, "embed")] = _unwrap_hook_output(out).detach()[0]
         hooks.append(model.model.embed_tokens.register_forward_hook(embed_hook))
 
-    if capture_attn:
-        def make_block_pre_hook(idx):
-            def hook(module, args):
-                layer_block_inputs[idx] = args[0].detach()
-            return hook
+    def make_block_pre_hook(idx):
+        def hook(_mod, args):
+            layer_block_inputs[idx] = args[0].detach()
+        return hook
 
-        def make_attn_hook(idx):
-            def hook(module, inp, out):
-                attn_out = out[0] if isinstance(out, tuple) else out
-                h_in = layer_block_inputs[idx]
-                captured[(idx, "attn")] = (h_in + attn_out.detach())[0]
-            return hook
+    def make_attn_hook(idx):
+        def hook(_mod, _inp, out):
+            attn_out = _unwrap_hook_output(out)
+            captured[(idx, "attn")] = (layer_block_inputs[idx] + attn_out.detach())[0]
+        return hook
 
-        for i in target_layers:
-            layer = model.model.layers[i]
+    def make_ffn_hook(idx):
+        def hook(_mod, _inp, out):
+            captured[(idx, "ffn")] = _unwrap_hook_output(out).detach()[0]
+        return hook
+
+    for i in target_layers:
+        layer = model.model.layers[i]
+        if capture_attn:
             hooks.append(layer.register_forward_pre_hook(make_block_pre_hook(i)))
             hooks.append(layer.self_attn.register_forward_hook(make_attn_hook(i)))
-
-    if capture_ffn:
-        def make_ffn_hook(idx):
-            def hook(module, inp, out):
-                hidden = out[0].detach() if isinstance(out, tuple) else out.detach()
-                captured[(idx, "ffn")] = hidden[0]
-            return hook
-
-        for i in target_layers:
-            layer = model.model.layers[i]
+        if capture_ffn:
             hooks.append(layer.register_forward_hook(make_ffn_hook(i)))
 
     try:

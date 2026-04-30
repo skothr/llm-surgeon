@@ -88,7 +88,7 @@ def app_with_mock_session():
 
     mgr = get_manager()
     session_name = "mock-decode-residual-grid"
-    mgr._sessions[session_name] = SimpleNamespace(  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+    mgr._sessions[session_name] = SimpleNamespace(  # pyright: ignore[reportArgumentType]
         name=session_name,
         model=_MockModel(),
         tokenizer=_MockTokenizer(),
@@ -100,7 +100,7 @@ def app_with_mock_session():
     try:
         yield (app, session_name)
     finally:
-        mgr._sessions.pop(session_name, None)  # pyright: ignore[reportAttributeAccessIssue]
+        mgr._sessions.pop(session_name, None)
 
 
 class TestDecodeResidualGridUnit:
@@ -113,7 +113,7 @@ class TestDecodeResidualGridUnit:
     def test_500_no_model(self, app_with_mock_session) -> None:
         from gui.backend.routes.sessions import get_manager  # noqa: PLC0415
         app, name = app_with_mock_session
-        get_manager()._sessions[name].model = None  # pyright: ignore[reportAttributeAccessIssue]
+        get_manager()._sessions[name].model = None
         client = TestClient(app)
         r = client.post(f"/api/sessions/{name}/decode-residual-grid", json={"prompt": "the cat sat"})
         assert r.status_code == 500
@@ -206,7 +206,7 @@ class TestDecodeResidualGridTinyLlama:
 
         mgr = get_manager()
         name = "tinyllama-decode-residual-grid-test"
-        mgr._sessions[name] = SimpleNamespace(  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+        mgr._sessions[name] = SimpleNamespace(  # pyright: ignore[reportArgumentType]
             name=name,
             model=model,
             tokenizer=tok,
@@ -239,6 +239,6 @@ class TestDecodeResidualGridTinyLlama:
             }
             assert grid_top1_per_pos == ref_top1_per_pos
         finally:
-            mgr._sessions.pop(name, None)  # pyright: ignore[reportAttributeAccessIssue]
+            mgr._sessions.pop(name, None)
             del model
             torch.cuda.empty_cache()

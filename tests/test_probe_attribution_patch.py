@@ -32,13 +32,13 @@ class TestCaptureWithGrad:
             def __init__(self):
                 super().__init__()
                 self.model = torch.nn.Module()
-                self.model.embed_tokens = torch.nn.Embedding(10, 4)  # pyright: ignore[reportAttributeAccessIssue]
-                self.model.layers = torch.nn.ModuleList([_MockLayer() for _ in range(2)])  # pyright: ignore[reportAttributeAccessIssue]
+                self.model.embed_tokens = torch.nn.Embedding(10, 4)
+                self.model.layers = torch.nn.ModuleList([_MockLayer() for _ in range(2)])
                 self.lm_head = torch.nn.Linear(4, 10)
 
             def forward(self, input_ids):
-                h = self.model.embed_tokens(input_ids)  # pyright: ignore[reportAttributeAccessIssue,reportCallIssue]
-                for layer in self.model.layers:  # pyright: ignore[reportAttributeAccessIssue,reportGeneralTypeIssues]
+                h = self.model.embed_tokens(input_ids)  # pyright: ignore[reportCallIssue]  # pyright: ignore[reportCallIssue]
+                for layer in self.model.layers:  # pyright: ignore[reportGeneralTypeIssues]  # pyright: ignore[reportGeneralTypeIssues]
                     h = layer(h)[0]
                 return type("Out", (), {"logits": self.lm_head(h)})
 
@@ -77,12 +77,12 @@ class TestCaptureWithGrad:
             def __init__(self):
                 super().__init__()
                 self.model = torch.nn.Module()
-                self.model.embed_tokens = torch.nn.Embedding(10, 4)  # pyright: ignore[reportAttributeAccessIssue]
-                self.model.layers = torch.nn.ModuleList([_MockLayer() for _ in range(2)])  # pyright: ignore[reportAttributeAccessIssue]
+                self.model.embed_tokens = torch.nn.Embedding(10, 4)
+                self.model.layers = torch.nn.ModuleList([_MockLayer() for _ in range(2)])
                 self.lm_head = torch.nn.Linear(4, 10)
             def forward(self, input_ids):
-                h = self.model.embed_tokens(input_ids)  # pyright: ignore[reportAttributeAccessIssue,reportCallIssue]
-                for layer in self.model.layers:  # pyright: ignore[reportAttributeAccessIssue,reportGeneralTypeIssues]
+                h = self.model.embed_tokens(input_ids)  # pyright: ignore[reportCallIssue]  # pyright: ignore[reportCallIssue]
+                for layer in self.model.layers:  # pyright: ignore[reportGeneralTypeIssues]  # pyright: ignore[reportGeneralTypeIssues]
                     h = layer(h)[0]
                 return type("Out", (), {"logits": self.lm_head(h)})
 
@@ -159,14 +159,14 @@ class _MockLlama(torch.nn.Module):
     def __init__(self, num_layers: int = 2, d_model: int = 4, vocab: int = 10):
         super().__init__()
         self.model = torch.nn.Module()
-        self.model.embed_tokens = torch.nn.Embedding(vocab, d_model)  # pyright: ignore[reportAttributeAccessIssue]
-        self.model.layers = torch.nn.ModuleList(  # pyright: ignore[reportAttributeAccessIssue]
+        self.model.embed_tokens = torch.nn.Embedding(vocab, d_model)
+        self.model.layers = torch.nn.ModuleList(
             [_MockLlamaBlock(d_model) for _ in range(num_layers)]
         )
         self.lm_head = torch.nn.Linear(d_model, vocab)
     def forward(self, input_ids):
-        h = self.model.embed_tokens(input_ids)  # pyright: ignore[reportAttributeAccessIssue,reportCallIssue]
-        for layer in self.model.layers:  # pyright: ignore[reportAttributeAccessIssue,reportGeneralTypeIssues]
+        h = self.model.embed_tokens(input_ids)  # pyright: ignore[reportCallIssue]
+        for layer in self.model.layers:  # pyright: ignore[reportGeneralTypeIssues]
             h = layer(h)[0]
         return type("Out", (), {"logits": self.lm_head(h)})
 
@@ -370,15 +370,15 @@ class _MockLlamaIG(torch.nn.Module):
     def __init__(self, num_layers: int = 2, d_model: int = 4, vocab: int = 10):
         super().__init__()
         self.model = torch.nn.Module()
-        self.model.embed_tokens = torch.nn.Embedding(vocab, d_model)  # pyright: ignore[reportAttributeAccessIssue]
-        self.model.layers = torch.nn.ModuleList(  # pyright: ignore[reportAttributeAccessIssue]
+        self.model.embed_tokens = torch.nn.Embedding(vocab, d_model)
+        self.model.layers = torch.nn.ModuleList(
             [_MockLlamaBlockIG(d_model) for _ in range(num_layers)]
         )
         self.lm_head = torch.nn.Linear(d_model, vocab)
 
     def forward(self, input_ids: torch.Tensor) -> object:
-        h = self.model.embed_tokens(input_ids)  # pyright: ignore[reportAttributeAccessIssue,reportCallIssue]
-        for layer in self.model.layers:  # pyright: ignore[reportAttributeAccessIssue,reportGeneralTypeIssues]
+        h = self.model.embed_tokens(input_ids)  # pyright: ignore[reportCallIssue]
+        for layer in self.model.layers:  # pyright: ignore[reportGeneralTypeIssues]
             h = layer(h)[0]
         return type("Out", (), {"logits": self.lm_head(h)})
 

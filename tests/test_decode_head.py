@@ -38,7 +38,7 @@ class _MockInner(nn.Module):
 class _MockLMHead(nn.Module):
     def __init__(self, vocab: int, hidden: int) -> None:
         super().__init__()
-        self.weight = nn.Parameter(torch.randn(vocab, hidden))  # pyright: ignore[reportPrivateImportUsage]
+        self.weight = nn.Parameter(torch.randn(vocab, hidden))
 
 
 class _MockModel(nn.Module):
@@ -62,7 +62,7 @@ def app_with_mock_session():
 
     mgr = get_manager()
     session_name = "mock-decode-head"
-    mgr._sessions[session_name] = SimpleNamespace(  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+    mgr._sessions[session_name] = SimpleNamespace(  # pyright: ignore[reportArgumentType]
         name=session_name,
         model=_MockModel(),
         tokenizer=_MockTok(),
@@ -74,7 +74,7 @@ def app_with_mock_session():
     try:
         yield (app, session_name)
     finally:
-        mgr._sessions.pop(session_name, None)  # pyright: ignore[reportAttributeAccessIssue]
+        mgr._sessions.pop(session_name, None)
 
 
 class TestDecodeHeadUnit:

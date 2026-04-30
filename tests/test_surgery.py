@@ -691,4 +691,4 @@ class TestLoadModelIntegration:
         assert tokenizer is not None
         # At least one Linear in an attention block should be Linear4bit.
         attn = model.model.layers[0].self_attn
-        assert isinstance(attn.q_proj, bnb.nn.Linear4bit)  # pyright: ignore[reportPrivateImportUsage]
+        assert isinstance(attn.q_proj, bnb.nn.Linear4bit)

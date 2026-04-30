@@ -23,7 +23,7 @@ class _MockTok:
 class _MockDownProj(nn.Module):
     def __init__(self, hidden: int, intermediate: int) -> None:
         super().__init__()
-        self.weight = nn.Parameter(torch.randn(hidden, intermediate))  # pyright: ignore[reportPrivateImportUsage]
+        self.weight = nn.Parameter(torch.randn(hidden, intermediate))
 
 
 class _MockMLP(nn.Module):
@@ -47,7 +47,7 @@ class _MockInner(nn.Module):
 class _MockLMHead(nn.Module):
     def __init__(self, vocab: int, hidden: int) -> None:
         super().__init__()
-        self.weight = nn.Parameter(torch.randn(vocab, hidden))  # pyright: ignore[reportPrivateImportUsage]
+        self.weight = nn.Parameter(torch.randn(vocab, hidden))
 
 
 class _MockModel(nn.Module):
@@ -75,7 +75,7 @@ def app_with_mock_session():
     mock_tok = _MockTok()
     session_name = "mock-decode-neuron"
     # Insert directly into the manager's internal dict.
-    mgr._sessions[session_name] = SimpleNamespace(  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+    mgr._sessions[session_name] = SimpleNamespace(  # pyright: ignore[reportArgumentType]
         name=session_name,
         model=mock_model,
         tokenizer=mock_tok,
@@ -87,7 +87,7 @@ def app_with_mock_session():
     try:
         yield (app, session_name)
     finally:
-        mgr._sessions.pop(session_name, None)  # pyright: ignore[reportAttributeAccessIssue]
+        mgr._sessions.pop(session_name, None)
 
 
 class TestDecodeNeuronUnit:

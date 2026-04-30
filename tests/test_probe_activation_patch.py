@@ -81,7 +81,7 @@ class TestValidation:
             activation_patch(
                 tiny_llama, tokenizer,
                 clean_prompt="word10 word11", corrupted_prompt="word12 word13",
-                direction="wobble",  # pyright: ignore[reportArgumentType]
+                direction="wobble",
             )
 
     def test_bad_sublayer_raises(self, tiny_llama, tokenizer):

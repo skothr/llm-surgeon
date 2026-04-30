@@ -535,7 +535,7 @@ def _build_config(meta: dict):
     # so the stub can't enumerate every accepted parameter. Splat-form keeps
     # the single rule-scoped ignore on one line instead of fanning out across
     # every kwarg.
-    return LlamaConfig(**{  # pyright: ignore[reportCallIssue]
+    return LlamaConfig(**{
         "vocab_size": vocab_size,
         "hidden_size": hidden,
         "intermediate_size": ffn_size,
@@ -588,14 +588,14 @@ def _build_tokenizer(meta: dict):
                 merge_pairs.append(tuple(pair))
         tok = Tokenizer(BPE(vocab=vocab, merges=merge_pairs, unk_token=unk))
     elif scores:
-        tok = Tokenizer(Unigram([(t, s) for t, s in zip(tokens, scores)]))  # pyright: ignore[reportCallIssue]
+        tok = Tokenizer(Unigram([(t, s) for t, s in zip(tokens, scores)]))
     else:
         log.warning("No merges or scores in GGUF metadata; returning None for tokenizer")
         return None
 
     if model_type == "llama":
-        tok.pre_tokenizer = Metaspace(replacement="\u2581", prepend_scheme="first")  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue]
-        tok.decoder = MetaspaceDecoder(replacement="\u2581", prepend_scheme="first")  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue]
+        tok.pre_tokenizer = Metaspace(replacement="\u2581", prepend_scheme="first")
+        tok.decoder = MetaspaceDecoder(replacement="\u2581", prepend_scheme="first")
 
     chat_template = meta.get("tokenizer.chat_template")
 

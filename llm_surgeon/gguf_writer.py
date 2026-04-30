@@ -165,7 +165,7 @@ def export_hf_to_gguf(model, tokenizer, output_path: Path) -> Path:
     gguf.GGUFWriter. Q and K matrices are forward-permuted to match
     the layout llama.cpp expects.
     """
-    import gguf  # pyright: ignore[reportMissingImports]
+    import gguf
 
     output_path = Path(output_path)
     config = model.config

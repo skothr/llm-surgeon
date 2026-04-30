@@ -93,7 +93,7 @@ def app_with_mock_session():
 
     mgr = get_manager()
     session_name = "mock-decode-residual"
-    mgr._sessions[session_name] = SimpleNamespace(  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+    mgr._sessions[session_name] = SimpleNamespace(  # pyright: ignore[reportArgumentType]
         name=session_name,
         model=_MockModel(),
         tokenizer=_MockTokenizer(),
@@ -105,7 +105,7 @@ def app_with_mock_session():
     try:
         yield (app, session_name)
     finally:
-        mgr._sessions.pop(session_name, None)  # pyright: ignore[reportAttributeAccessIssue]
+        mgr._sessions.pop(session_name, None)
 
 
 # ----- Validation tests -----
@@ -122,7 +122,7 @@ class TestDecodeResidualUnit:
     def test_500_no_model(self, app_with_mock_session) -> None:
         from gui.backend.routes.sessions import get_manager  # noqa: PLC0415
         app, name = app_with_mock_session
-        get_manager()._sessions[name].model = None  # pyright: ignore[reportAttributeAccessIssue]
+        get_manager()._sessions[name].model = None
         client = TestClient(app)
         r = client.post(f"/api/sessions/{name}/decode-residual", json={
             "prompt": "the cat sat", "layer": 0, "sublayer": "ffn", "position": 0,
@@ -234,7 +234,7 @@ class TestDecodeResidualTinyLlama:
 
         mgr = get_manager()
         name = "tinyllama-decode-residual-test"
-        mgr._sessions[name] = SimpleNamespace(  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+        mgr._sessions[name] = SimpleNamespace(  # pyright: ignore[reportArgumentType]
             name=name,
             model=model,
             tokenizer=tok,
@@ -263,6 +263,6 @@ class TestDecodeResidualTinyLlama:
             endpoint_top1 = r.json()["top_tokens"][0]["token"]
             assert endpoint_top1 == ref_top1, f"endpoint {endpoint_top1!r} != logit_lens {ref_top1!r}"
         finally:
-            mgr._sessions.pop(name, None)  # pyright: ignore[reportAttributeAccessIssue]
+            mgr._sessions.pop(name, None)
             del model
             torch.cuda.empty_cache()

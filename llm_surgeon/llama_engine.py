@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from llama_cpp import Llama  # pyright: ignore[reportMissingImports]
+    from llama_cpp import Llama
 
 log = logging.getLogger("llm_surgeon.llama_engine")
 
@@ -131,7 +131,7 @@ class LlamaEngine:
         n_gpu_layers: int = -1,
         n_ctx: int = 2048,
     ):
-        from llama_cpp import Llama  # pyright: ignore[reportMissingImports]
+        from llama_cpp import Llama
 
         self._path = Path(gguf_path)
         log.info("Loading GGUF via llama.cpp: %s", self._path.name)

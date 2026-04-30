@@ -567,7 +567,7 @@ def _capture_norm_outputs(
         dataset = "wikitext2"
 
     if text is None:
-        from datasets import load_dataset  # pyright: ignore[reportMissingImports]
+        from datasets import load_dataset
         ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
         available = len(ds["text"])
         if available < num_samples:
@@ -658,22 +658,22 @@ def _quantize_in_place(model, bnb_config):
         bias_data = module.bias.data if module.bias is not None else None
 
         if is_4bit:
-            new_mod = bnb.nn.Linear4bit(  # pyright: ignore[reportPrivateImportUsage]
+            new_mod = bnb.nn.Linear4bit(
                 module.in_features, module.out_features,
                 bias=module.bias is not None,
                 compute_dtype=compute_dtype, quant_type=quant_type,
             )
-            new_mod.weight = bnb.nn.Params4bit(  # pyright: ignore[reportPrivateImportUsage]
+            new_mod.weight = bnb.nn.Params4bit(
                 w, requires_grad=False,
                 quant_type=quant_type,  # pyright: ignore[reportCallIssue]
                 compress_statistics=True,  # pyright: ignore[reportCallIssue]
             )
         else:
-            new_mod = bnb.nn.Linear8bitLt(  # pyright: ignore[reportPrivateImportUsage]
+            new_mod = bnb.nn.Linear8bitLt(
                 module.in_features, module.out_features,
                 bias=module.bias is not None, has_fp16_weights=False,
             )
-            new_mod.weight = bnb.nn.Int8Params(w, requires_grad=False)  # pyright: ignore[reportPrivateImportUsage]
+            new_mod.weight = bnb.nn.Int8Params(w, requires_grad=False)
 
         if bias_data is not None:
             new_mod.bias = nn.Parameter(bias_data)

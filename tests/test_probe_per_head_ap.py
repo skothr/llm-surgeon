@@ -72,15 +72,15 @@ class _MockModel(torch.nn.Module):
     def __init__(self, num_layers: int = 2, d_model: int = 8, vocab: int = 10) -> None:
         super().__init__()
         self.model = torch.nn.Module()
-        self.model.embed_tokens = torch.nn.Embedding(vocab, d_model)  # pyright: ignore[reportAttributeAccessIssue]
-        self.model.layers = torch.nn.ModuleList(  # pyright: ignore[reportAttributeAccessIssue]
+        self.model.embed_tokens = torch.nn.Embedding(vocab, d_model)
+        self.model.layers = torch.nn.ModuleList(
             [_MockLayer(d_model) for _ in range(num_layers)]
         )
         self.lm_head = torch.nn.Linear(d_model, vocab, bias=False)
 
     def forward(self, input_ids: torch.Tensor):  # type: ignore[override]
-        h = self.model.embed_tokens(input_ids)  # pyright: ignore[reportAttributeAccessIssue,reportCallIssue]
-        for layer in self.model.layers:  # pyright: ignore[reportAttributeAccessIssue,reportGeneralTypeIssues]
+        h = self.model.embed_tokens(input_ids)  # pyright: ignore[reportCallIssue]
+        for layer in self.model.layers:  # pyright: ignore[reportGeneralTypeIssues]
             h = layer(h)[0]
         return type("Out", (), {"logits": self.lm_head(h)})()
 
@@ -189,7 +189,7 @@ class TestPerHeadAP:
         # hidden=8, n_heads=2, head_dim=4, num_layers=2
         model = _MockModel(num_layers=2, d_model=8).eval()
         # Teach the model to pretend it has a config.
-        model.config = type("cfg", (), {  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+        model.config = type("cfg", (), {  # pyright: ignore[reportArgumentType]
             "num_attention_heads": 2,
             "hidden_size": 8,
         })()
@@ -258,7 +258,7 @@ class TestPerHeadAP:
         """FFN cells from attribution_patch_per_head match attribution_patch FFN cells."""
         torch.manual_seed(7)
         model = _MockModel(num_layers=2, d_model=8).eval()
-        model.config = type("cfg", (), {  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+        model.config = type("cfg", (), {  # pyright: ignore[reportArgumentType]
             "num_attention_heads": 2,
             "hidden_size": 8,
         })()
@@ -298,7 +298,7 @@ class TestPerHeadAP:
         """L=2, n_heads=2, seq=3, positions=all → 18 cells (2 heads + 1 ffn) × 2 layers × 3 pos."""
         torch.manual_seed(0)
         model = _MockModel(num_layers=2, d_model=8).eval()
-        model.config = type("cfg", (), {  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+        model.config = type("cfg", (), {  # pyright: ignore[reportArgumentType]
             "num_attention_heads": 2,
             "hidden_size": 8,
         })()
@@ -317,7 +317,7 @@ class TestPerHeadAP:
         """on_cell receives correct unit strings: 'attn.h0', 'attn.h1', 'ffn'."""
         torch.manual_seed(0)
         model = _MockModel(num_layers=2, d_model=8).eval()
-        model.config = type("cfg", (), {  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+        model.config = type("cfg", (), {  # pyright: ignore[reportArgumentType]
             "num_attention_heads": 2,
             "hidden_size": 8,
         })()
@@ -339,7 +339,7 @@ class TestPerHeadAP:
         """Noise direction applies 1 + ap_raw/D convention."""
         torch.manual_seed(5)
         model = _MockModel(num_layers=2, d_model=8).eval()
-        model.config = type("cfg", (), {  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+        model.config = type("cfg", (), {  # pyright: ignore[reportArgumentType]
             "num_attention_heads": 2,
             "hidden_size": 8,
         })()
@@ -360,7 +360,7 @@ class TestPerHeadAP:
         """positions=[0,2] yields only those positions."""
         torch.manual_seed(0)
         model = _MockModel(num_layers=2, d_model=8).eval()
-        model.config = type("cfg", (), {  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+        model.config = type("cfg", (), {  # pyright: ignore[reportArgumentType]
             "num_attention_heads": 2,
             "hidden_size": 8,
         })()
@@ -380,7 +380,7 @@ class TestPerHeadAP:
         """Divide-by-zero guard."""
         torch.manual_seed(0)
         model = _MockModel(num_layers=2, d_model=8).eval()
-        model.config = type("cfg", (), {  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+        model.config = type("cfg", (), {  # pyright: ignore[reportArgumentType]
             "num_attention_heads": 2,
             "hidden_size": 8,
         })()
@@ -545,19 +545,19 @@ class _MockModelFull(torch.nn.Module):
     def __init__(self, num_layers: int = 2, d_model: int = 8, vocab: int = 10) -> None:
         super().__init__()
         self.model = torch.nn.Module()
-        self.model.embed_tokens = torch.nn.Embedding(vocab, d_model)  # pyright: ignore[reportAttributeAccessIssue]
-        self.model.layers = torch.nn.ModuleList(  # pyright: ignore[reportAttributeAccessIssue]
+        self.model.embed_tokens = torch.nn.Embedding(vocab, d_model)
+        self.model.layers = torch.nn.ModuleList(
             [_MockLayerFull(d_model) for _ in range(num_layers)]
         )
         self.lm_head = torch.nn.Linear(d_model, vocab, bias=False)
-        self.config = type("cfg", (), {  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+        self.config = type("cfg", (), {  # pyright: ignore[reportArgumentType]
             "num_attention_heads": 2,
             "hidden_size": d_model,
         })()
 
     def forward(self, input_ids: torch.Tensor):  # type: ignore[override]
-        h = self.model.embed_tokens(input_ids)  # pyright: ignore[reportAttributeAccessIssue,reportCallIssue]
-        for layer in self.model.layers:  # pyright: ignore[reportAttributeAccessIssue,reportGeneralTypeIssues]
+        h = self.model.embed_tokens(input_ids)  # pyright: ignore[reportCallIssue]
+        for layer in self.model.layers:  # pyright: ignore[reportGeneralTypeIssues]
             h = layer(h)[0]
         return type("Out", (), {"logits": self.lm_head(h)})()
 

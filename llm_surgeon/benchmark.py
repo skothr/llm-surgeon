@@ -194,7 +194,7 @@ def perplexity(
 
 def _load_dataset_text(name: str, max_samples: int | None = None) -> str:
     """Load and concatenate text from a HuggingFace dataset."""
-    from datasets import load_dataset  # pyright: ignore[reportMissingImports]
+    from datasets import load_dataset
 
     if name == "wikitext2":
         ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
@@ -333,8 +333,8 @@ def _in_process_eval(
     limit: int | None,
 ) -> dict[str, Any]:
     """Run lm_eval.simple_evaluate in-process against an in-memory model."""
-    from lm_eval import simple_evaluate  # pyright: ignore[reportMissingImports]
-    from lm_eval.models.huggingface import HFLM  # pyright: ignore[reportMissingImports]
+    from lm_eval import simple_evaluate
+    from lm_eval.models.huggingface import HFLM
 
     cfg = getattr(model, "config", None)
     if getattr(cfg, "quantization_config", None):

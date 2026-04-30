@@ -3,10 +3,5 @@
   "pythonVersion": "3.12",
   "venvPath": ".",
   "venv": ".venv",
-  "extraPaths": ["."],
-  "reportUnusedImport": "warning",
-  "reportUnusedVariable": "warning",
-  "reportUnusedExpression": "warning",
-  "reportUnusedFunction": "none",
-  "reportUnusedClass": "none"
+  "extraPaths": ["."]
 }

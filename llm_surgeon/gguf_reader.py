@@ -531,18 +531,22 @@ def _build_config(meta: dict):
     rms_eps = meta.get(prefix + "attention.layer_norm_rms_epsilon", 1e-5)
     rope_theta = meta.get(prefix + "rope.freq_base", 10000.0)
 
-    return LlamaConfig(
-        vocab_size=vocab_size,
-        hidden_size=hidden,
-        intermediate_size=ffn_size,
-        num_hidden_layers=n_layers,
-        num_attention_heads=n_heads,
-        num_key_value_heads=n_kv_heads,
-        max_position_embeddings=ctx_len,
-        rms_norm_eps=rms_eps,
-        rope_theta=rope_theta,
-        tie_word_embeddings=False,
-    )
+    # LlamaConfig forwards arbitrary kwargs through PretrainedConfig.__init__,
+    # so the stub can't enumerate every accepted parameter. Splat-form keeps
+    # the single rule-scoped ignore on one line instead of fanning out across
+    # every kwarg.
+    return LlamaConfig(**{  # pyright: ignore[reportCallIssue]
+        "vocab_size": vocab_size,
+        "hidden_size": hidden,
+        "intermediate_size": ffn_size,
+        "num_hidden_layers": n_layers,
+        "num_attention_heads": n_heads,
+        "num_key_value_heads": n_kv_heads,
+        "max_position_embeddings": ctx_len,
+        "rms_norm_eps": rms_eps,
+        "rope_theta": rope_theta,
+        "tie_word_embeddings": False,
+    })
 
 
 def _build_tokenizer(meta: dict):

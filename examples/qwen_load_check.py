@@ -5,6 +5,10 @@ Smallest base model with a released Anthropic NLA checkpoint
 after nf4 quantization.
 """
 
+import os
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TQDM_DISABLE", "1")
+
 import shutil
 import time
 from typing import cast

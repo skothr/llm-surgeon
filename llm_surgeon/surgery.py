@@ -780,10 +780,16 @@ def load_model(
             mode_kwargs["device_map"] = device_map
     elif mode == "bf16":
         mode_kwargs = {"torch_dtype": torch.bfloat16}
+        if device_map is not None:
+            mode_kwargs["device_map"] = device_map
     elif mode == "fp16":
         mode_kwargs = {"torch_dtype": torch.float16}
+        if device_map is not None:
+            mode_kwargs["device_map"] = device_map
     elif mode == "fp32":
         mode_kwargs = {"torch_dtype": torch.float32}
+        if device_map is not None:
+            mode_kwargs["device_map"] = device_map
     elif mode == "fp32-cpu":
         mode_kwargs = {"torch_dtype": torch.float32, "device_map": "cpu"}
     else:

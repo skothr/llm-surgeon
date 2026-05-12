@@ -693,6 +693,8 @@ def load_model(
     mode: str = "nf4",
     *,
     revision: str | None = None,
+    max_memory: dict[int | str, str] | None = None,
+    device_map: str | dict[str, int | str] | None = None,
 ) -> tuple:
     """Load a model and tokenizer.
 
@@ -711,6 +713,15 @@ def load_model(
         revision: Optional HF Hub commit SHA / branch / tag. Pass to pin an
             experiment to an exact model snapshot. Ignored for local paths
             and Ollama IDs.
+        max_memory: Optional accelerate-style budget passed to
+            ``device_map="auto"`` (e.g. ``{0: "5.5GiB", "cpu": "20GiB"}``).
+            Use to force a near-full-fit on a small GPU when the auto-mapper
+            would otherwise dispatch layers to CPU (bnb 4-bit can't span
+            CPU+GPU without ``llm_int8_enable_fp32_cpu_offload``).
+        device_map: Optional override for the device map. Useful when
+            ``"auto"`` would spill bnb-4bit weights to CPU (which bnb
+            refuses) — pass ``{"": 0}`` to force the entire model onto
+            GPU 0 and OOM-fail-fast otherwise.
     """
     mode = _MODE_ALIASES.get(mode, mode)
     if mode not in VALID_MODES:
@@ -756,9 +767,17 @@ def load_model(
             bnb_4bit_compute_dtype=torch.float16,
         )
         mode_kwargs: dict[str, Any] = {"quantization_config": bnb_config, "device_map": "auto"}
+        if max_memory is not None:
+            mode_kwargs["max_memory"] = max_memory
+        if device_map is not None:
+            mode_kwargs["device_map"] = device_map
     elif mode == "int8":
         bnb_config = BitsAndBytesConfig(load_in_8bit=True)
         mode_kwargs = {"quantization_config": bnb_config, "device_map": "auto"}
+        if max_memory is not None:
+            mode_kwargs["max_memory"] = max_memory
+        if device_map is not None:
+            mode_kwargs["device_map"] = device_map
     elif mode == "bf16":
         mode_kwargs = {"torch_dtype": torch.bfloat16}
     elif mode == "fp16":

@@ -1,4 +1,4 @@
-"""Hidden state probing, logit lens, and forward-pass intervention.
+"""Hidden state probing, logit lens, intervention, and NLA verbalization.
 
 Re-exports the public API and the private helpers that tests / GUI
 consume, so ``from llm_surgeon.probe import X`` keeps working
@@ -54,8 +54,15 @@ from llm_surgeon.probe._attribution import (
     edge_attribution_patch,
     extract_circuit,
 )
+from llm_surgeon.probe._nla import (
+    AV_ID as AV_ID,
+    load_av as load_av,
+    load_av_meta as load_av_meta,
+    nla_verbalize as nla_verbalize,
+)
 
 __all__ = [
+    "AV_ID",
     "CompareLogitLensResult",
     "HiddenStates",
     "Intervention",
@@ -72,6 +79,9 @@ __all__ = [
     "extract_hidden_states",
     "intervene",
     "layer_predictions_table",
+    "load_av",
+    "load_av_meta",
     "logit_lens",
+    "nla_verbalize",
     "ops",
 ]

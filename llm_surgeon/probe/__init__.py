@@ -55,9 +55,14 @@ from llm_surgeon.probe._attribution import (
     extract_circuit,
 )
 from llm_surgeon.probe._nla import (
+    AR_ID as AR_ID,
     AV_ID as AV_ID,
+    load_ar as load_ar,
+    load_ar_meta as load_ar_meta,
     load_av as load_av,
     load_av_meta as load_av_meta,
+    nla_reconstruct as nla_reconstruct,
+    nla_score as nla_score,
     nla_verbalize as nla_verbalize,
 )
 

@@ -20,7 +20,7 @@ Create a worktree at `.claude/worktrees/<scope>/` on its own branch
 (via `EnterWorktree`) before doing anything else. `.claude/` is
 gitignored — no .gitignore changes needed.
 
-The only commits permitted directly on the default branch (`master`)
+The only commits permitted directly on the default branch (`main`)
 in the main checkout are **integration commits**: merge commits
 (`gh pr merge`), or convention-establishing changes to CLAUDE.md and
 `.gitignore` itself. Everything else — even one-line typo fixes —
@@ -35,7 +35,7 @@ goes through a worktree.
    files in another session's sibling worktree (inspect read-only with
    `git -C .claude/worktrees/other log` if needed).
 3. Push (`git push -u origin <branch>`) and open a PR (`gh pr create`).
-   Merge to `master` via PR — never edit the main checkout directly.
+   Merge to `main` via PR — never edit the main checkout directly.
 4. After merge, remove the worktree: `git worktree remove
    .claude/worktrees/<scope>` (or `ExitWorktree`).
 

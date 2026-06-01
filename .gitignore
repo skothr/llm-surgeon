@@ -1,13 +1,50 @@
-.venv/
+# Python bytecode / caches
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
+
+# Build / packaging artifacts
 *.egg-info/
 *.egg
 .eggs/
 dist/
 build/
+wheels/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test / coverage / type-check caches
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
-gui/logs/
+.cache/
+.mypy_cache/
+.pyright_cache/
+.ruff_cache/
+
+# Local model cache and experiment outputs (large; never committed)
+.cache/models/
+.cache/outputs/
+*.gguf
+*.safetensors
+*.bin
+
+# SQLite experiment-tracking databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Claude Code worktrees and local agent state
+.claude/
+
+# Editor / OS cruft
+.idea/
+.vscode/
+*.swp
+.DS_Store
+

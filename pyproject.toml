@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "llm-surgeon"
 version = "0.1.0"
-description = "Surgical layer-level manipulation of LLaMA models"
+description = "Surgical layer-level manipulation and interpretability probing of local LLaMA models"
 requires-python = ">=3.10"
 license = "GPL-3.0-only"
 authors = [{ name = "Michael Lannum" }]
@@ -14,6 +14,8 @@ dependencies = [
     "transformers>=4.40",
     "accelerate>=0.27",
     "bitsandbytes>=0.43",
+    "huggingface_hub>=0.20",
+    "numpy>=1.24",
     "requests",
     "pyyaml>=6.0",
     "sentencepiece>=0.1.99",
@@ -31,9 +33,13 @@ eval = [
     "lm_eval>=0.4",
     "datasets>=2.0",
 ]
+gguf = [
+    "llama-cpp-python>=0.2",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
+include = ["llm_surgeon*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -42,3 +48,4 @@ filterwarnings = [
     "ignore:builtin type Swig:DeprecationWarning",
     "ignore:builtin type swig:DeprecationWarning",
 ]
+

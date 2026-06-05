@@ -106,7 +106,7 @@ pytest
 ```
 
 `pyproject.toml` sets `testpaths = ["tests"]` and `pythonpath = ["."]`, so a
-bare `pytest` from the repo root runs the suite (22 test files covering
+bare `pytest` from the repo root runs the suite (17 test files covering
 surgery, export, inspect, recipe, tracking, verify, the GGUF reader, the
 llama engine, and the full probe surface). The suite assumes torch and the
 dev models are available; install with `pip install -e ".[dev]"` first.
@@ -119,3 +119,6 @@ out the library — Phase 1 core surgery through the attribution/circuit and
 logit-lens phases. It is a historical record, not current API documentation;
 the code and its module docstrings are authoritative for the present surface.
 
+## License
+
+GPL-3.0-only. © Michael Lannum. See [`LICENSE`](LICENSE).

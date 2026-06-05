@@ -4,9 +4,9 @@
 >
 > **Tool rules (for subagents):**
 > - Use Read (not cat/head/tail), Grep (not grep/rg/awk), Glob (not find/ls), Edit (not sed/awk) for all file operations
-> - You are already in the project root (/home/ai/ai-projects/llm) — never cd
-> - Python venv: `/home/ai/ai-projects/llm/testing/.venv/bin/python`
-> - Run tests: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/ -v`
+> - You are already in the project root (the repo root) — never cd
+> - Python venv: `python`
+> - Run tests: `python -m pytest tests/ -v`
 
 **Goal:** Build `inspect.py` (Block Influence scores, weight norms, SVD, attention entropy, residual stream norms) and add activation comparison + cached baselines to `verify.py`. These tools help decide *which* layers to cut and measure *where* outputs diverge after surgery.
 
@@ -14,14 +14,14 @@
 
 **Tech Stack:** PyTorch (hooks, SVD, cosine similarity), numpy
 
-**Reference:** `docs/superpowers/specs/2026-04-08-llm-surgeon-design.md` (v2), Phase 4 section of phase plan.
+**Reference:** `docs/design-history/specs/2026-04-08-llm-surgeon-design.md` (v2), Phase 4 section of phase plan.
 
 ---
 
 ## File Map
 
 ```
-testing/
+
   llm_surgeon/
     inspect.py           — CREATE — block_influence, weight_norms, weight_svd, attention_entropy, residual_stream_norms
     verify.py            — MODIFY — add compare_activations, cache_baseline, compare_to_baseline
@@ -35,13 +35,13 @@ testing/
 ### Task 1: Block Influence scores
 
 **Files:**
-- Create: `testing/llm_surgeon/inspect.py`
-- Create: `testing/tests/test_inspect.py`
-- Modify: `testing/llm_surgeon/__init__.py`
+- Create: `llm_surgeon/inspect.py`
+- Create: `tests/test_inspect.py`
+- Modify: `llm_surgeon/__init__.py`
 
 - [ ] **Step 1: Write tests for block_influence**
 
-Create `testing/tests/test_inspect.py`:
+Create `tests/test_inspect.py`:
 
 ```python
 """Tests for inspect module."""
@@ -80,12 +80,12 @@ class TestBlockInfluence:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/test_inspect.py -v`
+Run: `python -m pytest tests/test_inspect.py -v`
 Expected: FAIL — ImportError
 
 - [ ] **Step 3: Implement block_influence**
 
-Create `testing/llm_surgeon/inspect.py`:
+Create `llm_surgeon/inspect.py`:
 
 ```python
 """Model inspection: layer analysis tools for surgery planning."""
@@ -170,13 +170,13 @@ from llm_surgeon import surgery, verify, export, benchmark, inspect
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/test_inspect.py::TestBlockInfluence -v`
+Run: `python -m pytest tests/test_inspect.py::TestBlockInfluence -v`
 Expected: All PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add testing/llm_surgeon/inspect.py testing/tests/test_inspect.py testing/llm_surgeon/__init__.py
+git add llm_surgeon/inspect.py tests/test_inspect.py llm_surgeon/__init__.py
 git commit -m "feat: add block_influence scores for layer importance analysis"
 ```
 
@@ -185,12 +185,12 @@ git commit -m "feat: add block_influence scores for layer importance analysis"
 ### Task 2: Weight analysis (weight_norms, weight_svd)
 
 **Files:**
-- Modify: `testing/llm_surgeon/inspect.py`
-- Modify: `testing/tests/test_inspect.py`
+- Modify: `llm_surgeon/inspect.py`
+- Modify: `tests/test_inspect.py`
 
 - [ ] **Step 1: Write tests**
 
-Add to `testing/tests/test_inspect.py`:
+Add to `tests/test_inspect.py`:
 
 ```python
 from llm_surgeon.inspect import weight_norms, weight_svd
@@ -246,7 +246,7 @@ Expected: FAIL — ImportError
 
 - [ ] **Step 3: Implement weight_norms and weight_svd**
 
-Add to `testing/llm_surgeon/inspect.py`:
+Add to `llm_surgeon/inspect.py`:
 
 ```python
 def weight_norms(model) -> list:
@@ -324,7 +324,7 @@ Expected: All PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add testing/llm_surgeon/inspect.py testing/tests/test_inspect.py
+git add llm_surgeon/inspect.py tests/test_inspect.py
 git commit -m "feat: add weight_norms and weight_svd analysis"
 ```
 
@@ -333,12 +333,12 @@ git commit -m "feat: add weight_norms and weight_svd analysis"
 ### Task 3: Activation analysis (attention_entropy, residual_stream_norms)
 
 **Files:**
-- Modify: `testing/llm_surgeon/inspect.py`
-- Modify: `testing/tests/test_inspect.py`
+- Modify: `llm_surgeon/inspect.py`
+- Modify: `tests/test_inspect.py`
 
 - [ ] **Step 1: Write tests**
 
-Add to `testing/tests/test_inspect.py`:
+Add to `tests/test_inspect.py`:
 
 ```python
 from llm_surgeon.inspect import attention_entropy, residual_stream_norms
@@ -394,7 +394,7 @@ Expected: FAIL — ImportError
 
 - [ ] **Step 3: Implement attention_entropy and residual_stream_norms**
 
-Add to `testing/llm_surgeon/inspect.py`:
+Add to `llm_surgeon/inspect.py`:
 
 ```python
 def attention_entropy(
@@ -487,7 +487,7 @@ Expected: All PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add testing/llm_surgeon/inspect.py testing/tests/test_inspect.py
+git add llm_surgeon/inspect.py tests/test_inspect.py
 git commit -m "feat: add attention_entropy and residual_stream_norms analysis"
 ```
 
@@ -496,12 +496,12 @@ git commit -m "feat: add attention_entropy and residual_stream_norms analysis"
 ### Task 4: Activation comparison + cached baselines (verify.py)
 
 **Files:**
-- Modify: `testing/llm_surgeon/verify.py`
-- Modify: `testing/tests/test_verify.py`
+- Modify: `llm_surgeon/verify.py`
+- Modify: `tests/test_verify.py`
 
 - [ ] **Step 1: Write tests**
 
-Add to `testing/tests/test_verify.py`:
+Add to `tests/test_verify.py`:
 
 ```python
 from tests.conftest import _make_tiny_tokenizer
@@ -602,7 +602,7 @@ Expected: FAIL — ImportError
 
 - [ ] **Step 3: Implement compare_activations, cache_baseline, compare_to_baseline**
 
-Add to `testing/llm_surgeon/verify.py`:
+Add to `llm_surgeon/verify.py`:
 
 ```python
 import os
@@ -756,13 +756,13 @@ Expected: All PASS.
 
 - [ ] **Step 5: Run full test suite**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/ -v`
+Run: `python -m pytest tests/ -v`
 Expected: All prior tests + new tests PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add testing/llm_surgeon/verify.py testing/tests/test_verify.py
+git add llm_surgeon/verify.py tests/test_verify.py
 git commit -m "feat: add activation comparison and cached baselines to verify.py"
 ```
 
@@ -771,7 +771,7 @@ git commit -m "feat: add activation comparison and cached baselines to verify.py
 ## Final State
 
 ```
-testing/
+
   llm_surgeon/
     __init__.py          — imports surgery, verify, export, benchmark, inspect
     surgery.py           — (Phase 1)

@@ -1,4 +1,4 @@
-"""Root conftest.py: ensure the testing/ directory is on sys.path."""
+"""Root conftest.py: ensure the repo root is on sys.path."""
 import sys
 import os
 

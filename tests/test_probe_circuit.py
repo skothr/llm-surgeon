@@ -451,7 +451,7 @@ def _tinyllama_cached() -> bool:
     env_cache = os.environ.get("TINYLLAMA_CACHE")
     if env_cache:
         return Path(env_cache).exists()
-    default = Path("testing/.cache/models/models--TinyLlama--TinyLlama-1.1B-Chat-v1.0")
+    default = Path(".cache/models/models--TinyLlama--TinyLlama-1.1B-Chat-v1.0")
     return default.exists()
 
 

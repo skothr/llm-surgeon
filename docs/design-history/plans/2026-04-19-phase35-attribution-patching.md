@@ -8,9 +8,9 @@
 
 **Tech Stack:** Python 3.11, PyTorch (autograd), transformers (HF LLaMA), FastAPI WebSockets, React + TypeScript + Zustand, d3, pytest (Python), Playwright (frontend E2E).
 
-**Spec:** `testing/docs/superpowers/specs/2026-04-19-phase35-attribution-patching-design.md` (commit `38b0461`).
+**Spec:** `docs/design-history/specs/2026-04-19-phase35-attribution-patching-design.md` (commit `38b0461`).
 
-**Cwd for tool invocations:** `/home/ai/ai-projects/llm`. The pyright CLI must be run from `testing/` (see CLAUDE.md § Type Checking).
+**Cwd for tool invocations:** `.`. The pyright CLI must be run from the repo root (see CLAUDE.md § Type Checking).
 
 ---
 
@@ -20,9 +20,9 @@
 - For git ops outside the repo root, use `git -C <path>` rather than `cd`.
 - Avoid unnecessary compound commands. Avoid chaining that would trigger a permission prompt.
 - **GPU tests:** any Bash call that runs pytest touching CUDA must be invoked with `dangerouslyDisableSandbox: true`. If a subagent cannot get that permission granted, surface a BLOCKED status — the controller will run the test directly.
-- Pyright CLI: run from `testing/` cwd. Command: `.venv/bin/python -m pyright <paths>`.
-- Frontend tsc: run from `testing/gui/frontend/`. Command: `./node_modules/.bin/tsc --noEmit`.
-- Playwright: run from `testing/gui/frontend/`. Command: `npm run e2e`.
+- Pyright CLI: run from the repo root cwd. Command: `.venv/bin/python -m pyright <paths>`.
+- Frontend tsc: run from `gui/frontend/`. Command: `./node_modules/.bin/tsc --noEmit`.
+- Playwright: run from `gui/frontend/`. Command: `npm run e2e`.
 - Zero-diagnostics discipline: every commit must land with pyright 0/0/0 and tsc clean.
 - **Model selection for subagent dispatch:** sonnet or opus only. Never haiku.
 
@@ -31,17 +31,17 @@
 ## File Structure
 
 ### New files
-- `testing/tests/test_probe_attribution_patch.py` — unit + TinyLlama correlation integration.
-- `testing/gui/frontend/tests/e2e/fixtures/activation-patching-approx.json` — mock AP-approx result for Playwright.
+- `tests/test_probe_attribution_patch.py` — unit + TinyLlama correlation integration.
+- `gui/frontend/tests/e2e/fixtures/activation-patching-approx.json` — mock AP-approx result for Playwright.
 
 ### Modified files
-- `testing/llm_surgeon/probe.py` — **+** `attribution_patch()`, `_capture_residual_stream_with_grad()`, `mode` field on `PatchingResult`.
-- `testing/gui/backend/routes/probes.py` — **~** `/activation-patching` WS handler gains `cfg.mode` branch + `ap_recovery` frame emission.
-- `testing/gui/frontend/src/types/api.ts` — **~** `PatchingCellData.ap_recovery?`, `PatchingCompleteData.summary.mode`.
-- `testing/gui/frontend/src/components/PatchingControls.tsx` — **~** mode radio + `PatchingState.mode`.
-- `testing/gui/frontend/src/components/ProbePanel.tsx` — **~** forward `mode` in cfg payload.
-- `testing/gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx` — **~** mode-branch rendering.
-- `testing/gui/frontend/tests/e2e/smoke.spec.ts` — **+** one approx-mode test.
+- `llm_surgeon/probe.py` — **+** `attribution_patch()`, `_capture_residual_stream_with_grad()`, `mode` field on `PatchingResult`.
+- `gui/backend/routes/probes.py` — **~** `/activation-patching` WS handler gains `cfg.mode` branch + `ap_recovery` frame emission.
+- `gui/frontend/src/types/api.ts` — **~** `PatchingCellData.ap_recovery?`, `PatchingCompleteData.summary.mode`.
+- `gui/frontend/src/components/PatchingControls.tsx` — **~** mode radio + `PatchingState.mode`.
+- `gui/frontend/src/components/ProbePanel.tsx` — **~** forward `mode` in cfg payload.
+- `gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx` — **~** mode-branch rendering.
+- `gui/frontend/tests/e2e/smoke.spec.ts` — **+** one approx-mode test.
 - `/home/skothr/.claude/projects/-home-ai-ai-projects-llm/memory/project_llm_surgeon_roadmap.md` — append "Phase 3.5 shipped" entry.
 
 ---
@@ -51,12 +51,12 @@
 **Why first:** every subsequent task references `PatchingResult.mode`; adding it with default `"exact"` preserves all Phase 3 call sites without a churn commit.
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py` (the existing `PatchingResult` dataclass near the activation-patching block)
-- Modify: `testing/tests/test_probe_activation_patch.py` (add a dataclass-default assertion)
+- Modify: `llm_surgeon/probe.py` (the existing `PatchingResult` dataclass near the activation-patching block)
+- Modify: `tests/test_probe_activation_patch.py` (add a dataclass-default assertion)
 
 - [ ] **Step 1: Write failing test**
 
-Append to `testing/tests/test_probe_activation_patch.py` (in the existing `TestPatchingResult` class — grep for it):
+Append to `tests/test_probe_activation_patch.py` (in the existing `TestPatchingResult` class — grep for it):
 
 ```python
     def test_mode_defaults_to_exact(self):
@@ -77,14 +77,14 @@ Append to `testing/tests/test_probe_activation_patch.py` (in the existing `TestP
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_activation_patch.py::TestPatchingResult::test_mode_defaults_to_exact -v
+cd . && .venv/bin/python -m pytest tests/test_probe_activation_patch.py::TestPatchingResult::test_mode_defaults_to_exact -v
 ```
 
 Expected: FAIL with `TypeError: PatchingResult.__init__() got unexpected ...` or `AttributeError: ... has no attribute 'mode'`.
 
 - [ ] **Step 3: Add field to dataclass**
 
-Edit the `PatchingResult` dataclass in `testing/llm_surgeon/probe.py` (near line ~716). Add a final field **with default** so call sites that construct it positionally don't break:
+Edit the `PatchingResult` dataclass in `llm_surgeon/probe.py` (near line ~716). Add a final field **with default** so call sites that construct it positionally don't break:
 
 ```python
 @dataclass
@@ -102,7 +102,7 @@ class PatchingResult:
 - [ ] **Step 4: Run test to verify it passes + existing tests unaffected**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_activation_patch.py -v
+cd . && .venv/bin/python -m pytest tests/test_probe_activation_patch.py -v
 ```
 
 Expected: all existing `TestPatchingResult` + `TestValidation` + `TestMakePositionPatch` + `TestActivationPatchLoop` tests PASS, plus the new `test_mode_defaults_to_exact` PASS.
@@ -110,7 +110,7 @@ Expected: all existing `TestPatchingResult` + `TestValidation` + `TestMakePositi
 - [ ] **Step 5: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_activation_patch.py
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_activation_patch.py
 ```
 
 Expected: `0 errors, 0 warnings, 0 informations`.
@@ -118,8 +118,8 @@ Expected: `0 errors, 0 warnings, 0 informations`.
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py testing/tests/test_probe_activation_patch.py
-git -C /home/ai/ai-projects/llm commit -m "feat(probe): PatchingResult.mode field defaults to 'exact'"
+git add llm_surgeon/probe.py tests/test_probe_activation_patch.py
+git commit -m "feat(probe): PatchingResult.mode field defaults to 'exact'"
 ```
 
 ---
@@ -129,12 +129,12 @@ git -C /home/ai/ai-projects/llm commit -m "feat(probe): PatchingResult.mode fiel
 **Why:** `_capture_residual_stream` uses `.detach()` which severs autograd. AP needs the captured tensors to keep their computation graph so we can call `.backward()` through the metric and read `.grad` off each captured tensor.
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py` (add new helper near the existing capture helper)
-- Modify: `testing/tests/test_probe_attribution_patch.py` — **new file** — start it with this task.
+- Modify: `llm_surgeon/probe.py` (add new helper near the existing capture helper)
+- Modify: `tests/test_probe_attribution_patch.py` — **new file** — start it with this task.
 
 - [ ] **Step 1: Write failing test**
 
-Create `testing/tests/test_probe_attribution_patch.py`:
+Create `tests/test_probe_attribution_patch.py`:
 
 ```python
 """Tests for probe.attribution_patch — gradient-based AP (Phase 3.5)."""
@@ -243,14 +243,14 @@ class TestCaptureWithGrad:
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py::TestCaptureWithGrad -v
+cd . && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py::TestCaptureWithGrad -v
 ```
 
 Expected: FAIL with `ImportError: cannot import name '_capture_residual_stream_with_grad'`.
 
 - [ ] **Step 3: Implement the helper**
 
-Add to `testing/llm_surgeon/probe.py` (immediately after `_capture_residual_stream`):
+Add to `llm_surgeon/probe.py` (immediately after `_capture_residual_stream`):
 
 ```python
 def _capture_residual_stream_with_grad(
@@ -327,7 +327,7 @@ Note: NO `torch.no_grad()` inside — caller controls grad context. No `.detach(
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py::TestCaptureWithGrad -v
+cd . && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py::TestCaptureWithGrad -v
 ```
 
 Expected: both tests PASS.
@@ -335,7 +335,7 @@ Expected: both tests PASS.
 - [ ] **Step 5: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_attribution_patch.py
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_attribution_patch.py
 ```
 
 Expected: `0 errors, 0 warnings, 0 informations`. If pyright flags the new helper as unused — it IS called by the test — then leave the suppression off; the test import makes it referenced.
@@ -343,8 +343,8 @@ Expected: `0 errors, 0 warnings, 0 informations`. If pyright flags the new helpe
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py testing/tests/test_probe_attribution_patch.py
-git -C /home/ai/ai-projects/llm commit -m "feat(probe): _capture_residual_stream_with_grad helper for AP"
+git add llm_surgeon/probe.py tests/test_probe_attribution_patch.py
+git commit -m "feat(probe): _capture_residual_stream_with_grad helper for AP"
 ```
 
 ---
@@ -354,12 +354,12 @@ git -C /home/ai/ai-projects/llm commit -m "feat(probe): _capture_residual_stream
 **Why:** lock in the public contract and error shapes before the core algorithm lands. Mirror the `activation_patch` validation pattern for parity.
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py` (append `attribution_patch` scaffold after `activation_patch`)
-- Modify: `testing/tests/test_probe_attribution_patch.py`
+- Modify: `llm_surgeon/probe.py` (append `attribution_patch` scaffold after `activation_patch`)
+- Modify: `tests/test_probe_attribution_patch.py`
 
 - [ ] **Step 1: Write failing validation tests**
 
-Append to `testing/tests/test_probe_attribution_patch.py`:
+Append to `tests/test_probe_attribution_patch.py`:
 
 ```python
 from llm_surgeon.probe import attribution_patch
@@ -411,14 +411,14 @@ class TestValidation:
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py::TestValidation -v
+cd . && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py::TestValidation -v
 ```
 
 Expected: FAIL — `ImportError: cannot import name 'attribution_patch'`.
 
 - [ ] **Step 3: Implement the scaffold**
 
-Append to `testing/llm_surgeon/probe.py` (after the existing `activation_patch` function):
+Append to `llm_surgeon/probe.py` (after the existing `activation_patch` function):
 
 ```python
 def attribution_patch(
@@ -464,7 +464,7 @@ def attribution_patch(
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py::TestValidation -v
+cd . && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py::TestValidation -v
 ```
 
 Expected: all 4 tests PASS.
@@ -472,7 +472,7 @@ Expected: all 4 tests PASS.
 - [ ] **Step 5: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_attribution_patch.py
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_attribution_patch.py
 ```
 
 Expected: `0/0/0`.
@@ -480,8 +480,8 @@ Expected: `0/0/0`.
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py testing/tests/test_probe_attribution_patch.py
-git -C /home/ai/ai-projects/llm commit -m "feat(probe): attribution_patch signature + validation"
+git add llm_surgeon/probe.py tests/test_probe_attribution_patch.py
+git commit -m "feat(probe): attribution_patch signature + validation"
 ```
 
 ---
@@ -491,12 +491,12 @@ git -C /home/ai/ai-projects/llm commit -m "feat(probe): attribution_patch signat
 **Why:** the real work. Replace the `NotImplementedError` scaffold with the full forward+backward+per-cell computation.
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py`
-- Modify: `testing/tests/test_probe_attribution_patch.py`
+- Modify: `llm_surgeon/probe.py`
+- Modify: `tests/test_probe_attribution_patch.py`
 
 - [ ] **Step 1: Write failing test — denoise direction on a mock model**
 
-Append to `testing/tests/test_probe_attribution_patch.py`:
+Append to `tests/test_probe_attribution_patch.py`:
 
 ```python
 class _MockLlamaBlock(torch.nn.Module):
@@ -625,14 +625,14 @@ class TestAttributionPatchLoop:
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py::TestAttributionPatchLoop -v
+cd . && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py::TestAttributionPatchLoop -v
 ```
 
 Expected: FAIL with `NotImplementedError`.
 
 - [ ] **Step 3: Replace scaffold with full algorithm**
 
-Edit `testing/llm_surgeon/probe.py` — replace the entire `attribution_patch` body (keeping the validation at the top) with:
+Edit `llm_surgeon/probe.py` — replace the entire `attribution_patch` body (keeping the validation at the top) with:
 
 ```python
 def attribution_patch(
@@ -788,7 +788,7 @@ def attribution_patch(
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py -v
+cd . && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py -v
 ```
 
 Expected: all 5 tests in `TestAttributionPatchLoop` PASS plus the earlier `TestCaptureWithGrad` + `TestValidation`.
@@ -796,7 +796,7 @@ Expected: all 5 tests in `TestAttributionPatchLoop` PASS plus the earlier `TestC
 - [ ] **Step 5: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_attribution_patch.py
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_attribution_patch.py
 ```
 
 Expected: `0/0/0`. If pyright flags `positions = [p if p >= 0 else seq_len + p for p in positions]` as a reassignment-with-narrower-type, use `normalized_positions: List[int] = [...]`.
@@ -804,8 +804,8 @@ Expected: `0/0/0`. If pyright flags `positions = [p if p >= 0 else seq_len + p f
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py testing/tests/test_probe_attribution_patch.py
-git -C /home/ai/ai-projects/llm commit -m "feat(probe): attribution_patch core algorithm"
+git add llm_surgeon/probe.py tests/test_probe_attribution_patch.py
+git commit -m "feat(probe): attribution_patch core algorithm"
 ```
 
 ---
@@ -815,11 +815,11 @@ git -C /home/ai/ai-projects/llm commit -m "feat(probe): attribution_patch core a
 **Why:** the load-bearing test of correctness. Confirms the gradient approximation actually tracks exact AP on a real model.
 
 **Files:**
-- Modify: `testing/tests/test_probe_attribution_patch.py`
+- Modify: `tests/test_probe_attribution_patch.py`
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `testing/tests/test_probe_attribution_patch.py`:
+Append to `tests/test_probe_attribution_patch.py`:
 
 ```python
 class TestApproxVsExactCorrelates:
@@ -897,7 +897,7 @@ class TestApproxVsExactCorrelates:
 - [ ] **Step 2: Run the test (requires GPU + TinyLlama)**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py::TestApproxVsExactCorrelates -v -s
+cd . && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py::TestApproxVsExactCorrelates -v -s
 ```
 
 This call **must** be run with `dangerouslyDisableSandbox: true`. Expected: test runs in ~60–120 s, prints Spearman correlation, passes with rho ≥ 0.5.
@@ -909,7 +909,7 @@ This call **must** be run with `dangerouslyDisableSandbox: true`. Expected: test
 - [ ] **Step 3: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright tests/test_probe_attribution_patch.py
+cd . && .venv/bin/python -m pyright tests/test_probe_attribution_patch.py
 ```
 
 Expected: `0/0/0`.
@@ -917,8 +917,8 @@ Expected: `0/0/0`.
 - [ ] **Step 4: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/tests/test_probe_attribution_patch.py
-git -C /home/ai/ai-projects/llm commit -m "test(probe): TinyLlama Spearman correlation exact vs approx AP"
+git add tests/test_probe_attribution_patch.py
+git commit -m "test(probe): TinyLlama Spearman correlation exact vs approx AP"
 ```
 
 ---
@@ -926,7 +926,7 @@ git -C /home/ai/ai-projects/llm commit -m "test(probe): TinyLlama Spearman corre
 ## Task 6: Extend WS route with `cfg.mode` branch
 
 **Files:**
-- Modify: `testing/gui/backend/routes/probes.py`
+- Modify: `gui/backend/routes/probes.py`
 
 - [ ] **Step 1: Read the existing `/activation-patching` handler**
 
@@ -991,7 +991,7 @@ await ws.send_json({
 - [ ] **Step 3: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright gui/backend/routes/probes.py
+cd . && .venv/bin/python -m pyright gui/backend/routes/probes.py
 ```
 
 Expected: `0/0/0`.
@@ -999,8 +999,8 @@ Expected: `0/0/0`.
 - [ ] **Step 4: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/backend/routes/probes.py
-git -C /home/ai/ai-projects/llm commit -m "feat(gui/backend): AP approx mode branch + ap_recovery frames"
+git add gui/backend/routes/probes.py
+git commit -m "feat(gui/backend): AP approx mode branch + ap_recovery frames"
 ```
 
 No test in this step — WS-level E2E testing is not part of this phase (see spec §8). The integration is exercised by the Playwright test in Task 9 using a mocked fixture.
@@ -1010,7 +1010,7 @@ No test in this step — WS-level E2E testing is not part of this phase (see spe
 ## Task 7: Extend frontend types
 
 **Files:**
-- Modify: `testing/gui/frontend/src/types/api.ts`
+- Modify: `gui/frontend/src/types/api.ts`
 
 - [ ] **Step 1: Extend `PatchingCellData` + `PatchingCompleteData`**
 
@@ -1041,7 +1041,7 @@ export interface PatchingCompleteData {
 - [ ] **Step 2: Type-check**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 Expected: clean. If making `patched_logits` optional triggers errors in `ActivationPatchingHeatmap.tsx` where it's currently accessed directly, **that's expected** — Task 9 will address it. You may need to add a narrow `if (m.patched_logits) { ... }` guard as a temporary patch to keep tsc green for this commit, then refactor in Task 9.
@@ -1051,8 +1051,8 @@ Actually, simpler: change the access path in `ActivationPatchingHeatmap.tsx` fro
 - [ ] **Step 3: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/types/api.ts testing/gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx
-git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): AP frame types for approx mode"
+git add gui/frontend/src/types/api.ts gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx
+git commit -m "feat(gui/frontend): AP frame types for approx mode"
 ```
 
 ---
@@ -1060,8 +1060,8 @@ git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): AP frame types fo
 ## Task 8: Add mode radio to `PatchingControls` + forward in cfg
 
 **Files:**
-- Modify: `testing/gui/frontend/src/components/PatchingControls.tsx`
-- Modify: `testing/gui/frontend/src/components/ProbePanel.tsx`
+- Modify: `gui/frontend/src/components/PatchingControls.tsx`
+- Modify: `gui/frontend/src/components/ProbePanel.tsx`
 
 - [ ] **Step 1: Extend `PatchingState` + `DEFAULT_PATCHING_STATE`**
 
@@ -1128,13 +1128,13 @@ const cfg = {
 - [ ] **Step 4: tsc + Playwright smoke**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 Expected: clean.
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npm run e2e -- --grep "activation-patching"
+cd ./gui/frontend && npm run e2e -- --grep "activation-patching"
 ```
 
 Expected: existing 1 AP test passes (mode radio doesn't break Phase 3 flow; defaults preserve exact behavior).
@@ -1144,10 +1144,10 @@ Expected: existing 1 AP test passes (mode radio doesn't break Phase 3 flow; defa
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add \
-  testing/gui/frontend/src/components/PatchingControls.tsx \
-  testing/gui/frontend/src/components/ProbePanel.tsx
-git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): PatchingControls mode radio"
+git add \
+  gui/frontend/src/components/PatchingControls.tsx \
+  gui/frontend/src/components/ProbePanel.tsx
+git commit -m "feat(gui/frontend): PatchingControls mode radio"
 ```
 
 ---
@@ -1155,7 +1155,7 @@ git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): PatchingControls 
 ## Task 9: Mode-branch in `ActivationPatchingHeatmap`
 
 **Files:**
-- Modify: `testing/gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx`
+- Modify: `gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx`
 
 - [ ] **Step 1: Read current heatmap**
 
@@ -1256,7 +1256,7 @@ And update `PinnedCard` to render the caveat when `mode === "approx"`:
 - [ ] **Step 3: tsc clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 Expected: clean.
@@ -1264,8 +1264,8 @@ Expected: clean.
 - [ ] **Step 4: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx
-git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): AP heatmap mode-branch rendering"
+git add gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx
+git commit -m "feat(gui/frontend): AP heatmap mode-branch rendering"
 ```
 
 ---
@@ -1273,12 +1273,12 @@ git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): AP heatmap mode-b
 ## Task 10: Playwright smoke test for approx mode
 
 **Files:**
-- Create: `testing/gui/frontend/tests/e2e/fixtures/activation-patching-approx.json`
-- Modify: `testing/gui/frontend/tests/e2e/smoke.spec.ts`
+- Create: `gui/frontend/tests/e2e/fixtures/activation-patching-approx.json`
+- Modify: `gui/frontend/tests/e2e/smoke.spec.ts`
 
 - [ ] **Step 1: Create the approx fixture**
 
-Read `testing/gui/frontend/tests/e2e/fixtures/activation-patching.json` first for structure. Then create the approx sibling — same shape but cells use `ap_recovery` and the complete frame has `mode: "approx"`:
+Read `gui/frontend/tests/e2e/fixtures/activation-patching.json` first for structure. Then create the approx sibling — same shape but cells use `ap_recovery` and the complete frame has `mode: "approx"`:
 
 ```json
 {
@@ -1328,7 +1328,7 @@ Read `testing/gui/frontend/tests/e2e/fixtures/activation-patching.json` first fo
 
 - [ ] **Step 2: Write the failing Playwright test**
 
-Append to `testing/gui/frontend/tests/e2e/smoke.spec.ts`:
+Append to `gui/frontend/tests/e2e/smoke.spec.ts`:
 
 ```typescript
 const AP_APPROX_FIXTURE_PATH = path.join(__dirname, "fixtures", "activation-patching-approx.json");
@@ -1366,7 +1366,7 @@ test("attribution-patching heatmap renders without metric dropdown", async ({ pa
 - [ ] **Step 3: Run Playwright**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npm run e2e
+cd ./gui/frontend && npm run e2e
 ```
 
 Invoke with `dangerouslyDisableSandbox: true`. Expected: 11/11 tests pass (10 existing + 1 new).
@@ -1374,10 +1374,10 @@ Invoke with `dangerouslyDisableSandbox: true`. Expected: 11/11 tests pass (10 ex
 - [ ] **Step 4: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add \
-  testing/gui/frontend/tests/e2e/fixtures/activation-patching-approx.json \
-  testing/gui/frontend/tests/e2e/smoke.spec.ts
-git -C /home/ai/ai-projects/llm commit -m "test(gui/frontend): Playwright smoke for AP approx heatmap"
+git add \
+  gui/frontend/tests/e2e/fixtures/activation-patching-approx.json \
+  gui/frontend/tests/e2e/smoke.spec.ts
+git commit -m "test(gui/frontend): Playwright smoke for AP approx heatmap"
 ```
 
 ---
@@ -1389,10 +1389,10 @@ git -C /home/ai/ai-projects/llm commit -m "test(gui/frontend): Playwright smoke 
 Run in parallel where possible:
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py tests/test_probe_activation_patch.py -v
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py gui/backend/routes/probes.py tests/test_probe_attribution_patch.py tests/test_probe_activation_patch.py
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npm run e2e
+cd . && .venv/bin/python -m pytest tests/test_probe_attribution_patch.py tests/test_probe_activation_patch.py -v
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py gui/backend/routes/probes.py tests/test_probe_attribution_patch.py tests/test_probe_activation_patch.py
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && npm run e2e
 ```
 
 All must be green. GPU test (Task 5) + Playwright require `dangerouslyDisableSandbox: true`.

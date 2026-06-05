@@ -118,7 +118,7 @@ Mirrors `benchmark.perplexity()`: emit `warnings.warn(...)` if `getattr(model, "
 
 ## 3. WS route: `/sessions/{name}/activation-patching`
 
-Append new handler to `testing/gui/backend/routes/probes.py` using the same pattern as `/logit-lens`: `ws.accept()` → read config → `ensure_pytorch` → `async with info.lock` wrapping `loop.run_in_executor`.
+Append new handler to `gui/backend/routes/probes.py` using the same pattern as `/logit-lens`: `ws.accept()` → read config → `ensure_pytorch` → `async with info.lock` wrapping `loop.run_in_executor`.
 
 ### Config (client → server, first JSON frame)
 
@@ -167,7 +167,7 @@ TinyLlama vocab = 32k × f32 = 128 KB per cell. 22 layers × 2 sublayers × 10 p
 
 ## 4. Frontend: `PatchingControls.tsx`
 
-**File:** `testing/gui/frontend/src/components/PatchingControls.tsx` (new, ~180 LOC).
+**File:** `gui/frontend/src/components/PatchingControls.tsx` (new, ~180 LOC).
 
 Conditional form rendered by `ProbePanel` when `operation === "activation-patching"`. Owns patching-only state. Does **not** own the Run button or Stop/Cancel — those remain in `ProbePanel`.
 
@@ -242,7 +242,7 @@ if (operation === "activation-patching") {
 
 ## 5. Frontend: `ActivationPatchingHeatmap.tsx`
 
-**File:** `testing/gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx` (new, ~300 LOC). Template: `LogitLensHeatmap.tsx`.
+**File:** `gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx` (new, ~300 LOC). Template: `LogitLensHeatmap.tsx`.
 
 ### Inputs
 
@@ -269,7 +269,7 @@ A `ProbeResult` where `operation === "activation-patching"`. `result.data` is:
 
 ### Client-side metric utilities
 
-**New file:** `testing/gui/frontend/src/utils/patchingMetrics.ts`.
+**New file:** `gui/frontend/src/utils/patchingMetrics.ts`.
 
 ```typescript
 export function decodeLogits(b64: EncodedTensor): Float32Array
@@ -309,7 +309,7 @@ Does **not** show hidden-state bar strip or PCA — we don't stream hidden state
 
 ## 6. Data types + store wiring
 
-### `testing/gui/frontend/src/types/api.ts`
+### `gui/frontend/src/types/api.ts`
 
 ```typescript
 export type ProbeOperation =
@@ -370,7 +370,7 @@ Extend the op-to-component switch to route `activation-patching` results to `Act
 
 Unit + one real-TinyLlama integration, per Q8 (matches Phase 2).
 
-### New Python test file: `testing/tests/test_probe_activation_patch.py`
+### New Python test file: `tests/test_probe_activation_patch.py`
 
 | Test class / test | Covers |
 |---|---|
@@ -390,7 +390,7 @@ Unit + one real-TinyLlama integration, per Q8 (matches Phase 2).
 
 Integration test gated by `@pytest.mark.skipif` on missing TinyLlama, same pattern as existing fixtures. Expected runtime: ~10–30 s on RTX 2080. Must be run with `dangerouslyDisableSandbox: true` (GPU access).
 
-### Frontend unit tests: `testing/gui/frontend/tests/unit/patchingMetrics.test.ts` (Vitest)
+### Frontend unit tests: `gui/frontend/tests/unit/patchingMetrics.test.ts` (Vitest)
 
 | Suite | Tests |
 |---|---|
@@ -401,7 +401,7 @@ Integration test gated by `@pytest.mark.skipif` on missing TinyLlama, same patte
 
 ### Playwright smoke suite extension
 
-Add one test to `testing/gui/frontend/tests/e2e/smoke.spec.ts`:
+Add one test to `gui/frontend/tests/e2e/smoke.spec.ts`:
 - Seeds a mock `activation-patching` result via experiment-import using an extended fixture JSON.
 - Asserts the heatmap SVG renders with expected row/col counts.
 - Switches metric dropdown through all four options, asserts no console errors (using the existing `isBackendlessNoise()` filter).
@@ -442,17 +442,17 @@ Before commit: pyright 0/0/0 and tsc clean. Before merge: Playwright 10/10 (9 ex
 
 | File | Change |
 |---|---|
-| `testing/llm_surgeon/probe.py` | **+** `activation_patch()`, `PatchingResult`, `_make_position_patch()` |
-| `testing/gui/backend/routes/probes.py` | **+** `/sessions/{name}/activation-patching` WS handler |
-| `testing/gui/frontend/src/types/api.ts` | **+** `ProbeOperation` extension, `PatchingBaselines/Cell/CompleteData`, `WsMessage` union entries |
-| `testing/gui/frontend/src/components/PatchingControls.tsx` | **new** — conditional patching form |
-| `testing/gui/frontend/src/components/ProbePanel.tsx` | **+** op option, conditional render of `PatchingControls`, `handleRun` branch, disable fan-out/A-B for AP |
-| `testing/gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx` | **new** — heatmap with metric selector + pin card |
-| `testing/gui/frontend/src/components/VisualizationArea.tsx` | **+** op → component dispatch entry |
-| `testing/gui/frontend/src/utils/patchingMetrics.ts` | **new** — pure-function metric helpers |
-| `testing/tests/test_probe_activation_patch.py` | **new** — unit + integration tests |
-| `testing/gui/frontend/tests/unit/patchingMetrics.test.ts` | **new** — frontend metric-fn tests |
-| `testing/gui/frontend/tests/e2e/smoke.spec.ts` | **+** one mock-fixture heatmap-render test |
-| `testing/gui/frontend/tests/e2e/fixtures/sample.json` | **+** or sibling — patching-result fixture |
+| `llm_surgeon/probe.py` | **+** `activation_patch()`, `PatchingResult`, `_make_position_patch()` |
+| `gui/backend/routes/probes.py` | **+** `/sessions/{name}/activation-patching` WS handler |
+| `gui/frontend/src/types/api.ts` | **+** `ProbeOperation` extension, `PatchingBaselines/Cell/CompleteData`, `WsMessage` union entries |
+| `gui/frontend/src/components/PatchingControls.tsx` | **new** — conditional patching form |
+| `gui/frontend/src/components/ProbePanel.tsx` | **+** op option, conditional render of `PatchingControls`, `handleRun` branch, disable fan-out/A-B for AP |
+| `gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx` | **new** — heatmap with metric selector + pin card |
+| `gui/frontend/src/components/VisualizationArea.tsx` | **+** op → component dispatch entry |
+| `gui/frontend/src/utils/patchingMetrics.ts` | **new** — pure-function metric helpers |
+| `tests/test_probe_activation_patch.py` | **new** — unit + integration tests |
+| `gui/frontend/tests/unit/patchingMetrics.test.ts` | **new** — frontend metric-fn tests |
+| `gui/frontend/tests/e2e/smoke.spec.ts` | **+** one mock-fixture heatmap-render test |
+| `gui/frontend/tests/e2e/fixtures/sample.json` | **+** or sibling — patching-result fixture |
 
 Roadmap memory update happens in the last plan task (same pattern as Phases 1 & 2).

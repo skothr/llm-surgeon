@@ -8,11 +8,11 @@
 
 **Tech Stack:** Python 3.11 + PyTorch + transformers + FastAPI WebSockets + React 18 + TypeScript + Zustand (existing). New deps: none.
 
-**Spec:** `testing/docs/superpowers/specs/2026-04-23-phase38-circuit-extraction.md` (commit `4650f84`).
+**Spec:** `docs/design-history/specs/2026-04-23-phase38-circuit-extraction.md` (commit `4650f84`).
 
 **Tool rules (for every subagent prompt):**
 - Use Read (not cat), Edit (not Bash(sed/awk/cat)), Grep (not Bash(grep/rg/awk)), Glob (not find)
-- For git ops: `git -C /home/ai/ai-projects/llm <cmd>`
+- For git ops: `git <cmd>`
 - Avoid compound Bash commands unless necessary
 - For GPU/CUDA: use `dangerouslyDisableSandbox: true` on the Bash call
 - Pyright/tsc must be 0 errors / 0 warnings / 0 info after every task
@@ -22,33 +22,33 @@
 ## File Structure
 
 **Python**
-- **Modify** `testing/llm_surgeon/probe.py`
+- **Modify** `llm_surgeon/probe.py`
   - `PatchingResult`: add `n_edges_in_circuit`, `n_nodes_in_circuit`, `tau` (all `Optional`, default `None`)
   - Extract new private helper `_compute_all_edges(...)` (core of current `edge_attribution_patch`)
   - Refactor `edge_attribution_patch` to be a top-k wrapper around `_compute_all_edges`
   - Add new public `extract_circuit(...)` (tau + reverse-BFS wrapper)
-- **Create** `testing/tests/test_probe_circuit.py` — unit tests (mock) + TinyLlama integration
+- **Create** `tests/test_probe_circuit.py` — unit tests (mock) + TinyLlama integration
 
 **Backend**
-- **Modify** `testing/gui/backend/routes/probes.py` — add `elif cfg.mode == "circuit"` branch
+- **Modify** `gui/backend/routes/probes.py` — add `elif cfg.mode == "circuit"` branch
 
 **Frontend**
-- **Modify** `testing/gui/frontend/src/types/api.ts` — extend `PatchingMode`, `PatchingCellData`, `PatchingCompleteData.summary`
-- **Modify** `testing/gui/frontend/src/components/PatchingControls.tsx` — fifth radio + `tau`/`top_k_candidates` inputs
-- **Modify** `testing/gui/frontend/src/components/ProbePanel.tsx` — forward `tau`/`top_k_candidates` into WS cfg
-- **Create** `testing/gui/frontend/src/utils/circuitBFS.ts` — pure BFS helper
-- **Create** `testing/gui/frontend/src/utils/circuitBFS.test.ts` — Vitest
-- **Create** `testing/gui/frontend/src/components/visualizations/CircuitPanel.tsx` — new panel
-- **Modify** `testing/gui/frontend/src/components/VisualizationArea.tsx` — route `mode === "circuit"`
-- **Create** `testing/gui/frontend/tests/e2e/fixtures/activation-patching-circuit.json`
-- **Modify** `testing/gui/frontend/tests/e2e/smoke.spec.ts` — 14th test
+- **Modify** `gui/frontend/src/types/api.ts` — extend `PatchingMode`, `PatchingCellData`, `PatchingCompleteData.summary`
+- **Modify** `gui/frontend/src/components/PatchingControls.tsx` — fifth radio + `tau`/`top_k_candidates` inputs
+- **Modify** `gui/frontend/src/components/ProbePanel.tsx` — forward `tau`/`top_k_candidates` into WS cfg
+- **Create** `gui/frontend/src/utils/circuitBFS.ts` — pure BFS helper
+- **Create** `gui/frontend/src/utils/circuitBFS.test.ts` — Vitest
+- **Create** `gui/frontend/src/components/visualizations/CircuitPanel.tsx` — new panel
+- **Modify** `gui/frontend/src/components/VisualizationArea.tsx` — route `mode === "circuit"`
+- **Create** `gui/frontend/tests/e2e/fixtures/activation-patching-circuit.json`
+- **Modify** `gui/frontend/tests/e2e/smoke.spec.ts` — 14th test
 
 ---
 
 ## Task 1: Extract `_compute_all_edges` helper (behavior-preserving refactor)
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py:1435-1670`
+- Modify: `llm_surgeon/probe.py:1435-1670`
 
 **Goal:** Pull the forward+backward+edge-enumeration body of `edge_attribution_patch` into a private helper so both `edge_attribution_patch` (top-k wrapper) and the forthcoming `extract_circuit` can share compute. No public behavior change.
 
@@ -56,13 +56,13 @@
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest testing/tests/test_probe_edge_ap.py -v -k "not TinyLlama"
+python -m pytest tests/test_probe_edge_ap.py -v -k "not TinyLlama"
 ```
 Expected: all non-GPU edge tests pass (17/17 or similar).
 
 - [ ] **Step 2: Add the `_compute_all_edges` helper**
 
-In `testing/llm_surgeon/probe.py`, above the current `edge_attribution_patch` definition (line 1435), insert:
+In `llm_surgeon/probe.py`, above the current `edge_attribution_patch` definition (line 1435), insert:
 
 ```python
 def _compute_all_edges(
@@ -324,7 +324,7 @@ Replace the body of `edge_attribution_patch` (lines 1467-1670) with a thin wrapp
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest testing/tests/test_probe_edge_ap.py -v -k "not TinyLlama"
+python -m pytest tests/test_probe_edge_ap.py -v -k "not TinyLlama"
 ```
 Expected: same pass count as Step 1. No behavior change.
 
@@ -332,15 +332,15 @@ Expected: same pass count as Step 1. No behavior change.
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pyright testing/llm_surgeon/probe.py
+python -m pyright llm_surgeon/probe.py
 ```
 Expected: 0 errors, 0 warnings, 0 info.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add llm_surgeon/probe.py
+git commit -m "$(cat <<'EOF'
 refactor(probe): extract _compute_all_edges helper for EAP reuse
 
 Behavior-preserving refactor of edge_attribution_patch's core
@@ -357,7 +357,7 @@ EOF
 ## Task 2: `extract_circuit` implementation + `PatchingResult` extensions
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py` — `PatchingResult` class + new `extract_circuit` function
+- Modify: `llm_surgeon/probe.py` — `PatchingResult` class + new `extract_circuit` function
 
 - [ ] **Step 1: Extend `PatchingResult`**
 
@@ -534,7 +534,7 @@ def extract_circuit(
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pyright testing/llm_surgeon/probe.py
+python -m pyright llm_surgeon/probe.py
 ```
 Expected: 0 errors, 0 warnings, 0 info.
 
@@ -542,15 +542,15 @@ Expected: 0 errors, 0 warnings, 0 info.
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest testing/tests/test_probe_edge_ap.py testing/tests/test_probe_per_head_ap.py testing/tests/test_probe_attribution_patch.py -v -k "not TinyLlama"
+python -m pytest tests/test_probe_edge_ap.py tests/test_probe_per_head_ap.py tests/test_probe_attribution_patch.py -v -k "not TinyLlama"
 ```
 Expected: all non-GPU tests pass (42+).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add llm_surgeon/probe.py
+git commit -m "$(cat <<'EOF'
 feat(probe): extract_circuit — cheap-ACDC circuit extraction
 
 Postprocesses the Phase 3.7 edge list with threshold tau and reverse-BFS
@@ -576,11 +576,11 @@ EOF
 ## Task 3: Python unit tests (mock-model)
 
 **Files:**
-- Create: `testing/tests/test_probe_circuit.py`
+- Create: `tests/test_probe_circuit.py`
 
 - [ ] **Step 1: Write the test file (9 tests)**
 
-Create `testing/tests/test_probe_circuit.py`:
+Create `tests/test_probe_circuit.py`:
 
 ```python
 """Unit tests for probe.extract_circuit (Phase 3.8).
@@ -972,7 +972,7 @@ class TestReverseBFSCorrectness:
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest testing/tests/test_probe_circuit.py -v
+python -m pytest tests/test_probe_circuit.py -v
 ```
 Expected: If Task 2 shipped correctly, all tests should pass. If they don't, read the failure carefully — most likely cause is a field-name typo or the BFS getting the wrong seed.
 
@@ -980,15 +980,15 @@ Expected: If Task 2 shipped correctly, all tests should pass. If they don't, rea
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pyright testing/tests/test_probe_circuit.py testing/llm_surgeon/probe.py
+python -m pyright tests/test_probe_circuit.py llm_surgeon/probe.py
 ```
 Expected: 0/0/0.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/tests/test_probe_circuit.py
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add tests/test_probe_circuit.py
+git commit -m "$(cat <<'EOF'
 test(probe): unit tests for extract_circuit (Phase 3.8)
 
 Covers:
@@ -1011,7 +1011,7 @@ EOF
 ## Task 4: TinyLlama integration test
 
 **Files:**
-- Modify: `testing/tests/test_probe_circuit.py` — append GPU-guarded integration class
+- Modify: `tests/test_probe_circuit.py` — append GPU-guarded integration class
 
 - [ ] **Step 1: Append TinyLlama test class**
 
@@ -1026,7 +1026,7 @@ def _tinyllama_cached() -> bool:
     env_cache = os.environ.get("TINYLLAMA_CACHE")
     if env_cache:
         return Path(env_cache).exists()
-    default = Path("testing/.cache/models/models--TinyLlama--TinyLlama-1.1B-Chat-v1.0")
+    default = Path(".cache/models/models--TinyLlama--TinyLlama-1.1B-Chat-v1.0")
     return default.exists()
 
 
@@ -1072,15 +1072,15 @@ class TestTinyLlamaCircuit:
 
 Run (using dangerouslyDisableSandbox=true):
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest testing/tests/test_probe_circuit.py::TestTinyLlamaCircuit -v -s
+python -m pytest tests/test_probe_circuit.py::TestTinyLlamaCircuit -v -s
 ```
 Expected: passes in ~2 minutes on RTX 2080 (fp16). If OOM, the test is wrong — do NOT drop to lower top_k to "fix" OOM without understanding why. The Phase 3.7 fp16 pattern proved 8GB is enough for this compute.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/tests/test_probe_circuit.py
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add tests/test_probe_circuit.py
+git commit -m "$(cat <<'EOF'
 test(probe): TinyLlama integration test for extract_circuit
 
 GPU-guarded (skipif no CUDA / no TinyLlama cache). fp16 matches the
@@ -1098,13 +1098,13 @@ EOF
 ## Task 5: Backend WS `mode="circuit"` branch
 
 **Files:**
-- Modify: `testing/gui/backend/routes/probes.py`
+- Modify: `gui/backend/routes/probes.py`
 
 - [ ] **Step 1: Locate the edge-mode branch**
 
 Run:
 ```bash
-grep -n 'cfg.mode == "edge"\|from llm_surgeon.probe import' testing/gui/backend/routes/probes.py
+grep -n 'cfg.mode == "edge"\|from llm_surgeon.probe import' gui/backend/routes/probes.py
 ```
 Note the line numbers. The `mode == "edge"` branch is the template for `mode == "circuit"`.
 
@@ -1163,7 +1163,7 @@ Important: this must match the structure the existing edge-mode branch uses for 
 Grep for the cfg model (usually named `ActivationPatchingConfig` or similar):
 
 ```bash
-grep -n "class.*Config.*BaseModel\|class.*Config.*Pydantic\|top_k_edges" testing/gui/backend/routes/probes.py
+grep -n "class.*Config.*BaseModel\|class.*Config.*Pydantic\|top_k_edges" gui/backend/routes/probes.py
 ```
 
 Add `tau: float = 0.02` and `top_k_candidates: int = 2000` to the config model, alongside `top_k_edges`.
@@ -1174,15 +1174,15 @@ Also update the model's `mode: Literal[...]` or `mode: str` constraint to includ
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pyright testing/gui/backend/routes/probes.py
+python -m pyright gui/backend/routes/probes.py
 ```
 Expected: 0/0/0.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/backend/routes/probes.py
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add gui/backend/routes/probes.py
+git commit -m "$(cat <<'EOF'
 feat(backend): circuit mode branch on activation-patching WS route
 
 Fifth mode on /ws/sessions/{name}/activation-patching. Accepts tau
@@ -1199,11 +1199,11 @@ EOF
 ## Task 6: Frontend types
 
 **Files:**
-- Modify: `testing/gui/frontend/src/types/api.ts`
+- Modify: `gui/frontend/src/types/api.ts`
 
 - [ ] **Step 1: Extend `PatchingMode`, `PatchingCellData`, `PatchingCompleteData`**
 
-In `testing/gui/frontend/src/types/api.ts`, find `PatchingMode` (line ~141):
+In `gui/frontend/src/types/api.ts`, find `PatchingMode` (line ~141):
 
 ```ts
 export type PatchingMode = "exact" | "approx" | "approx_head" | "edge";
@@ -1240,15 +1240,15 @@ Find `PatchingCompleteData`'s `summary` shape and add:
 
 Run:
 ```bash
-cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 Expected: no errors.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/types/api.ts
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add gui/frontend/src/types/api.ts
+git commit -m "$(cat <<'EOF'
 feat(gui/frontend): circuit mode types (PatchingMode + summary fields)
 
 PatchingMode extends to 'circuit'. PatchingCellData gains optional
@@ -1265,8 +1265,8 @@ EOF
 ## Task 7: `PatchingControls` — fifth radio + inputs
 
 **Files:**
-- Modify: `testing/gui/frontend/src/components/PatchingControls.tsx`
-- Modify: `testing/gui/frontend/src/components/ProbePanel.tsx`
+- Modify: `gui/frontend/src/components/PatchingControls.tsx`
+- Modify: `gui/frontend/src/components/ProbePanel.tsx`
 
 - [ ] **Step 1: Extend `PatchingMode`, `PatchingState`, `DEFAULT_PATCHING_STATE` in PatchingControls.tsx**
 
@@ -1370,15 +1370,15 @@ Replace with:
 
 Run:
 ```bash
-cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 Expected: no errors.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/components/PatchingControls.tsx testing/gui/frontend/src/components/ProbePanel.tsx
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add gui/frontend/src/components/PatchingControls.tsx gui/frontend/src/components/ProbePanel.tsx
+git commit -m "$(cat <<'EOF'
 feat(gui/frontend): circuit (ACDC) mode radio + tau/top_k_candidates inputs
 
 Fifth radio in PatchingControls. Conditional top_k_candidates / tau
@@ -1395,12 +1395,12 @@ EOF
 ## Task 8: `utils/circuitBFS.ts` pure helper + Vitest
 
 **Files:**
-- Create: `testing/gui/frontend/src/utils/circuitBFS.ts`
-- Create: `testing/gui/frontend/src/utils/circuitBFS.test.ts`
+- Create: `gui/frontend/src/utils/circuitBFS.ts`
+- Create: `gui/frontend/src/utils/circuitBFS.test.ts`
 
 - [ ] **Step 1: Write `circuitBFS.ts`**
 
-Create `testing/gui/frontend/src/utils/circuitBFS.ts`:
+Create `gui/frontend/src/utils/circuitBFS.ts`:
 
 ```ts
 /** Circuit extraction helpers (Phase 3.8).
@@ -1493,7 +1493,7 @@ export function computeCircuit<E extends CircuitEdge>(edges: E[], tau: number): 
 
 - [ ] **Step 2: Write `circuitBFS.test.ts`**
 
-Create `testing/gui/frontend/src/utils/circuitBFS.test.ts`:
+Create `gui/frontend/src/utils/circuitBFS.test.ts`:
 
 ```ts
 import { describe, expect, it } from "vitest";
@@ -1567,7 +1567,7 @@ describe("computeCircuit", () => {
 
 Run:
 ```bash
-cd testing/gui/frontend && npx vitest run src/utils/circuitBFS.test.ts
+cd gui/frontend && npx vitest run src/utils/circuitBFS.test.ts
 ```
 Expected: all 6 tests pass.
 
@@ -1575,15 +1575,15 @@ Expected: all 6 tests pass.
 
 Run:
 ```bash
-cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 Expected: no errors.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/utils/circuitBFS.ts testing/gui/frontend/src/utils/circuitBFS.test.ts
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add gui/frontend/src/utils/circuitBFS.ts gui/frontend/src/utils/circuitBFS.test.ts
+git commit -m "$(cat <<'EOF'
 feat(gui/frontend): circuitBFS pure helper + Vitest
 
 Client-side cheap-ACDC that mirrors probe.extract_circuit: filter edges
@@ -1601,20 +1601,20 @@ EOF
 ## Task 9: `CircuitPanel.tsx` + `VisualizationArea` routing
 
 **Files:**
-- Create: `testing/gui/frontend/src/components/visualizations/CircuitPanel.tsx`
-- Modify: `testing/gui/frontend/src/components/VisualizationArea.tsx`
+- Create: `gui/frontend/src/components/visualizations/CircuitPanel.tsx`
+- Modify: `gui/frontend/src/components/VisualizationArea.tsx`
 
 - [ ] **Step 1: Read EdgeAttributionPanel for the Sankey idiom**
 
 Run:
 ```bash
-wc -l testing/gui/frontend/src/components/visualizations/EdgeAttributionPanel.tsx
+wc -l gui/frontend/src/components/visualizations/EdgeAttributionPanel.tsx
 ```
 Read the file. The Sankey layout uses hand-rolled cubic Bezier paths via `d3.path()`. You'll mirror this in `CircuitPanel.tsx` but restricted to in-circuit edges at the slider τ.
 
 - [ ] **Step 2: Write `CircuitPanel.tsx`**
 
-Create `testing/gui/frontend/src/components/visualizations/CircuitPanel.tsx`:
+Create `gui/frontend/src/components/visualizations/CircuitPanel.tsx`:
 
 ```tsx
 import { useMemo, useState } from "react";
@@ -1854,15 +1854,15 @@ Read the current `VisualizationArea.tsx` mode-routing block in full first — mi
 
 Run:
 ```bash
-cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit && npx vitest run
+cd gui/frontend && ./node_modules/.bin/tsc --noEmit && npx vitest run
 ```
 Expected: no tsc errors; all Vitest tests pass (including the 6 BFS tests from Task 8).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/components/visualizations/CircuitPanel.tsx testing/gui/frontend/src/components/VisualizationArea.tsx
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add gui/frontend/src/components/visualizations/CircuitPanel.tsx gui/frontend/src/components/VisualizationArea.tsx
+git commit -m "$(cat <<'EOF'
 feat(gui/frontend): CircuitPanel — ACDC-style circuit viz with τ slider
 
 New panel renders the circuit as a two-column Sankey layout with
@@ -1883,20 +1883,20 @@ EOF
 ## Task 10: Playwright fixture + smoke test
 
 **Files:**
-- Create: `testing/gui/frontend/tests/e2e/fixtures/activation-patching-circuit.json`
-- Modify: `testing/gui/frontend/tests/e2e/smoke.spec.ts`
+- Create: `gui/frontend/tests/e2e/fixtures/activation-patching-circuit.json`
+- Modify: `gui/frontend/tests/e2e/smoke.spec.ts`
 
 - [ ] **Step 1: Read the edge fixture to copy its structure**
 
 Run:
 ```bash
-cat testing/gui/frontend/tests/e2e/fixtures/activation-patching-edge.json
+cat gui/frontend/tests/e2e/fixtures/activation-patching-edge.json
 ```
 (Use Read tool on that path.) Note the outer `"schema": "llm-surgeon-gui-experiment/v1"` wrapper and the session/result nesting.
 
 - [ ] **Step 2: Write the circuit fixture**
 
-Create `testing/gui/frontend/tests/e2e/fixtures/activation-patching-circuit.json` by copying the edge fixture and:
+Create `gui/frontend/tests/e2e/fixtures/activation-patching-circuit.json` by copying the edge fixture and:
 - Changing `mode` to `"circuit"` in the result's summary.
 - Adding `"tau": 0.02, "top_k_candidates": 10, "n_edges_in_circuit": 2, "n_nodes_in_circuit": 3` to the summary.
 - Adding `"in_circuit": true` or `"in_circuit": false` per cell. Ensure at least one cell has `in_circuit: true` and at least one has `in_circuit: false` so the "show out-of-circuit" toggle has something to dim.
@@ -1918,7 +1918,7 @@ Example cell (matches the edge-mode shape + one field):
 
 - [ ] **Step 3: Add 14th Playwright test**
 
-Append to `testing/gui/frontend/tests/e2e/smoke.spec.ts`:
+Append to `gui/frontend/tests/e2e/smoke.spec.ts`:
 
 ```ts
 test("circuit panel renders with τ slider and stats", async ({ page }) => {
@@ -1947,7 +1947,7 @@ test("circuit panel renders with τ slider and stats", async ({ page }) => {
 
 Run:
 ```bash
-cd testing/gui/frontend && npm run e2e
+cd gui/frontend && npm run e2e
 ```
 Expected: 14/14 tests pass (13 existing + 1 new).
 
@@ -1956,26 +1956,26 @@ Expected: 14/14 tests pass (13 existing + 1 new).
 Run each in turn:
 ```bash
 # Tier 1: tsc
-cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd gui/frontend && ./node_modules/.bin/tsc --noEmit
 
 # Tier 2: vitest
-cd testing/gui/frontend && npx vitest run
+cd gui/frontend && npx vitest run
 
 # Tier 3: playwright (already run in Step 4)
 
 # Python
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest testing/tests/ -v -k "not TinyLlama"
+python -m pytest tests/ -v -k "not TinyLlama"
 
 # Pyright
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pyright testing/llm_surgeon/probe.py testing/gui/backend/routes/probes.py testing/tests/test_probe_circuit.py testing/tests/test_probe_edge_ap.py testing/tests/test_probe_per_head_ap.py testing/tests/test_probe_attribution_patch.py
+python -m pyright llm_surgeon/probe.py gui/backend/routes/probes.py tests/test_probe_circuit.py tests/test_probe_edge_ap.py tests/test_probe_per_head_ap.py tests/test_probe_attribution_patch.py
 ```
 Expected: all pass, pyright 0/0/0, tsc clean, Python 50+ passing (new tests + all prior-phase regressions green), Vitest 12+ passing (existing + new 6 BFS tests).
 
 - [ ] **Step 6: Commit + update roadmap memory**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/tests/e2e/fixtures/activation-patching-circuit.json testing/gui/frontend/tests/e2e/smoke.spec.ts
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add gui/frontend/tests/e2e/fixtures/activation-patching-circuit.json gui/frontend/tests/e2e/smoke.spec.ts
+git commit -m "$(cat <<'EOF'
 test(gui/frontend): Playwright smoke for CircuitPanel
 
 14th test in the smoke suite. Imports an activation-patching-circuit
@@ -1995,15 +1995,15 @@ Update the roadmap memory file at `~/.claude/projects/-home-ai-ai-projects-llm/m
 
 | Check | Command | Expected |
 |-------|---------|----------|
-| Pyright | `.venv/bin/python -m pyright testing/llm_surgeon/probe.py testing/gui/backend/routes/probes.py testing/tests/test_probe_*.py` | 0/0/0 |
-| Tsc | `cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit` | clean |
-| Python unit | `.venv/bin/python -m pytest testing/tests/ -v -k "not TinyLlama"` | 50+ pass |
-| Python TinyLlama (GPU) | `.venv/bin/python -m pytest testing/tests/test_probe_circuit.py::TestTinyLlamaCircuit -v` | pass ~2 min |
-| Phase 3.5 regression | `.venv/bin/python -m pytest testing/tests/test_probe_attribution_patch.py::TestTinyLlamaAttributionPatch -v` | ρ=0.956 preserved |
-| Phase 3.6 regression | `.venv/bin/python -m pytest testing/tests/test_probe_per_head_ap.py::TestTinyLlamaPerHead -v` | ρ=1.0000 preserved |
-| Phase 3.7 regression | `.venv/bin/python -m pytest testing/tests/test_probe_edge_ap.py::TestTinyLlamaEAP -v` | top-k consistency passes |
-| Vitest | `cd testing/gui/frontend && npx vitest run` | 12+ pass (incl. 6 new BFS) |
-| Playwright | `cd testing/gui/frontend && npm run e2e` | 14/14 pass |
+| Pyright | `.venv/bin/python -m pyright llm_surgeon/probe.py gui/backend/routes/probes.py tests/test_probe_*.py` | 0/0/0 |
+| Tsc | `cd gui/frontend && ./node_modules/.bin/tsc --noEmit` | clean |
+| Python unit | `.venv/bin/python -m pytest tests/ -v -k "not TinyLlama"` | 50+ pass |
+| Python TinyLlama (GPU) | `.venv/bin/python -m pytest tests/test_probe_circuit.py::TestTinyLlamaCircuit -v` | pass ~2 min |
+| Phase 3.5 regression | `.venv/bin/python -m pytest tests/test_probe_attribution_patch.py::TestTinyLlamaAttributionPatch -v` | ρ=0.956 preserved |
+| Phase 3.6 regression | `.venv/bin/python -m pytest tests/test_probe_per_head_ap.py::TestTinyLlamaPerHead -v` | ρ=1.0000 preserved |
+| Phase 3.7 regression | `.venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestTinyLlamaEAP -v` | top-k consistency passes |
+| Vitest | `cd gui/frontend && npx vitest run` | 12+ pass (incl. 6 new BFS) |
+| Playwright | `cd gui/frontend && npm run e2e` | 14/14 pass |
 
 ---
 

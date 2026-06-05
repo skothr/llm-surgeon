@@ -8,9 +8,9 @@
 
 **Tech Stack:** Python 3.11, PyTorch, transformers (HF LLaMA), FastAPI WebSockets, React + TypeScript + Zustand, d3, Vitest (frontend unit), pytest (Python), Playwright.
 
-**Spec:** `testing/docs/superpowers/specs/2026-04-17-phase3-activation-patching-design.md` (commit `fc16b90`).
+**Spec:** `docs/design-history/specs/2026-04-17-phase3-activation-patching-design.md` (commit `fc16b90`).
 
-**Cwd for tool invocations:** `/home/ai/ai-projects/llm`. The pyright CLI must be run from `testing/` (see CLAUDE.md § Type Checking) — several tasks encode this explicitly.
+**Cwd for tool invocations:** `.`. The pyright CLI must be run from the repo root (see CLAUDE.md § Type Checking) — several tasks encode this explicitly.
 
 ---
 
@@ -20,9 +20,9 @@
 - For git ops outside the repo root, use `git -C <path>` rather than `cd`.
 - Avoid unnecessary compound commands. Avoid chaining that would trigger a permission prompt.
 - **GPU tests:** any Bash call that runs pytest touching CUDA (`import torch; torch.cuda.*`, model load from HF, etc.) must be invoked with `dangerouslyDisableSandbox: true`. The existing `/dev/nvidia*` sandbox rule blocks CUDA otherwise. If a subagent cannot get that permission granted, surface a BLOCKED status — the controller will run the test directly.
-- Pyright CLI: run from `testing/` cwd. Command: `.venv/bin/python -m pyright <paths>`. Not from project root (import resolution fails).
-- Frontend tsc: run from `testing/gui/frontend/`. Command: `./node_modules/.bin/tsc --noEmit`.
-- Playwright: run from `testing/gui/frontend/`. Command: `npm run e2e`.
+- Pyright CLI: run from the repo root cwd. Command: `.venv/bin/python -m pyright <paths>`. Not from project root (import resolution fails).
+- Frontend tsc: run from `gui/frontend/`. Command: `./node_modules/.bin/tsc --noEmit`.
+- Playwright: run from `gui/frontend/`. Command: `npm run e2e`.
 - Zero-diagnostics discipline: every commit in this plan must land with pyright 0/0/0 and tsc clean.
 
 ---
@@ -30,20 +30,20 @@
 ## File Structure
 
 ### New files
-- `testing/tests/test_probe_activation_patch.py` — all new Python unit + integration tests.
-- `testing/gui/frontend/src/components/PatchingControls.tsx` — conditional patching form.
-- `testing/gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx` — heatmap visualization.
-- `testing/gui/frontend/src/utils/patchingMetrics.ts` — pure-function metric helpers.
-- `testing/gui/frontend/tests/unit/patchingMetrics.test.ts` — Vitest unit tests (check whether `tests/unit/` already exists; if not, create it alongside `tests/e2e/`).
+- `tests/test_probe_activation_patch.py` — all new Python unit + integration tests.
+- `gui/frontend/src/components/PatchingControls.tsx` — conditional patching form.
+- `gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx` — heatmap visualization.
+- `gui/frontend/src/utils/patchingMetrics.ts` — pure-function metric helpers.
+- `gui/frontend/tests/unit/patchingMetrics.test.ts` — Vitest unit tests (check whether `tests/unit/` already exists; if not, create it alongside `tests/e2e/`).
 
 ### Modified files
-- `testing/llm_surgeon/probe.py` — **+** `PatchingResult`, `_make_position_patch()`, `activation_patch()`.
-- `testing/gui/backend/routes/probes.py` — **+** `/sessions/{name}/activation-patching` WS handler.
-- `testing/gui/frontend/src/types/api.ts` — **+** ProbeOperation extension, Patching* interfaces, WsMessage union.
-- `testing/gui/frontend/src/components/ProbePanel.tsx` — **+** op option, conditional render, `handleRun` branch, disable fan-out/A-B for AP.
-- `testing/gui/frontend/src/components/VisualizationArea.tsx` — **+** op → component dispatch entry.
-- `testing/gui/frontend/tests/e2e/smoke.spec.ts` — **+** one patching-heatmap test.
-- `testing/gui/frontend/tests/e2e/fixtures/sample.json` — **+** patching result fixture OR create sibling file.
+- `llm_surgeon/probe.py` — **+** `PatchingResult`, `_make_position_patch()`, `activation_patch()`.
+- `gui/backend/routes/probes.py` — **+** `/sessions/{name}/activation-patching` WS handler.
+- `gui/frontend/src/types/api.ts` — **+** ProbeOperation extension, Patching* interfaces, WsMessage union.
+- `gui/frontend/src/components/ProbePanel.tsx` — **+** op option, conditional render, `handleRun` branch, disable fan-out/A-B for AP.
+- `gui/frontend/src/components/VisualizationArea.tsx` — **+** op → component dispatch entry.
+- `gui/frontend/tests/e2e/smoke.spec.ts` — **+** one patching-heatmap test.
+- `gui/frontend/tests/e2e/fixtures/sample.json` — **+** patching result fixture OR create sibling file.
 - `/home/skothr/.claude/projects/-home-ai-ai-projects-llm/memory/project_llm_surgeon_roadmap.md` — append "Phase 3 shipped" entry.
 
 ---
@@ -53,12 +53,12 @@
 **Why first:** smallest, self-contained new primitive. TDD it standalone before the function that uses it.
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py` (append near the `_Ops` class definition)
-- Create: `testing/tests/test_probe_activation_patch.py`
+- Modify: `llm_surgeon/probe.py` (append near the `_Ops` class definition)
+- Create: `tests/test_probe_activation_patch.py`
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `testing/tests/test_probe_activation_patch.py`:
+Create `tests/test_probe_activation_patch.py`:
 
 ```python
 """Tests for probe.activation_patch — causal attribution via clean/corrupted counterfactual."""
@@ -107,14 +107,14 @@ class TestMakePositionPatch:
 - [ ] **Step 2: Run the tests to verify they fail**
 
 ```bash
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pytest testing/tests/test_probe_activation_patch.py -v
+cd . && python -m pytest tests/test_probe_activation_patch.py -v
 ```
 
 Expected: `ImportError: cannot import name '_make_position_patch' from 'llm_surgeon.probe'` (or `AttributeError`).
 
 - [ ] **Step 3: Implement `_make_position_patch` in probe.py**
 
-Use Read on `testing/llm_surgeon/probe.py` to find the `_Op` and `_Ops` class definitions (around lines 459–513), then use Edit to append this immediately after the `ops = _Ops()` line (around line 516):
+Use Read on `llm_surgeon/probe.py` to find the `_Op` and `_Ops` class definitions (around lines 459–513), then use Edit to append this immediately after the `ops = _Ops()` line (around line 516):
 
 ```python
 # ---------------------------------------------------------------------------
@@ -140,7 +140,7 @@ def _make_position_patch(pos: int, clean_vec: torch.Tensor) -> _Op:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 ```bash
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pytest testing/tests/test_probe_activation_patch.py -v
+cd . && python -m pytest tests/test_probe_activation_patch.py -v
 ```
 
 Expected: `4 passed`.
@@ -148,7 +148,7 @@ Expected: `4 passed`.
 - [ ] **Step 5: Pyright check**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_activation_patch.py
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_activation_patch.py
 ```
 
 Expected: `0 errors, 0 warnings, 0 informations`.
@@ -156,8 +156,8 @@ Expected: `0 errors, 0 warnings, 0 informations`.
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py testing/tests/test_probe_activation_patch.py
-git -C /home/ai/ai-projects/llm commit -m "feat(probe): _make_position_patch helper for activation patching
+git add llm_surgeon/probe.py tests/test_probe_activation_patch.py
+git commit -m "feat(probe): _make_position_patch helper for activation patching
 
 Position-scoped replace — overwrites a single position in the hidden
 state while leaving all others untouched. Primitive for the upcoming
@@ -171,12 +171,12 @@ activation_patch() function."
 **Why second:** validation rules fail fast and cheap, before the loop does anything. TDD them with no model needed.
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py`
-- Modify: `testing/tests/test_probe_activation_patch.py`
+- Modify: `llm_surgeon/probe.py`
+- Modify: `tests/test_probe_activation_patch.py`
 
 - [ ] **Step 1: Write the failing tests**
 
-Use Edit on `testing/tests/test_probe_activation_patch.py` to append:
+Use Edit on `tests/test_probe_activation_patch.py` to append:
 
 ```python
 # ---------------------------------------------------------------------------
@@ -246,7 +246,7 @@ class TestValidation:
 
 - [ ] **Step 2: Write the failing tests for `PatchingResult`**
 
-Append to `testing/tests/test_probe_activation_patch.py`:
+Append to `tests/test_probe_activation_patch.py`:
 
 ```python
 # ---------------------------------------------------------------------------
@@ -273,14 +273,14 @@ class TestPatchingResult:
 - [ ] **Step 3: Run tests to verify failure**
 
 ```bash
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pytest testing/tests/test_probe_activation_patch.py::TestValidation testing/tests/test_probe_activation_patch.py::TestPatchingResult -v
+cd . && python -m pytest tests/test_probe_activation_patch.py::TestValidation tests/test_probe_activation_patch.py::TestPatchingResult -v
 ```
 
 Expected: all fail with `ImportError` on `PatchingResult` / `activation_patch`.
 
 - [ ] **Step 4: Implement `PatchingResult` and the validation skeleton of `activation_patch`**
 
-Use Read on `testing/llm_surgeon/probe.py` to find the end of the file. Use Edit to append:
+Use Read on `llm_surgeon/probe.py` to find the end of the file. Use Edit to append:
 
 ```python
 # ---------------------------------------------------------------------------
@@ -316,7 +316,7 @@ def activation_patch(
     Given two same-length prompts (clean, corrupted), computes how much each
     (layer, sublayer, position) residual-stream point causally drives the
     output delta between clean and corrupted behavior. See
-    docs/superpowers/specs/2026-04-17-phase3-activation-patching-design.md.
+    docs/design-history/specs/2026-04-17-phase3-activation-patching-design.md.
 
     Args:
         direction: "denoise" (base=corrupted, patches from clean — bright cells
@@ -396,7 +396,7 @@ def activation_patch(
 - [ ] **Step 5: Run the tests to verify they pass**
 
 ```bash
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pytest testing/tests/test_probe_activation_patch.py -v
+cd . && python -m pytest tests/test_probe_activation_patch.py -v
 ```
 
 Expected: all `TestValidation` and `TestPatchingResult` tests pass (plus Task 1's `TestMakePositionPatch`).
@@ -404,7 +404,7 @@ Expected: all `TestValidation` and `TestPatchingResult` tests pass (plus Task 1'
 - [ ] **Step 6: Pyright check**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_activation_patch.py
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_activation_patch.py
 ```
 
 Expected: `0 errors, 0 warnings, 0 informations`.
@@ -412,8 +412,8 @@ Expected: `0 errors, 0 warnings, 0 informations`.
 - [ ] **Step 7: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py testing/tests/test_probe_activation_patch.py
-git -C /home/ai/ai-projects/llm commit -m "feat(probe): PatchingResult + activation_patch validation
+git add llm_surgeon/probe.py tests/test_probe_activation_patch.py
+git commit -m "feat(probe): PatchingResult + activation_patch validation
 
 Skeleton of activation_patch() — dataclass, signature, validation rules
 (same-length prompts, direction, sublayer, measurement_position bounds,
@@ -428,12 +428,12 @@ returning an empty result so validation-only tests can run."
 **Why third:** loop logic is the heart of the feature. Test with a real `tiny_llama` (8-layer, 32-hidden LlamaForCausalLM — no download) to exercise hook composition without GPU.
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py`
-- Modify: `testing/tests/test_probe_activation_patch.py`
+- Modify: `llm_surgeon/probe.py`
+- Modify: `tests/test_probe_activation_patch.py`
 
 - [ ] **Step 1: Write failing tests for the core loop**
 
-Edit `testing/tests/test_probe_activation_patch.py` to append:
+Edit `tests/test_probe_activation_patch.py` to append:
 
 ```python
 # ---------------------------------------------------------------------------
@@ -590,14 +590,14 @@ class TestActivationPatchLoop:
 - [ ] **Step 2: Run tests to verify failure**
 
 ```bash
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pytest testing/tests/test_probe_activation_patch.py::TestActivationPatchLoop -v
+cd . && python -m pytest tests/test_probe_activation_patch.py::TestActivationPatchLoop -v
 ```
 
 Expected: all fail with assertions about empty `result.cells` / `received_prompts`. Placeholder body from Task 2 returns empty result.
 
 - [ ] **Step 3: Implement the real loop**
 
-Replace the placeholder return in `activation_patch()` body (in `testing/llm_surgeon/probe.py`). Use Edit to replace the block that ends with `direction=direction, measurement_position=resolved_meas,` and the closing `)` with the full implementation:
+Replace the placeholder return in `activation_patch()` body (in `llm_surgeon/probe.py`). Use Edit to replace the block that ends with `direction=direction, measurement_position=resolved_meas,` and the closing `)` with the full implementation:
 
 ```python
     # -- Tokenize once more for the forward passes (reuse ids) -------------
@@ -679,7 +679,7 @@ Delete the old placeholder return block (`return PatchingResult(cells=[], clean_
 - [ ] **Step 4: Run the tests to verify they pass**
 
 ```bash
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pytest testing/tests/test_probe_activation_patch.py -v
+cd . && python -m pytest tests/test_probe_activation_patch.py -v
 ```
 
 Expected: all 22+ tests pass (4 Task 1 + 7 Task 2 validation + 1 PatchingResult + 10 Task 3 loop tests = 22). Runtime on CPU with `tiny_llama`: ~5–20 s (48 forward passes × ~50 ms).
@@ -687,7 +687,7 @@ Expected: all 22+ tests pass (4 Task 1 + 7 Task 2 validation + 1 PatchingResult 
 - [ ] **Step 5: Pyright check**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_activation_patch.py
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_activation_patch.py
 ```
 
 Expected: `0 errors, 0 warnings, 0 informations`.
@@ -695,8 +695,8 @@ Expected: `0 errors, 0 warnings, 0 informations`.
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py testing/tests/test_probe_activation_patch.py
-git -C /home/ai/ai-projects/llm commit -m "feat(probe): activation_patch() core loop — denoise + noise directions
+git add llm_surgeon/probe.py tests/test_probe_activation_patch.py
+git commit -m "feat(probe): activation_patch() core loop — denoise + noise directions
 
 Composes _capture_residual_stream (both prompts) + intervene() (with
 _make_position_patch as the op) to produce per-(layer, sublayer, position)
@@ -713,11 +713,11 @@ and patch source. on_cell callback streams frames to the WS layer."
 **GPU note:** This test requires CUDA. The subagent must request `dangerouslyDisableSandbox: true` when running the pytest command. If permission is denied, return BLOCKED — the controller runs it directly (per established pattern in `feedback_gpu_sandbox.md`).
 
 **Files:**
-- Modify: `testing/tests/test_probe_activation_patch.py`
+- Modify: `tests/test_probe_activation_patch.py`
 
 - [ ] **Step 1: Write the integration test**
 
-Use Edit to append to `testing/tests/test_probe_activation_patch.py`:
+Use Edit to append to `tests/test_probe_activation_patch.py`:
 
 ```python
 # ---------------------------------------------------------------------------
@@ -794,7 +794,7 @@ class TestActivationPatchIntegration:
 - [ ] **Step 2: Run the integration test**
 
 ```bash
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pytest testing/tests/test_probe_activation_patch.py::TestActivationPatchIntegration::test_tinyllama_capital_swap -v
+cd . && python -m pytest tests/test_probe_activation_patch.py::TestActivationPatchIntegration::test_tinyllama_capital_swap -v
 ```
 
 **Subagent note:** invoke this Bash call with `dangerouslyDisableSandbox: true` — CUDA device access is blocked under the default sandbox. If permission is denied in your session, return BLOCKED with message "GPU sandbox denied for TinyLlama integration — needs controller run." The controller will run it and report back.
@@ -804,7 +804,7 @@ Expected: PASS in ~20–60 s on RTX 2080. Forward passes: `22 layers × 2 sublay
 - [ ] **Step 3: Pyright check**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright tests/test_probe_activation_patch.py
+cd . && .venv/bin/python -m pyright tests/test_probe_activation_patch.py
 ```
 
 Expected: `0 errors, 0 warnings, 0 informations`.
@@ -812,8 +812,8 @@ Expected: `0 errors, 0 warnings, 0 informations`.
 - [ ] **Step 4: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/tests/test_probe_activation_patch.py
-git -C /home/ai/ai-projects/llm commit -m "test(probe): TinyLlama integration for activation_patch
+git add tests/test_probe_activation_patch.py
+git commit -m "test(probe): TinyLlama integration for activation_patch
 
 Loads TinyLlama fp16, runs denoise patching on a capital-swap prompt
 pair, asserts late-layer logit-diff recovery exceeds early-layer by
@@ -826,15 +826,15 @@ without pinning an exact numeric curve."
 ## Task 5: Backend WS route `/sessions/{name}/activation-patching`
 
 **Files:**
-- Modify: `testing/gui/backend/routes/probes.py`
+- Modify: `gui/backend/routes/probes.py`
 
 - [ ] **Step 1: Understand the existing WS pattern**
 
-Use Read on `testing/gui/backend/routes/probes.py` to review the `/logit-lens` handler (around lines 80–194) — this is the template for lock ordering, `on_layer` callback marshaling, error envelopes, and `_encode_hidden_state` usage.
+Use Read on `gui/backend/routes/probes.py` to review the `/logit-lens` handler (around lines 80–194) — this is the template for lock ordering, `on_layer` callback marshaling, error envelopes, and `_encode_hidden_state` usage.
 
 - [ ] **Step 2: Add the new WS handler**
 
-Use Edit on `testing/gui/backend/routes/probes.py` to append the handler. Place it after the existing `intervene_ws` handler (end of file, before the last `return ...` in whatever trailing helper exists):
+Use Edit on `gui/backend/routes/probes.py` to append the handler. Place it after the existing `intervene_ws` handler (end of file, before the last `return ...` in whatever trailing helper exists):
 
 ```python
 @router.websocket("/sessions/{name}/activation-patching")
@@ -1019,7 +1019,7 @@ async def activation_patching_ws(ws: WebSocket, name: str):
 - [ ] **Step 3: Pyright check**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright gui/backend/routes/probes.py
+cd . && .venv/bin/python -m pyright gui/backend/routes/probes.py
 ```
 
 Expected: `0 errors, 0 warnings, 0 informations`.
@@ -1027,7 +1027,7 @@ Expected: `0 errors, 0 warnings, 0 informations`.
 - [ ] **Step 4: Quick smoke-check the FastAPI app boots**
 
 ```bash
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -c "from gui.backend.app import app; print('routes:', [r.path for r in app.routes if 'activation' in r.path])"
+cd . && python -c "from gui.backend.app import app; print('routes:', [r.path for r in app.routes if 'activation' in r.path])"
 ```
 
 Expected output contains `/sessions/{name}/activation-patching`.
@@ -1035,8 +1035,8 @@ Expected output contains `/sessions/{name}/activation-patching`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/backend/routes/probes.py
-git -C /home/ai/ai-projects/llm commit -m "feat(gui/backend): /sessions/{name}/activation-patching WS route
+git add gui/backend/routes/probes.py
+git commit -m "feat(gui/backend): /sessions/{name}/activation-patching WS route
 
 Streams one 'data' frame per (layer, sublayer, position) cell via
 probe.activation_patch()'s on_cell callback. Handles manual vs auto
@@ -1049,12 +1049,12 @@ locking and error-envelope patterns."
 ## Task 6: Frontend `types/api.ts` additions
 
 **Files:**
-- Modify: `testing/gui/frontend/src/types/api.ts`
+- Modify: `gui/frontend/src/types/api.ts`
 
 - [ ] **Step 1: Read the existing types file to find the ProbeOperation and WsMessage definitions**
 
 ```
-Read /home/ai/ai-projects/llm/testing/gui/frontend/src/types/api.ts
+Read gui/frontend/src/types/api.ts
 ```
 
 Note the line numbers of `ProbeOperation` (around line 133) and `WsMessage` (search for the union definition).
@@ -1138,7 +1138,7 @@ Note: `PatchingCellData` has `type: "data"` just like existing per-layer frames.
 - [ ] **Step 5: tsc check**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 Expected: no errors.
@@ -1146,8 +1146,8 @@ Expected: no errors.
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/types/api.ts
-git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): types for activation-patching WS frames
+git add gui/frontend/src/types/api.ts
+git commit -m "feat(gui/frontend): types for activation-patching WS frames
 
 Adds PatchingBaselinesData, PatchingCellData, PatchingCompleteData,
 'activation-patching' to ProbeOperation, and extends WsMessage union.
@@ -1159,20 +1159,20 @@ No component wiring yet — follow-up commits consume these."
 ## Task 7: Frontend `patchingMetrics.ts` + Vitest unit tests
 
 **Files:**
-- Create: `testing/gui/frontend/src/utils/patchingMetrics.ts`
-- Create: `testing/gui/frontend/tests/unit/patchingMetrics.test.ts`
+- Create: `gui/frontend/src/utils/patchingMetrics.ts`
+- Create: `gui/frontend/tests/unit/patchingMetrics.test.ts`
 
-**Note:** Confirm Vitest is configured in the frontend before starting. Check `testing/gui/frontend/package.json` for a `test` script and a `vitest` dev dependency. If not present, add vitest config as a sub-step; the subagent should not silently skip this. Command to check:
+**Note:** Confirm Vitest is configured in the frontend before starting. Check `gui/frontend/package.json` for a `test` script and a `vitest` dev dependency. If not present, add vitest config as a sub-step; the subagent should not silently skip this. Command to check:
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && grep -E '"(vitest|test)":' package.json
+cd ./gui/frontend && grep -E '"(vitest|test)":' package.json
 ```
 
 If Vitest is not configured, **stop and surface this as BLOCKED** — the controller will decide whether to add Vitest or fold the metric tests into a Playwright component-style test. Default is to add Vitest.
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `testing/gui/frontend/tests/unit/patchingMetrics.test.ts`:
+Create `gui/frontend/tests/unit/patchingMetrics.test.ts`:
 
 ```typescript
 import { describe, it, expect } from "vitest";
@@ -1275,14 +1275,14 @@ describe("probDelta", () => {
 - [ ] **Step 2: Run the tests — confirm they fail for "module not found"**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/vitest run tests/unit/patchingMetrics.test.ts
+cd ./gui/frontend && ./node_modules/.bin/vitest run tests/unit/patchingMetrics.test.ts
 ```
 
 Expected: failure with "Cannot find module '../../src/utils/patchingMetrics'" or similar.
 
 - [ ] **Step 3: Implement `patchingMetrics.ts`**
 
-Create `testing/gui/frontend/src/utils/patchingMetrics.ts`:
+Create `gui/frontend/src/utils/patchingMetrics.ts`:
 
 ```typescript
 /**
@@ -1396,7 +1396,7 @@ function argmax(arr: Float32Array): number {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/vitest run tests/unit/patchingMetrics.test.ts
+cd ./gui/frontend && ./node_modules/.bin/vitest run tests/unit/patchingMetrics.test.ts
 ```
 
 Expected: `Test Files 1 passed`, all 11 tests green.
@@ -1404,7 +1404,7 @@ Expected: `Test Files 1 passed`, all 11 tests green.
 - [ ] **Step 5: tsc check**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 Expected: no errors.
@@ -1412,8 +1412,8 @@ Expected: no errors.
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/utils/patchingMetrics.ts testing/gui/frontend/tests/unit/patchingMetrics.test.ts
-git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): patchingMetrics pure-function utilities + tests
+git add gui/frontend/src/utils/patchingMetrics.ts gui/frontend/tests/unit/patchingMetrics.test.ts
+git commit -m "feat(gui/frontend): patchingMetrics pure-function utilities + tests
 
 logitDiffRecovery, klFromClean, top1Match, probDelta + decodeLogits.
 Client-side metric computation means the heatmap's metric dropdown
@@ -1425,11 +1425,11 @@ switches without backend round-trip."
 ## Task 8: Frontend `PatchingControls.tsx` component
 
 **Files:**
-- Create: `testing/gui/frontend/src/components/PatchingControls.tsx`
+- Create: `gui/frontend/src/components/PatchingControls.tsx`
 
 - [ ] **Step 1: Create the component file**
 
-Create `testing/gui/frontend/src/components/PatchingControls.tsx`:
+Create `gui/frontend/src/components/PatchingControls.tsx`:
 
 ```tsx
 /**
@@ -1636,7 +1636,7 @@ export function PatchingControls({ targetSession, state, onChange, onLengthMatch
 - [ ] **Step 2: tsc check**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 Expected: no errors. (Unused-import warnings from `PatchingState`/`DEFAULT_PATCHING_STATE` are fine — ProbePanel will import them in Task 10.)
@@ -1644,8 +1644,8 @@ Expected: no errors. (Unused-import warnings from `PatchingState`/`DEFAULT_PATCH
 - [ ] **Step 3: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/components/PatchingControls.tsx
-git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): PatchingControls conditional form component
+git add gui/frontend/src/components/PatchingControls.tsx
+git commit -m "feat(gui/frontend): PatchingControls conditional form component
 
 Two prompt textareas with debounced tokenize + length-match indicator,
 direction toggle, measurement-position input, token-pair mode
@@ -1658,15 +1658,15 @@ direction toggle, measurement-position input, token-pair mode
 ## Task 9: Frontend `ActivationPatchingHeatmap.tsx` component
 
 **Files:**
-- Create: `testing/gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx`
+- Create: `gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx`
 
 - [ ] **Step 1: Read the template**
 
-Read `testing/gui/frontend/src/components/visualizations/LogitLensHeatmap.tsx` to refresh the d3 heatmap pattern (row/col grid, color scale with per-metric interpolator, click-to-pin, ExportButtons wiring).
+Read `gui/frontend/src/components/visualizations/LogitLensHeatmap.tsx` to refresh the d3 heatmap pattern (row/col grid, color scale with per-metric interpolator, click-to-pin, ExportButtons wiring).
 
 - [ ] **Step 2: Create the heatmap component**
 
-Create `testing/gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx`:
+Create `gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx`:
 
 ```tsx
 import { useRef, useEffect, useState, useMemo, useCallback } from "react";
@@ -1977,7 +1977,7 @@ function PinnedCard({ cell, x, y, onClose }: { cell: PatchingCellData; x: number
 - [ ] **Step 3: tsc check**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 Expected: no errors.
@@ -1985,7 +1985,7 @@ Expected: no errors.
 - [ ] **Step 4: Vite build check**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/vite build 2>&1 | tail -5
+cd ./gui/frontend && ./node_modules/.bin/vite build 2>&1 | tail -5
 ```
 
 Expected: `built in <N>s` with no error lines.
@@ -1993,8 +1993,8 @@ Expected: `built in <N>s` with no error lines.
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx
-git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): ActivationPatchingHeatmap with metric selector
+git add gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx
+git commit -m "feat(gui/frontend): ActivationPatchingHeatmap with metric selector
 
 d3-rendered (layer.sublayer) × position heatmap; metrics computed
 client-side from decoded logit vectors (logit-diff-recovery, KL,
@@ -2007,8 +2007,8 @@ export via existing ExportButtons. Not yet wired into VisualizationArea."
 ## Task 10: Wire `ProbePanel` + `VisualizationArea`
 
 **Files:**
-- Modify: `testing/gui/frontend/src/components/ProbePanel.tsx`
-- Modify: `testing/gui/frontend/src/components/VisualizationArea.tsx`
+- Modify: `gui/frontend/src/components/ProbePanel.tsx`
+- Modify: `gui/frontend/src/components/VisualizationArea.tsx`
 
 - [ ] **Step 1: Extend ProbePanel's op dropdown**
 
@@ -2136,7 +2136,7 @@ import { ActivationPatchingHeatmap } from "./visualizations/ActivationPatchingHe
 - [ ] **Step 8: tsc check**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 Expected: no errors.
@@ -2144,7 +2144,7 @@ Expected: no errors.
 - [ ] **Step 9: Vite build check**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/vite build 2>&1 | tail -5
+cd ./gui/frontend && ./node_modules/.bin/vite build 2>&1 | tail -5
 ```
 
 Expected: `built in <N>s`.
@@ -2152,8 +2152,8 @@ Expected: `built in <N>s`.
 - [ ] **Step 10: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/components/ProbePanel.tsx testing/gui/frontend/src/components/VisualizationArea.tsx
-git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): wire activation-patching into ProbePanel + VisualizationArea
+git add gui/frontend/src/components/ProbePanel.tsx gui/frontend/src/components/VisualizationArea.tsx
+git commit -m "feat(gui/frontend): wire activation-patching into ProbePanel + VisualizationArea
 
 Op dropdown option, conditional PatchingControls render, handleRun
 branch that gates on length-match, WS_OPS membership, fan-out/A-B
@@ -2167,12 +2167,12 @@ streams in."
 ## Task 11: Playwright smoke extension
 
 **Files:**
-- Modify: `testing/gui/frontend/tests/e2e/smoke.spec.ts`
-- Modify: `testing/gui/frontend/tests/e2e/fixtures/sample.json` (or create sibling `activation-patching.json`)
+- Modify: `gui/frontend/tests/e2e/smoke.spec.ts`
+- Modify: `gui/frontend/tests/e2e/fixtures/sample.json` (or create sibling `activation-patching.json`)
 
 - [ ] **Step 1: Read the existing fixture shape**
 
-Read `testing/gui/frontend/tests/e2e/fixtures/sample.json` to see the `ExperimentFile` / `ProbeResult` shape already in use.
+Read `gui/frontend/tests/e2e/fixtures/sample.json` to see the `ExperimentFile` / `ProbeResult` shape already in use.
 
 - [ ] **Step 2: Extend the fixture with one AP result**
 
@@ -2233,7 +2233,7 @@ Sample addition to `sample.json` (exact placement depends on fixture shape):
 
 - [ ] **Step 3: Write the Playwright test**
 
-Use Edit to append to `testing/gui/frontend/tests/e2e/smoke.spec.ts`:
+Use Edit to append to `gui/frontend/tests/e2e/smoke.spec.ts`:
 
 ```typescript
 test("activation-patching heatmap renders from imported fixture", async ({ page }) => {
@@ -2268,7 +2268,7 @@ test("activation-patching heatmap renders from imported fixture", async ({ page 
 - [ ] **Step 4: Run the smoke suite**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npm run e2e
+cd ./gui/frontend && npm run e2e
 ```
 
 **Subagent note:** invoke with `dangerouslyDisableSandbox: true` — playwright + vite subprocesses touch `/dev/urandom` via node's crypto, which the default sandbox blocks.
@@ -2278,8 +2278,8 @@ Expected: 10/10 tests pass (9 existing + 1 new).
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/tests/e2e/smoke.spec.ts testing/gui/frontend/tests/e2e/fixtures/sample.json
-git -C /home/ai/ai-projects/llm commit -m "test(gui/frontend): Playwright smoke for activation-patching heatmap
+git add gui/frontend/tests/e2e/smoke.spec.ts gui/frontend/tests/e2e/fixtures/sample.json
+git commit -m "test(gui/frontend): Playwright smoke for activation-patching heatmap
 
 Seeds an activation-patching result via experiment-import (mock
 baselines + 2 cells, one per sublayer). Asserts the heatmap renders
@@ -2308,29 +2308,29 @@ Locate the `### Status` section at the bottom and the `Next up: **Phase 3 — ac
 Use Edit to replace `- Next up: **Phase 3 — activation patching**.` with:
 
 ```markdown
-- 2026-04-17: **Phase 3 shipped** — `activation_patch()` added to `llm_surgeon/probe.py` (denoise + noise directions, per-(layer, sublayer, position) granularity, quantized-model warning). Reuses `_capture_residual_stream` + `intervene()` + new `_make_position_patch()` helper. WS route `/sessions/{name}/activation-patching` streams baselines + per-cell patched logits. Frontend: new `PatchingControls.tsx` form (two prompts with length-match indicator, direction/measurement/token-pair controls), new `ActivationPatchingHeatmap.tsx` (rows = layer.sublayer, cols = positions, 4-metric dropdown: logit-diff-recovery / KL-from-clean / top1-match / prob-delta). Metric math in `utils/patchingMetrics.ts` — client-side so dropdown switches without backend round-trip. Commits on `master`: <COMMIT-SHAS-LIST>. Spec: `testing/docs/superpowers/specs/2026-04-17-phase3-activation-patching-design.md`. Plan: `testing/docs/superpowers/plans/2026-04-17-phase3-activation-patching.md`. Pyright 0/0/0; tsc clean; TinyLlama `capital_swap` integration passes (late-layer recovery > early by ≥0.1); Playwright 10/10 (9 existing + 1 new).
+- 2026-04-17: **Phase 3 shipped** — `activation_patch()` added to `llm_surgeon/probe.py` (denoise + noise directions, per-(layer, sublayer, position) granularity, quantized-model warning). Reuses `_capture_residual_stream` + `intervene()` + new `_make_position_patch()` helper. WS route `/sessions/{name}/activation-patching` streams baselines + per-cell patched logits. Frontend: new `PatchingControls.tsx` form (two prompts with length-match indicator, direction/measurement/token-pair controls), new `ActivationPatchingHeatmap.tsx` (rows = layer.sublayer, cols = positions, 4-metric dropdown: logit-diff-recovery / KL-from-clean / top1-match / prob-delta). Metric math in `utils/patchingMetrics.ts` — client-side so dropdown switches without backend round-trip. Commits on `master`: <COMMIT-SHAS-LIST>. Spec: `docs/design-history/specs/2026-04-17-phase3-activation-patching-design.md`. Plan: `docs/design-history/plans/2026-04-17-phase3-activation-patching.md`. Pyright 0/0/0; tsc clean; TinyLlama `capital_swap` integration passes (late-layer recovery > early by ≥0.1); Playwright 10/10 (9 existing + 1 new).
 - Next up: Phase 3.5 (attribution patching — gradient approximation) if scaling needs arise.
 ```
 
-Replace `<COMMIT-SHAS-LIST>` by running `git -C /home/ai/ai-projects/llm log --oneline -n 12 master | tac` and listing the 12 commits this plan produced (1 per task in order 1–11, plus this task's commit — which you're about to make).
+Replace `<COMMIT-SHAS-LIST>` by running `git log --oneline -n 12 master | tac` and listing the 12 commits this plan produced (1 per task in order 1–11, plus this task's commit — which you're about to make).
 
-Actually you can list only the commits on `master` whose subject starts with one of: `feat(probe):`, `test(probe):`, `feat(gui/backend):`, `feat(gui/frontend):`, `test(gui/frontend):`. Use `git -C /home/ai/ai-projects/llm log --oneline --grep="activation" --grep="patching" --grep="probe)" master | head -20` to narrow the search. Substitute the resulting SHAs back into the memory entry.
+Actually you can list only the commits on `master` whose subject starts with one of: `feat(probe):`, `test(probe):`, `feat(gui/backend):`, `feat(gui/frontend):`, `test(gui/frontend):`. Use `git log --oneline --grep="activation" --grep="patching" --grep="probe)" master | head -20` to narrow the search. Substitute the resulting SHAs back into the memory entry.
 
 - [ ] **Step 3: Commit the memory update**
 
 ```bash
-git -C /home/ai/ai-projects/llm add  # nothing — memory file is outside the repo
+git add  # nothing — memory file is outside the repo
 ```
 
-Wait — the memory file lives in `/home/skothr/.claude/...` which is NOT inside the `/home/ai/ai-projects/llm` repo. Memory updates don't get committed to the project git. Skip the git-add; the Edit tool already persisted the file.
+Wait — the memory file lives in `/home/skothr/.claude/...` which is NOT inside the `.` repo. Memory updates don't get committed to the project git. Skip the git-add; the Edit tool already persisted the file.
 
 - [ ] **Step 4: Final verification — full test suites green**
 
 ```bash
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pytest testing/tests/test_probe_activation_patch.py -v
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py gui/backend/routes/probes.py tests/test_probe_activation_patch.py
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npm run e2e  # needs dangerouslyDisableSandbox
+cd . && python -m pytest tests/test_probe_activation_patch.py -v
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py gui/backend/routes/probes.py tests/test_probe_activation_patch.py
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && npm run e2e  # needs dangerouslyDisableSandbox
 ```
 
 **Subagent note:** the last two commands need `dangerouslyDisableSandbox: true`. If either fails, surface specific error back to controller.
@@ -2398,7 +2398,7 @@ No TBD / TODO / "add appropriate X" language. Every step shows full code or exac
 
 ## Execution handoff
 
-**Plan complete and saved to `testing/docs/superpowers/plans/2026-04-17-phase3-activation-patching.md`. Two execution options:**
+**Plan complete and saved to `docs/design-history/plans/2026-04-17-phase3-activation-patching.md`. Two execution options:**
 
 **1. Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, spec-compliance + code-quality review between tasks, fast iteration.
 

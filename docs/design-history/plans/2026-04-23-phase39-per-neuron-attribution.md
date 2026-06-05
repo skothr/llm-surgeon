@@ -8,11 +8,11 @@
 
 **Tech Stack:** Python 3.11 + PyTorch + transformers + FastAPI WebSockets + React 18 + TypeScript + Zustand (existing). No new deps.
 
-**Spec:** `testing/docs/superpowers/specs/2026-04-23-phase39-per-neuron-attribution.md` (commit `d57aef1`).
+**Spec:** `docs/design-history/specs/2026-04-23-phase39-per-neuron-attribution.md` (commit `d57aef1`).
 
 **Tool rules (for every subagent prompt):**
 - Use Read (not cat), Edit (not Bash sed/awk/cat), Grep (not Bash grep/rg/awk), Glob (not find)
-- For git ops: `git -C /home/ai/ai-projects/llm <cmd>`
+- For git ops: `git <cmd>`
 - For CUDA/GPU/tsc/vitest/pyright/git operations: pass `dangerouslyDisableSandbox: true` to the Bash call
 - If a Bash call returns "Permission denied" or sandbox error twice in a row, STOP and report BLOCKED — the parent will run it
 - Pyright/tsc must be 0 errors / 0 warnings / 0 info after every task
@@ -22,33 +22,33 @@
 ## File Structure
 
 **Python**
-- **Modify** `testing/llm_surgeon/probe.py`
+- **Modify** `llm_surgeon/probe.py`
   - `_capture_residual_stream_with_grad`: add `capture_ffn_act: bool = False` param, extend return to **7-tuple** with `ffn_acts: Dict[int, Tensor]`. Also: inside the existing `capture_ffn_out` post-hook, call `retain_grad()` on `mlp_out` when it requires grad.
   - Update all existing callers (4 call sites: `attribution_patch`, `attribution_patch_per_head`, `_compute_all_edges`, any test) to unpack the new 7-tuple shape.
   - `PatchingResult`: add `n_neurons: Optional[int] = None`.
   - New public `attribution_patch_per_neuron(...)` function.
-- **Create** `testing/tests/test_probe_per_neuron_ap.py` — mock + TinyLlama tests.
+- **Create** `tests/test_probe_per_neuron_ap.py` — mock + TinyLlama tests.
 
 **Backend**
-- **Modify** `testing/gui/backend/routes/probes.py` — add `elif cfg.mode == "approx_neuron"` branch.
+- **Modify** `gui/backend/routes/probes.py` — add `elif cfg.mode == "approx_neuron"` branch.
 
 **Frontend**
-- **Modify** `testing/gui/frontend/src/types/api.ts`
-- **Modify** `testing/gui/frontend/src/components/PatchingControls.tsx` — sixth radio + `top_k_neurons` input, `PatchingState` field
-- **Modify** `testing/gui/frontend/src/components/ProbePanel.tsx` — forward `top_k_neurons`
-- **Modify** `testing/gui/frontend/src/components/VisualizationArea.tsx` — route `mode === "approx_neuron"`
-- **Create** `testing/gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx` — ranked-list view
-- **Create** `testing/gui/frontend/tests/e2e/fixtures/activation-patching-per-neuron.json`
-- **Modify** `testing/gui/frontend/tests/e2e/smoke.spec.ts` — 15th test
+- **Modify** `gui/frontend/src/types/api.ts`
+- **Modify** `gui/frontend/src/components/PatchingControls.tsx` — sixth radio + `top_k_neurons` input, `PatchingState` field
+- **Modify** `gui/frontend/src/components/ProbePanel.tsx` — forward `top_k_neurons`
+- **Modify** `gui/frontend/src/components/VisualizationArea.tsx` — route `mode === "approx_neuron"`
+- **Create** `gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx` — ranked-list view
+- **Create** `gui/frontend/tests/e2e/fixtures/activation-patching-per-neuron.json`
+- **Modify** `gui/frontend/tests/e2e/smoke.spec.ts` — 15th test
 
 ---
 
 ## Task 1: Capture helper — 7-tuple + retain_grad on ffn_out
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py:178-344` (helper itself)
-- Modify: `testing/llm_surgeon/probe.py` — every call site of `_capture_residual_stream_with_grad`
-- Modify: `testing/tests/test_probe_edge_ap.py`, `testing/tests/test_probe_per_head_ap.py`, `testing/tests/test_probe_attribution_patch.py`, `testing/tests/test_probe_circuit.py` — any test that unpacks the helper
+- Modify: `llm_surgeon/probe.py:178-344` (helper itself)
+- Modify: `llm_surgeon/probe.py` — every call site of `_capture_residual_stream_with_grad`
+- Modify: `tests/test_probe_edge_ap.py`, `tests/test_probe_per_head_ap.py`, `tests/test_probe_attribution_patch.py`, `tests/test_probe_circuit.py` — any test that unpacks the helper
 
 **Goal:** Extend the capture helper to optionally record MLP intermediate activations (the input to `down_proj`) AND ensure `ffn_out` tensors have `retain_grad()` so `.grad` is populated. Return 7-tuple.
 
@@ -56,13 +56,13 @@
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest testing/tests/test_probe_edge_ap.py testing/tests/test_probe_per_head_ap.py testing/tests/test_probe_attribution_patch.py testing/tests/test_probe_circuit.py -v -k "not TinyLlama"
+python -m pytest tests/test_probe_edge_ap.py tests/test_probe_per_head_ap.py tests/test_probe_attribution_patch.py tests/test_probe_circuit.py -v -k "not TinyLlama"
 ```
 Expected: 54 tests pass (snapshot the exact count).
 
 - [ ] **Step 2: Extend the helper signature + return type**
 
-In `testing/llm_surgeon/probe.py`, find `_capture_residual_stream_with_grad` (line 178). Replace the signature block (lines 178-194) with:
+In `llm_surgeon/probe.py`, find `_capture_residual_stream_with_grad` (line 178). Replace the signature block (lines 178-194) with:
 
 ```python
 def _capture_residual_stream_with_grad(
@@ -183,7 +183,7 @@ Replace with:
 
 Run this grep to find all call sites:
 ```bash
-grep -n "_capture_residual_stream_with_grad(" testing/llm_surgeon/probe.py testing/tests/
+grep -n "_capture_residual_stream_with_grad(" llm_surgeon/probe.py tests/
 ```
 
 For each occurrence of a tuple unpack (pattern `X, Y, Z, W, U, V = _capture_residual_stream_with_grad(...)`), add one more `_` at the end. Example transformation:
@@ -200,17 +200,17 @@ from_captured_raw, _, from_logits, from_tokens, from_cz_raw, _, _ = \
 ```
 
 Known call sites to update:
-- `testing/llm_surgeon/probe.py` — inside `attribution_patch`, `attribution_patch_per_head`, and `_compute_all_edges` (4 total unpack sites in probe.py, two per function for "from" and "base")
-- `testing/tests/test_probe_edge_ap.py` — check for direct helper calls in tests
-- `testing/tests/test_probe_per_head_ap.py` — same
-- `testing/tests/test_probe_attribution_patch.py` — same
-- `testing/tests/test_probe_circuit.py` — same
+- `llm_surgeon/probe.py` — inside `attribution_patch`, `attribution_patch_per_head`, and `_compute_all_edges` (4 total unpack sites in probe.py, two per function for "from" and "base")
+- `tests/test_probe_edge_ap.py` — check for direct helper calls in tests
+- `tests/test_probe_per_head_ap.py` — same
+- `tests/test_probe_attribution_patch.py` — same
+- `tests/test_probe_circuit.py` — same
 
 - [ ] **Step 7: Run the baseline tests — must still pass unchanged**
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest testing/tests/test_probe_edge_ap.py testing/tests/test_probe_per_head_ap.py testing/tests/test_probe_attribution_patch.py testing/tests/test_probe_circuit.py -v -k "not TinyLlama"
+python -m pytest tests/test_probe_edge_ap.py tests/test_probe_per_head_ap.py tests/test_probe_attribution_patch.py tests/test_probe_circuit.py -v -k "not TinyLlama"
 ```
 Expected: same pass count as Step 1 (54). If any test fails with a tuple-arity mismatch, you missed a call site in Step 6.
 
@@ -218,15 +218,15 @@ Expected: same pass count as Step 1 (54). If any test fails with a tuple-arity m
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pyright testing/llm_surgeon/probe.py testing/tests/
+python -m pyright llm_surgeon/probe.py tests/
 ```
 Expected: 0/0/0.
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py testing/tests/test_probe_edge_ap.py testing/tests/test_probe_per_head_ap.py testing/tests/test_probe_attribution_patch.py testing/tests/test_probe_circuit.py
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add llm_surgeon/probe.py tests/test_probe_edge_ap.py tests/test_probe_per_head_ap.py tests/test_probe_attribution_patch.py tests/test_probe_circuit.py
+git commit -m "$(cat <<'EOF'
 refactor(probe): _capture_residual_stream_with_grad 7-tuple + ffn_out retain_grad
 
 Adds capture_ffn_act flag to the capture helper (new pre-hook on
@@ -249,7 +249,7 @@ EOF
 ## Task 2: `attribution_patch_per_neuron` implementation
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py` — add `PatchingResult.n_neurons` field; add new function after `attribution_patch_per_head` (line ~1218) and before `_is_valid_attn_writer` (line ~1418).
+- Modify: `llm_surgeon/probe.py` — add `PatchingResult.n_neurons` field; add new function after `attribution_patch_per_head` (line ~1218) and before `_is_valid_attn_writer` (line ~1418).
 
 - [ ] **Step 1: Extend `PatchingResult`**
 
@@ -457,7 +457,7 @@ def attribution_patch_per_neuron(
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pyright testing/llm_surgeon/probe.py
+python -m pyright llm_surgeon/probe.py
 ```
 Expected: 0/0/0.
 
@@ -466,7 +466,7 @@ Expected: 0/0/0.
 Run a one-liner to ensure the function is importable and doesn't crash on obvious shape bugs:
 
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -c "
+python -c "
 from llm_surgeon.probe import attribution_patch_per_neuron
 print('import ok:', attribution_patch_per_neuron.__name__)
 "
@@ -476,8 +476,8 @@ Expected: `import ok: attribution_patch_per_neuron`
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add llm_surgeon/probe.py
+git commit -m "$(cat <<'EOF'
 feat(probe): attribution_patch_per_neuron — per-neuron FFN attribution
 
 Decomposes Δffn_out's contribution to the metric into per-(layer,
@@ -500,11 +500,11 @@ EOF
 ## Task 3: Python tests (mock + TinyLlama integration)
 
 **Files:**
-- Create: `testing/tests/test_probe_per_neuron_ap.py`
+- Create: `tests/test_probe_per_neuron_ap.py`
 
 - [ ] **Step 1: Write the test file**
 
-Create `testing/tests/test_probe_per_neuron_ap.py`. Copy the mock infrastructure from `test_probe_circuit.py` (the `_stable_word_hash`, `_MockTokenizer`, `_MockLayer`, `_MockModel`, `_make_mock`, `_pick_tokens`, `CLEAN_PROMPT`, `CORR_PROMPT`, `CORRECT_ID`, `INCORRECT_ID` block — all of it) verbatim so tests are independent of Phase 3.8. Below that, write the tests:
+Create `tests/test_probe_per_neuron_ap.py`. Copy the mock infrastructure from `test_probe_circuit.py` (the `_stable_word_hash`, `_MockTokenizer`, `_MockLayer`, `_MockModel`, `_make_mock`, `_pick_tokens`, `CLEAN_PROMPT`, `CORR_PROMPT`, `CORRECT_ID`, `INCORRECT_ID` block — all of it) verbatim so tests are independent of Phase 3.8. Below that, write the tests:
 
 ```python
 # ---- Tests ----
@@ -691,7 +691,7 @@ def _tinyllama_cached() -> bool:
     env_cache = os.environ.get("TINYLLAMA_CACHE")
     if env_cache:
         return Path(env_cache).exists()
-    default = Path("testing/.cache/models/models--TinyLlama--TinyLlama-1.1B-Chat-v1.0")
+    default = Path(".cache/models/models--TinyLlama--TinyLlama-1.1B-Chat-v1.0")
     return default.exists()
 
 
@@ -747,7 +747,7 @@ from llm_surgeon.probe import (
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest testing/tests/test_probe_per_neuron_ap.py -v -k "not TinyLlama"
+python -m pytest tests/test_probe_per_neuron_ap.py -v -k "not TinyLlama"
 ```
 Expected: 7 or 8 tests pass (TestPerNeuronMock × 6 + TestCaptureFFNAct × 2).
 
@@ -757,7 +757,7 @@ If any test fails with a denominator-zero error, the mock model or prompts need 
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest testing/tests/test_probe_per_neuron_ap.py::TestTinyLlamaPerNeuron -v -s
+python -m pytest tests/test_probe_per_neuron_ap.py::TestTinyLlamaPerNeuron -v -s
 ```
 Expected: passes in ~1-2 min on RTX 2080 (fp16).
 
@@ -765,7 +765,7 @@ Expected: passes in ~1-2 min on RTX 2080 (fp16).
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest testing/tests/test_probe_attribution_patch.py testing/tests/test_probe_per_head_ap.py testing/tests/test_probe_edge_ap.py testing/tests/test_probe_circuit.py testing/tests/test_probe_per_neuron_ap.py -v -k "not TinyLlama"
+python -m pytest tests/test_probe_attribution_patch.py tests/test_probe_per_head_ap.py tests/test_probe_edge_ap.py tests/test_probe_circuit.py tests/test_probe_per_neuron_ap.py -v -k "not TinyLlama"
 ```
 Expected: all pass (~62 tests).
 
@@ -773,15 +773,15 @@ Expected: all pass (~62 tests).
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pyright testing/tests/test_probe_per_neuron_ap.py testing/llm_surgeon/probe.py
+python -m pyright tests/test_probe_per_neuron_ap.py llm_surgeon/probe.py
 ```
 Expected: 0/0/0.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/tests/test_probe_per_neuron_ap.py
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add tests/test_probe_per_neuron_ap.py
+git commit -m "$(cat <<'EOF'
 test(probe): mock + TinyLlama tests for attribution_patch_per_neuron
 
 Mock-model suite (6 tests): shape, cell fields, sort-desc invariant,
@@ -803,13 +803,13 @@ EOF
 ## Task 4: Backend WS `approx_neuron` branch
 
 **Files:**
-- Modify: `testing/gui/backend/routes/probes.py`
+- Modify: `gui/backend/routes/probes.py`
 
 - [ ] **Step 1: Find the current mode branches**
 
 Run:
 ```bash
-grep -n 'cfg.mode ==' testing/gui/backend/routes/probes.py
+grep -n 'cfg.mode ==' gui/backend/routes/probes.py
 ```
 Note the line numbers — there should be branches for `"exact"`, `"approx"`, `"approx_head"`, `"edge"`, and `"circuit"`. You'll add `"approx_neuron"` as the sixth.
 
@@ -870,15 +870,15 @@ Important: mirror the structure of the `"circuit"` branch exactly. Read it first
 
 Run:
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pyright testing/gui/backend/routes/probes.py
+python -m pyright gui/backend/routes/probes.py
 ```
 Expected: 0/0/0.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/backend/routes/probes.py
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add gui/backend/routes/probes.py
+git commit -m "$(cat <<'EOF'
 feat(backend): approx_neuron mode branch on activation-patching WS route
 
 Sixth mode on /ws/sessions/{name}/activation-patching. Accepts
@@ -895,7 +895,7 @@ EOF
 ## Task 5: Frontend types
 
 **Files:**
-- Modify: `testing/gui/frontend/src/types/api.ts`
+- Modify: `gui/frontend/src/types/api.ts`
 
 - [ ] **Step 1: Extend PatchingMode, PatchingCellData, summary**
 
@@ -931,15 +931,15 @@ Find `PatchingCompleteData.summary` and add:
 
 Run:
 ```bash
-cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 Expected: no errors.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/types/api.ts
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add gui/frontend/src/types/api.ts
+git commit -m "$(cat <<'EOF'
 feat(gui/frontend): approx_neuron mode types
 
 PatchingMode extends to 'approx_neuron'. PatchingCellData gains
@@ -956,8 +956,8 @@ EOF
 ## Task 6: `PatchingControls` — sixth radio + `top_k_neurons` input
 
 **Files:**
-- Modify: `testing/gui/frontend/src/components/PatchingControls.tsx`
-- Modify: `testing/gui/frontend/src/components/ProbePanel.tsx`
+- Modify: `gui/frontend/src/components/PatchingControls.tsx`
+- Modify: `gui/frontend/src/components/ProbePanel.tsx`
 
 - [ ] **Step 1: Extend `PatchingMode`, `PatchingState`, `DEFAULT_PATCHING_STATE`**
 
@@ -1056,15 +1056,15 @@ Extend to:
 
 Run:
 ```bash
-cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 Expected: no errors.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/components/PatchingControls.tsx testing/gui/frontend/src/components/ProbePanel.tsx
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add gui/frontend/src/components/PatchingControls.tsx gui/frontend/src/components/ProbePanel.tsx
+git commit -m "$(cat <<'EOF'
 feat(gui/frontend): per-neuron FFN (approx_neuron) mode radio + input
 
 Sixth radio in PatchingControls. Conditional top_k_neurons numeric
@@ -1081,20 +1081,20 @@ EOF
 ## Task 7: `PerNeuronPatchingPanel.tsx` + `VisualizationArea` routing
 
 **Files:**
-- Create: `testing/gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx`
-- Modify: `testing/gui/frontend/src/components/VisualizationArea.tsx`
+- Create: `gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx`
+- Modify: `gui/frontend/src/components/VisualizationArea.tsx`
 
 - [ ] **Step 1: Read EdgeAttributionPanel's Top-list tab for table-styling idiom**
 
 Run:
 ```bash
-grep -n "Top-list\|TopList\|<table" testing/gui/frontend/src/components/visualizations/EdgeAttributionPanel.tsx
+grep -n "Top-list\|TopList\|<table" gui/frontend/src/components/visualizations/EdgeAttributionPanel.tsx
 ```
 Mirror the table styling (row colors, hover states) if possible. If EdgeAttributionPanel uses a different mechanism, adapt — don't copy blindly.
 
 - [ ] **Step 2: Write `PerNeuronPatchingPanel.tsx`**
 
-Create `testing/gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx`:
+Create `gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx`:
 
 ```tsx
 import { useMemo, useState } from "react";
@@ -1312,15 +1312,15 @@ import { PerNeuronPatchingPanel } from "./visualizations/PerNeuronPatchingPanel"
 
 Run:
 ```bash
-cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 Expected: no errors.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx testing/gui/frontend/src/components/VisualizationArea.tsx
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx gui/frontend/src/components/VisualizationArea.tsx
+git commit -m "$(cat <<'EOF'
 feat(gui/frontend): PerNeuronPatchingPanel — ranked-list viz for per-neuron AP
 
 Ranked table (layer × neuron × position × ap_recovery) with:
@@ -1344,20 +1344,20 @@ EOF
 ## Task 8: Playwright fixture + smoke test
 
 **Files:**
-- Create: `testing/gui/frontend/tests/e2e/fixtures/activation-patching-per-neuron.json`
-- Modify: `testing/gui/frontend/tests/e2e/smoke.spec.ts`
+- Create: `gui/frontend/tests/e2e/fixtures/activation-patching-per-neuron.json`
+- Modify: `gui/frontend/tests/e2e/smoke.spec.ts`
 
 - [ ] **Step 1: Read the per-head fixture for the schema**
 
 Run:
 ```bash
-cat testing/gui/frontend/tests/e2e/fixtures/activation-patching-per-head.json
+cat gui/frontend/tests/e2e/fixtures/activation-patching-per-head.json
 ```
 (Use Read.) Note the outer `"schema": "llm-surgeon-gui-experiment/v1"` wrapper and result shape.
 
 - [ ] **Step 2: Write the fixture**
 
-Create `testing/gui/frontend/tests/e2e/fixtures/activation-patching-per-neuron.json` — copy the per-head fixture's skeleton and:
+Create `gui/frontend/tests/e2e/fixtures/activation-patching-per-neuron.json` — copy the per-head fixture's skeleton and:
 - Change the result's summary `mode` to `"approx_neuron"`.
 - Add summary fields: `n_neurons: 5632`, `top_k_neurons: 5`.
 - Replace cells with 5 per-neuron cells, each of shape:
@@ -1375,7 +1375,7 @@ Create `testing/gui/frontend/tests/e2e/fixtures/activation-patching-per-neuron.j
 
 - [ ] **Step 3: Add 15th Playwright test**
 
-Append to `testing/gui/frontend/tests/e2e/smoke.spec.ts` (after the 14th circuit test):
+Append to `gui/frontend/tests/e2e/smoke.spec.ts` (after the 14th circuit test):
 
 ```ts
 const PER_NEURON_FIXTURE_PATH = path.join(__dirname, "fixtures", "activation-patching-per-neuron.json");
@@ -1420,7 +1420,7 @@ Also add `const PER_NEURON_FIXTURE_PATH = ...` near the other `FIXTURE_PATH` dec
 
 Run:
 ```bash
-cd testing/gui/frontend && npm run e2e
+cd gui/frontend && npm run e2e
 ```
 Expected: 15/15 tests pass.
 
@@ -1429,23 +1429,23 @@ Expected: 15/15 tests pass.
 Run each:
 ```bash
 # Tsc
-cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd gui/frontend && ./node_modules/.bin/tsc --noEmit
 # Vitest (regression — Phase 3.8 BFS + existing)
-cd testing/gui/frontend && npx vitest run
+cd gui/frontend && npx vitest run
 # Pyright
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pyright testing/llm_surgeon/probe.py testing/gui/backend/routes/probes.py testing/tests/test_probe_per_neuron_ap.py
+python -m pyright llm_surgeon/probe.py gui/backend/routes/probes.py tests/test_probe_per_neuron_ap.py
 # All Python tests (no GPU)
-/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest testing/tests/ -v -k "not TinyLlama"
+python -m pytest tests/ -v -k "not TinyLlama"
 # Playwright
-cd testing/gui/frontend && npm run e2e
+cd gui/frontend && npm run e2e
 ```
 Expected: all green, 0/0/0 pyright, 62+ Python tests pass, Vitest 19/19, Playwright 15/15.
 
 - [ ] **Step 6: Commit + update roadmap memory**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/tests/e2e/fixtures/activation-patching-per-neuron.json testing/gui/frontend/tests/e2e/smoke.spec.ts
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add gui/frontend/tests/e2e/fixtures/activation-patching-per-neuron.json gui/frontend/tests/e2e/smoke.spec.ts
+git commit -m "$(cat <<'EOF'
 test(gui/frontend): Playwright smoke for PerNeuronPatchingPanel
 
 15th test. Imports activation-patching-per-neuron.json fixture
@@ -1466,16 +1466,16 @@ Then update the roadmap memory at `~/.claude/projects/-home-ai-ai-projects-llm/m
 
 | Check | Command | Expected |
 |-------|---------|----------|
-| Pyright | `.venv/bin/python -m pyright testing/llm_surgeon/probe.py testing/gui/backend/routes/probes.py testing/tests/test_probe_*.py` | 0/0/0 |
-| Tsc | `cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit` | clean |
-| Python unit (no GPU) | `.venv/bin/python -m pytest testing/tests/ -v -k "not TinyLlama"` | 62+ pass |
-| Python TinyLlama (GPU) | `.venv/bin/python -m pytest testing/tests/test_probe_per_neuron_ap.py::TestTinyLlamaPerNeuron -v` | pass ~1–2 min |
-| Phase 3.5 regression | `.venv/bin/python -m pytest testing/tests/test_probe_attribution_patch.py::TestTinyLlamaAttributionPatch -v` | ρ=0.956 preserved |
-| Phase 3.6 regression | `.venv/bin/python -m pytest testing/tests/test_probe_per_head_ap.py::TestTinyLlamaPerHead -v` | ρ=1.0000 preserved |
-| Phase 3.7 regression | `.venv/bin/python -m pytest testing/tests/test_probe_edge_ap.py::TestTinyLlamaEAP -v` | top-k consistency passes |
-| Phase 3.8 regression | `.venv/bin/python -m pytest testing/tests/test_probe_circuit.py::TestTinyLlamaCircuit -v` | circuit at tau=0.02 passes |
-| Vitest | `cd testing/gui/frontend && npx vitest run` | 19/19 |
-| Playwright | `cd testing/gui/frontend && npm run e2e` | 15/15 |
+| Pyright | `.venv/bin/python -m pyright llm_surgeon/probe.py gui/backend/routes/probes.py tests/test_probe_*.py` | 0/0/0 |
+| Tsc | `cd gui/frontend && ./node_modules/.bin/tsc --noEmit` | clean |
+| Python unit (no GPU) | `.venv/bin/python -m pytest tests/ -v -k "not TinyLlama"` | 62+ pass |
+| Python TinyLlama (GPU) | `.venv/bin/python -m pytest tests/test_probe_per_neuron_ap.py::TestTinyLlamaPerNeuron -v` | pass ~1–2 min |
+| Phase 3.5 regression | `.venv/bin/python -m pytest tests/test_probe_attribution_patch.py::TestTinyLlamaAttributionPatch -v` | ρ=0.956 preserved |
+| Phase 3.6 regression | `.venv/bin/python -m pytest tests/test_probe_per_head_ap.py::TestTinyLlamaPerHead -v` | ρ=1.0000 preserved |
+| Phase 3.7 regression | `.venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestTinyLlamaEAP -v` | top-k consistency passes |
+| Phase 3.8 regression | `.venv/bin/python -m pytest tests/test_probe_circuit.py::TestTinyLlamaCircuit -v` | circuit at tau=0.02 passes |
+| Vitest | `cd gui/frontend && npx vitest run` | 19/19 |
+| Playwright | `cd gui/frontend && npm run e2e` | 15/15 |
 
 ---
 

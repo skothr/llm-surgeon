@@ -4,9 +4,9 @@
 >
 > **Tool rules (for subagents):**
 > - Use Read (not cat/head/tail), Grep (not grep/rg/awk), Glob (not find/ls), Edit (not sed/awk) for all file operations
-> - You are already in the project root (/home/ai/ai-projects/llm) — never cd
-> - Python venv: `/home/ai/ai-projects/llm/testing/.venv/bin/python`
-> - Run tests: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/ -v`
+> - You are already in the project root (the repo root) — never cd
+> - Python venv: `python`
+> - Run tests: `python -m pytest tests/ -v`
 
 **Goal:** Add perplexity measurement and downstream task evaluation to `benchmark.py`, giving quantitative metrics for comparing original vs surgically modified models.
 
@@ -14,14 +14,14 @@
 
 **Tech Stack:** PyTorch, HuggingFace datasets, lm-eval
 
-**Reference:** `docs/superpowers/specs/2026-04-08-llm-surgeon-design.md` (v2), Phase 3 section of phase plan.
+**Reference:** `docs/design-history/specs/2026-04-08-llm-surgeon-design.md` (v2), Phase 3 section of phase plan.
 
 ---
 
 ## File Map
 
 ```
-testing/
+
   llm_surgeon/
     benchmark.py         — CREATE — perplexity, eval_downstream
     __init__.py          — MODIFY — add benchmark import
@@ -34,13 +34,13 @@ testing/
 ### Task 1: Perplexity measurement
 
 **Files:**
-- Create: `testing/llm_surgeon/benchmark.py`
-- Create: `testing/tests/test_benchmark.py`
-- Modify: `testing/llm_surgeon/__init__.py`
+- Create: `llm_surgeon/benchmark.py`
+- Create: `tests/test_benchmark.py`
+- Modify: `llm_surgeon/__init__.py`
 
 - [ ] **Step 1: Write tests for perplexity**
 
-Create `testing/tests/test_benchmark.py`:
+Create `tests/test_benchmark.py`:
 
 ```python
 """Tests for benchmark module."""
@@ -110,7 +110,7 @@ Note: We need a `_make_tiny_tokenizer` helper. We'll add it to conftest.py as a 
 
 - [ ] **Step 2: Update conftest.py with tokenizer helper**
 
-Add to `testing/tests/conftest.py` a module-level function:
+Add to `tests/conftest.py` a module-level function:
 
 ```python
 def _make_tiny_tokenizer(vocab_size=64):
@@ -137,12 +137,12 @@ def _make_tiny_tokenizer(vocab_size=64):
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/test_benchmark.py -v`
+Run: `python -m pytest tests/test_benchmark.py -v`
 Expected: FAIL — `ImportError: cannot import name 'perplexity'`
 
 - [ ] **Step 4: Implement perplexity**
 
-Create `testing/llm_surgeon/benchmark.py`:
+Create `llm_surgeon/benchmark.py`:
 
 ```python
 """Benchmarking: perplexity measurement and downstream evaluation."""
@@ -275,13 +275,13 @@ from llm_surgeon import surgery, verify, export, benchmark
 
 - [ ] **Step 6: Run tests to verify they pass**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/test_benchmark.py -v`
+Run: `python -m pytest tests/test_benchmark.py -v`
 Expected: All perplexity tests PASS.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add testing/llm_surgeon/benchmark.py testing/tests/test_benchmark.py testing/llm_surgeon/__init__.py testing/tests/conftest.py
+git add llm_surgeon/benchmark.py tests/test_benchmark.py llm_surgeon/__init__.py tests/conftest.py
 git commit -m "feat: add perplexity measurement with sliding window and quantization warning"
 ```
 
@@ -290,12 +290,12 @@ git commit -m "feat: add perplexity measurement with sliding window and quantiza
 ### Task 2: eval_downstream (lm-evaluation-harness integration)
 
 **Files:**
-- Modify: `testing/llm_surgeon/benchmark.py`
-- Modify: `testing/tests/test_benchmark.py`
+- Modify: `llm_surgeon/benchmark.py`
+- Modify: `tests/test_benchmark.py`
 
 - [ ] **Step 1: Write tests for eval_downstream**
 
-Add to `testing/tests/test_benchmark.py`:
+Add to `tests/test_benchmark.py`:
 
 ```python
 from llm_surgeon.benchmark import eval_downstream
@@ -334,12 +334,12 @@ class TestEvalDownstream:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/test_benchmark.py::TestEvalDownstream -v`
+Run: `python -m pytest tests/test_benchmark.py::TestEvalDownstream -v`
 Expected: FAIL — `ImportError: cannot import name 'eval_downstream'`
 
 - [ ] **Step 3: Implement eval_downstream**
 
-Add to `testing/llm_surgeon/benchmark.py`:
+Add to `llm_surgeon/benchmark.py`:
 
 ```python
 import subprocess
@@ -426,20 +426,20 @@ Add `import os` at the top of benchmark.py if not already present.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/test_benchmark.py::TestEvalDownstream -v --timeout=120`
+Run: `python -m pytest tests/test_benchmark.py::TestEvalDownstream -v --timeout=120`
 Expected: `test_returns_dict` PASSES (slow — runs 5 arc_easy examples on tiny model). `test_invalid_task_raises` PASSES.
 
 Note: The lm_eval test is slow even with limit=5 because it loads the evaluation harness. This is expected.
 
 - [ ] **Step 5: Run full test suite**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/ -v`
+Run: `python -m pytest tests/ -v`
 Expected: All Phase 1 + Phase 2 + new benchmark tests PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add testing/llm_surgeon/benchmark.py testing/tests/test_benchmark.py
+git add llm_surgeon/benchmark.py tests/test_benchmark.py
 git commit -m "feat: add eval_downstream via lm-evaluation-harness"
 ```
 
@@ -448,7 +448,7 @@ git commit -m "feat: add eval_downstream via lm-evaluation-harness"
 ## Final State
 
 ```
-testing/
+
   llm_surgeon/
     __init__.py          — imports surgery, verify, export, benchmark
     surgery.py           — (Phase 1)

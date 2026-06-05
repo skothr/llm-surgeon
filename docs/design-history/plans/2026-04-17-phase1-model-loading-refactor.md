@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3 · PyTorch · transformers · huggingface_hub · pytest · FastAPI · React/TypeScript · Vite · Playwright
 
-**Spec:** `testing/docs/superpowers/specs/2026-04-17-phase1-model-loading-design.md`
+**Spec:** `docs/design-history/specs/2026-04-17-phase1-model-loading-design.md`
 
 ---
 
@@ -16,11 +16,11 @@
 
 | File | Action | Responsibility |
 |---|---|---|
-| `testing/llm_surgeon/surgery.py` | Modify | Add `_is_cached`; rewrite `load_model` load path; delete `_snapshot_dir`, `_has_safetensors`, `convert_to_safetensors`, `HF_HUB_OFFLINE` env mutation |
-| `testing/tests/test_surgery.py` | Modify | Add `TestIsCached` + `TestLoadModel` (unit, mocked); add TinyLlama integration tests; delete/update tests referencing removed helpers |
-| `testing/gui/backend/routes/sessions.py` | Modify | Replace `_snapshot_dir` guards with `_is_cached`; delete `_has_safetensors_cached`, `ConvertRequest`, `/models/convert-safetensors`; drop `safetensors` field from `_hf_model_meta` |
-| `testing/gui/frontend/src/types/api.ts` | Modify | Remove `safetensors: boolean` from `AvailableModel` |
-| `testing/gui/frontend/src/components/SessionsPanel.tsx` | Modify | Remove the `safetensors` span at :285 |
+| `llm_surgeon/surgery.py` | Modify | Add `_is_cached`; rewrite `load_model` load path; delete `_snapshot_dir`, `_has_safetensors`, `convert_to_safetensors`, `HF_HUB_OFFLINE` env mutation |
+| `tests/test_surgery.py` | Modify | Add `TestIsCached` + `TestLoadModel` (unit, mocked); add TinyLlama integration tests; delete/update tests referencing removed helpers |
+| `gui/backend/routes/sessions.py` | Modify | Replace `_snapshot_dir` guards with `_is_cached`; delete `_has_safetensors_cached`, `ConvertRequest`, `/models/convert-safetensors`; drop `safetensors` field from `_hf_model_meta` |
+| `gui/frontend/src/types/api.ts` | Modify | Remove `safetensors: boolean` from `AvailableModel` |
+| `gui/frontend/src/components/SessionsPanel.tsx` | Modify | Remove the `safetensors` span at :285 |
 | `/home/skothr/.claude/projects/-home-ai-ai-projects-llm/memory/project_llm_surgeon_roadmap.md` | Modify | Update status line to record Phase 1 shipped |
 
 ---
@@ -41,14 +41,14 @@ Order matters because Task 2 imports `_is_cached` (introduced in Task 1) and Tas
 ## Task 1 — Surgery.py refactor (TDD)
 
 **Files:**
-- Modify: `testing/llm_surgeon/surgery.py`
-- Modify: `testing/tests/test_surgery.py`
+- Modify: `llm_surgeon/surgery.py`
+- Modify: `tests/test_surgery.py`
 
 ---
 
 - [ ] **Step 1.1 — Write failing test for `_is_cached` on an empty cache**
 
-Add to `testing/tests/test_surgery.py`:
+Add to `tests/test_surgery.py`:
 
 ```python
 class TestIsCached:
@@ -81,13 +81,13 @@ class TestIsCached:
 
 - [ ] **Step 1.2 — Run test to confirm it fails**
 
-Run: `testing/.venv/bin/python -m pytest testing/tests/test_surgery.py::TestIsCached -v`
+Run: `python -m pytest tests/test_surgery.py::TestIsCached -v`
 
 Expected: FAIL with `ImportError` — `_is_cached` does not exist yet.
 
 - [ ] **Step 1.3 — Implement `_is_cached` in `surgery.py`**
 
-Add to `testing/llm_surgeon/surgery.py` directly above the `_snapshot_dir` function:
+Add to `llm_surgeon/surgery.py` directly above the `_snapshot_dir` function:
 
 ```python
 def _is_cached(model_id: str, cache_dir: str | None = None) -> bool:
@@ -106,13 +106,13 @@ def _is_cached(model_id: str, cache_dir: str | None = None) -> bool:
 
 - [ ] **Step 1.4 — Run test to confirm it passes**
 
-Run: `testing/.venv/bin/python -m pytest testing/tests/test_surgery.py::TestIsCached -v`
+Run: `python -m pytest tests/test_surgery.py::TestIsCached -v`
 
 Expected: both tests PASS.
 
 - [ ] **Step 1.5 — Write failing unit tests for `load_model` kwarg routing**
 
-Add to `testing/tests/test_surgery.py`:
+Add to `tests/test_surgery.py`:
 
 ```python
 class TestLoadModelKwargs:
@@ -199,7 +199,7 @@ class TestLoadModelKwargs:
 
 - [ ] **Step 1.6 — Run the new tests to confirm they fail**
 
-Run: `testing/.venv/bin/python -m pytest testing/tests/test_surgery.py::TestLoadModelKwargs -v`
+Run: `python -m pytest tests/test_surgery.py::TestLoadModelKwargs -v`
 
 Expected: all four tests FAIL (signature of `load_model` doesn't yet accept `revision`; `_is_cached` not yet wired into `load_model`; env-var mutation still present).
 
@@ -324,13 +324,13 @@ Leave `MODEL_CACHE_DIR` in place — it's still used as the default for `cache_d
 
 - [ ] **Step 1.9 — Run `TestLoadModelKwargs` to confirm it passes**
 
-Run: `testing/.venv/bin/python -m pytest testing/tests/test_surgery.py::TestLoadModelKwargs -v`
+Run: `python -m pytest tests/test_surgery.py::TestLoadModelKwargs -v`
 
 Expected: all four tests PASS.
 
 - [ ] **Step 1.10 — Write failing TinyLlama integration tests**
 
-Append to `testing/tests/test_surgery.py`. These rely on the TinyLlama cache documented in `CLAUDE.md § Primary dev models`; a `skipif` guards CI/offline environments without the cache.
+Append to `tests/test_surgery.py`. These rely on the TinyLlama cache documented in `CLAUDE.md § Primary dev models`; a `skipif` guards CI/offline environments without the cache.
 
 ```python
 def _tinyllama_cached() -> bool:
@@ -359,7 +359,7 @@ class TestLoadModelIntegration:
 
 - [ ] **Step 1.11 — Run the integration tests**
 
-Run: `testing/.venv/bin/python -m pytest testing/tests/test_surgery.py::TestLoadModelIntegration -v`
+Run: `python -m pytest tests/test_surgery.py::TestLoadModelIntegration -v`
 
 Expected: both tests PASS (assuming TinyLlama is cached; otherwise skipped).
 
@@ -367,29 +367,29 @@ Note: `nf4` needs CUDA. If the runner has no GPU, the test may fail at `device_m
 
 - [ ] **Step 1.12 — Delete the obsolete `test_export` test**
 
-`testing/tests/test_export.py` may reference `convert_to_safetensors`. Search and update:
+`tests/test_export.py` may reference `convert_to_safetensors`. Search and update:
 
-Run: `grep -nE 'convert_to_safetensors|_snapshot_dir|_has_safetensors' testing/tests/`
+Run: `grep -nE 'convert_to_safetensors|_snapshot_dir|_has_safetensors' tests/`
 
 For every match, either delete the referring test or rewrite it against the new API (most likely delete — these helpers no longer exist). Remove related imports at the top of the file.
 
 - [ ] **Step 1.13 — Full test suite sanity check**
 
-Run: `testing/.venv/bin/python -m pytest testing/tests/ -v`
+Run: `python -m pytest tests/ -v`
 
 Expected: all tests PASS (or skip cleanly if GPU/cache absent). Fix any regression surfaced.
 
 - [ ] **Step 1.14 — Type-check surgery.py and tests**
 
-Run: `testing/.venv/bin/python -m pyright testing/llm_surgeon/surgery.py testing/tests/test_surgery.py`
+Run: `python -m pyright llm_surgeon/surgery.py tests/test_surgery.py`
 
 Expected: zero errors, zero warnings, zero informations. Fix any surfaced diagnostics before committing (per CLAUDE.md § Type Checking).
 
 - [ ] **Step 1.15 — Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm
-git add testing/llm_surgeon/surgery.py testing/tests/test_surgery.py testing/tests/test_export.py
+cd .
+git add llm_surgeon/surgery.py tests/test_surgery.py tests/test_export.py
 git commit -m "$(cat <<'EOF'
 refactor(surgery): replace _snapshot_dir with stock HF cache API
 
@@ -414,13 +414,13 @@ Run: `git status` — expected clean tree afterwards.
 ## Task 2 — Backend sessions.py cleanup
 
 **Files:**
-- Modify: `testing/gui/backend/routes/sessions.py`
+- Modify: `gui/backend/routes/sessions.py`
 
 ---
 
 - [ ] **Step 2.1 — Delete `_has_safetensors_cached` helper**
 
-In `testing/gui/backend/routes/sessions.py`, delete the helper at lines 497–501:
+In `gui/backend/routes/sessions.py`, delete the helper at lines 497–501:
 
 ```python
 def _has_safetensors_cached(model_id: str) -> bool:
@@ -497,13 +497,13 @@ if _is_cached(info.model_id):
 
 Scan the file for remaining `_scan_executor.submit` or `run_in_executor(_scan_executor, ...)` uses:
 
-Run: `grep -n '_scan_executor' testing/gui/backend/routes/sessions.py`
+Run: `grep -n '_scan_executor' gui/backend/routes/sessions.py`
 
 If uses remain (model-cache scan, GGUF header parsing), leave the executor as-is. If nothing uses it after the delete in Step 2.3, delete its definition at the top of the file.
 
 - [ ] **Step 2.7 — Type-check the backend file**
 
-Run: `testing/.venv/bin/python -m pyright testing/gui/backend/routes/sessions.py`
+Run: `python -m pyright gui/backend/routes/sessions.py`
 
 Expected: zero diagnostics. Fix any surfaced by the deletes (usually an orphaned import — `field_validator`, `BaseModel`, `Path` etc. may still be used elsewhere; only remove if pyright flags them).
 
@@ -512,7 +512,7 @@ Expected: zero diagnostics. Fix any surfaced by the deletes (usually an orphaned
 The session-management surface is not covered by the Playwright smoke suite (spec §7 noted it). Run a quick manual boot to verify no import-time crash:
 
 ```bash
-cd /home/ai/ai-projects/llm/testing
+cd .
 ./.venv/bin/python -c "from gui.backend.routes import sessions; print('OK:', sessions.router.routes[0].path)"
 ```
 
@@ -521,8 +521,8 @@ Expected: prints `OK: ...` and exits 0. Any ImportError means a deletion nicked 
 - [ ] **Step 2.9 — Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm
-git add testing/gui/backend/routes/sessions.py
+cd .
+git add gui/backend/routes/sessions.py
 git commit -m "$(cat <<'EOF'
 feat(gui/backend): adopt _is_cached; drop safetensors-convert endpoint
 
@@ -544,8 +544,8 @@ Run: `git status` — expected clean.
 ## Task 3 — Frontend safetensors-badge removal
 
 **Files:**
-- Modify: `testing/gui/frontend/src/types/api.ts`
-- Modify: `testing/gui/frontend/src/components/SessionsPanel.tsx`
+- Modify: `gui/frontend/src/types/api.ts`
+- Modify: `gui/frontend/src/components/SessionsPanel.tsx`
 
 No separate convert-button exists in the frontend — verified by grep during planning. The only UI surface that referenced safetensors is the info-badge span at `SessionsPanel.tsx:285`.
 
@@ -553,7 +553,7 @@ No separate convert-button exists in the frontend — verified by grep during pl
 
 - [ ] **Step 3.1 — Remove `safetensors` field from `AvailableModel`**
 
-In `testing/gui/frontend/src/types/api.ts`, delete line 138:
+In `gui/frontend/src/types/api.ts`, delete line 138:
 
 ```ts
   safetensors: boolean;
@@ -563,7 +563,7 @@ The remaining `AvailableModel` fields stay untouched.
 
 - [ ] **Step 3.2 — Remove the safetensors badge from `SessionsPanel.tsx`**
 
-In `testing/gui/frontend/src/components/SessionsPanel.tsx`, delete line 285:
+In `gui/frontend/src/components/SessionsPanel.tsx`, delete line 285:
 
 ```tsx
 {selectedModel.safetensors && <span> | safetensors</span>}
@@ -571,13 +571,13 @@ In `testing/gui/frontend/src/components/SessionsPanel.tsx`, delete line 285:
 
 Verify nothing else in the file references `selectedModel.safetensors`:
 
-Run: `grep -n 'safetensors' testing/gui/frontend/src/components/SessionsPanel.tsx`
+Run: `grep -n 'safetensors' gui/frontend/src/components/SessionsPanel.tsx`
 
 Expected: no matches.
 
 - [ ] **Step 3.3 — Sanity grep the rest of the frontend**
 
-Run: `grep -rn 'safetensors' testing/gui/frontend/src/`
+Run: `grep -rn 'safetensors' gui/frontend/src/`
 
 Expected: zero matches. If any remain, they were missed references — delete them.
 
@@ -586,7 +586,7 @@ Expected: zero matches. If any remain, they were missed references — delete th
 Run:
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend
+cd ./gui/frontend
 ./node_modules/.bin/tsc --noEmit
 ```
 
@@ -597,7 +597,7 @@ Expected: exit 0, no diagnostics.
 Run:
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend
+cd ./gui/frontend
 ./node_modules/.bin/vite build
 ```
 
@@ -610,7 +610,7 @@ Per CLAUDE.md: "Always run Tier 3 after UI or store changes."
 Run:
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend
+cd ./gui/frontend
 npm run e2e
 ```
 
@@ -619,8 +619,8 @@ Expected: 9 tests PASS. If vite/playwright tooling hits the sandbox at `/dev/ura
 - [ ] **Step 3.7 — Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm
-git add testing/gui/frontend/src/types/api.ts testing/gui/frontend/src/components/SessionsPanel.tsx
+cd .
+git add gui/frontend/src/types/api.ts gui/frontend/src/components/SessionsPanel.tsx
 git commit -m "$(cat <<'EOF'
 feat(gui/frontend): drop safetensors badge from SessionsPanel
 
@@ -652,7 +652,7 @@ Edit the roadmap memory's `### Status` section (currently: "2026-04-17: plan sav
 
 ```
 - 2026-04-17: plan saved.
-- 2026-04-17: Phase 1 shipped — _snapshot_dir/convert_to_safetensors removed, replaced by stock HF cache API + _is_cached helper. Spec: testing/docs/superpowers/specs/2026-04-17-phase1-model-loading-design.md. Commits: <sha1>, <sha2>, <sha3>. Next up: Phase 2 (lm-eval-harness integration).
+- 2026-04-17: Phase 1 shipped — _snapshot_dir/convert_to_safetensors removed, replaced by stock HF cache API + _is_cached helper. Spec: docs/design-history/specs/2026-04-17-phase1-model-loading-design.md. Commits: <sha1>, <sha2>, <sha3>. Next up: Phase 2 (lm-eval-harness integration).
 ```
 
 Substitute the actual commit SHAs from Tasks 1–3 (`git log --oneline -3`).
@@ -693,7 +693,7 @@ No placeholders (`TBD`, `TODO`, "similar to…", "add validation"). All types (`
 
 ## Execution Handoff
 
-Plan complete and saved to `testing/docs/superpowers/plans/2026-04-17-phase1-model-loading-refactor.md`. Two execution options:
+Plan complete and saved to `docs/design-history/plans/2026-04-17-phase1-model-loading-refactor.md`. Two execution options:
 
 **1. Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration.
 

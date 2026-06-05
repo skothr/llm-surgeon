@@ -30,7 +30,7 @@ Additionally:
 - Generation-quality metrics (`compare()`, `generation_metrics()`).
 - New module — everything lands in existing files.
 - Phase 3 (activation patching).
-- `lm_eval` dependency install — `0.4.11` is already in `testing/.venv`.
+- `lm_eval` dependency install — `0.4.11` is already in `.venv`.
 
 ## Decisions
 
@@ -206,7 +206,7 @@ Per the updated `feedback_gpu_sandbox.md` memory, the integration-test subagent'
 
 ### Migration
 
-- Callers of the old `eval_downstream(model_path, tasks, ...)` positional break: `tasks` is the new first positional; `model_path` is keyword-only. Planning phase must audit `grep -rn eval_downstream\\( testing/` and update call sites.
+- Callers of the old `eval_downstream(model_path, tasks, ...)` positional break: `tasks` is the new first positional; `model_path` is keyword-only. Planning phase must audit `grep -rn eval_downstream\\( ` and update call sites.
 - `experiments.db` gets the `harness_results` table on first `_connect()` after deploy (via `CREATE TABLE IF NOT EXISTS`). No ALTER, no migration script.
 
 ### Risks

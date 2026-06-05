@@ -8,9 +8,9 @@
 
 **Tech Stack:** Python 3.11, PyTorch (autograd), transformers (HF LLaMA), FastAPI WebSockets, React + TypeScript + Zustand, d3, pytest (Python), Playwright (frontend E2E).
 
-**Spec:** `testing/docs/superpowers/specs/2026-04-21-phase36-per-head-attribution.md`.
+**Spec:** `docs/design-history/specs/2026-04-21-phase36-per-head-attribution.md`.
 
-**Cwd for tool invocations:** `/home/ai/ai-projects/llm`. Pyright runs from `testing/`. tsc and Playwright run from `testing/gui/frontend/`.
+**Cwd for tool invocations:** `.`. Pyright runs from the repo root. tsc and Playwright run from `gui/frontend/`.
 
 ---
 
@@ -21,9 +21,9 @@
 - Avoid unnecessary compound commands. Avoid chaining that would trigger a permission prompt.
 - **GPU tests:** any Bash call that runs pytest touching CUDA must use `dangerouslyDisableSandbox: true`. If a subagent cannot get that permission, surface BLOCKED status.
 - **Playwright / Vite:** invoke with `dangerouslyDisableSandbox: true` (they touch `/dev/urandom`).
-- Pyright CLI: run from `testing/` cwd. Command: `.venv/bin/python -m pyright <paths>`.
-- Frontend tsc: run from `testing/gui/frontend/`. Command: `./node_modules/.bin/tsc --noEmit`.
-- Playwright: run from `testing/gui/frontend/`. Command: `npm run e2e`.
+- Pyright CLI: run from the repo root cwd. Command: `.venv/bin/python -m pyright <paths>`.
+- Frontend tsc: run from `gui/frontend/`. Command: `./node_modules/.bin/tsc --noEmit`.
+- Playwright: run from `gui/frontend/`. Command: `npm run e2e`.
 - Zero-diagnostics discipline: every commit must land with pyright 0/0/0 and tsc clean.
 - **Model selection for subagent dispatch:** sonnet or opus only. Never haiku.
 
@@ -32,17 +32,17 @@
 ## File Structure
 
 ### New files
-- `testing/tests/test_probe_per_head_ap.py` — unit + TinyLlama Spearman integration.
-- `testing/gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx` — new viz component.
-- `testing/gui/frontend/tests/e2e/fixtures/activation-patching-per-head.json` — Playwright fixture.
+- `tests/test_probe_per_head_ap.py` — unit + TinyLlama Spearman integration.
+- `gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx` — new viz component.
+- `gui/frontend/tests/e2e/fixtures/activation-patching-per-head.json` — Playwright fixture.
 
 ### Modified files
-- `testing/llm_surgeon/probe.py` — extend `_capture_residual_stream_with_grad` (5-tuple return + `capture_concat_z` flag); add `n_heads` field to `PatchingResult`; add `attribution_patch_per_head()`; update `attribution_patch` to unpack 5-tuple.
-- `testing/gui/backend/routes/probes.py` — `approx_head` mode branch + `unit`-keyed frames + `n_heads` in complete frame.
-- `testing/gui/frontend/src/types/api.ts` — `PatchingCellData.unit?`, `head?`; `PatchingCompleteData.summary.mode` extended to `"approx_head"`; `summary.n_heads?`.
-- `testing/gui/frontend/src/components/PatchingControls.tsx` — third mode radio + `PatchingMode` type extension.
-- `testing/gui/frontend/src/components/ProbePanel.tsx` — route `mode === "approx_head"` to `<PerHeadPatchingHeatmap>`.
-- `testing/gui/frontend/tests/e2e/smoke.spec.ts` — one new per-head smoke test.
+- `llm_surgeon/probe.py` — extend `_capture_residual_stream_with_grad` (5-tuple return + `capture_concat_z` flag); add `n_heads` field to `PatchingResult`; add `attribution_patch_per_head()`; update `attribution_patch` to unpack 5-tuple.
+- `gui/backend/routes/probes.py` — `approx_head` mode branch + `unit`-keyed frames + `n_heads` in complete frame.
+- `gui/frontend/src/types/api.ts` — `PatchingCellData.unit?`, `head?`; `PatchingCompleteData.summary.mode` extended to `"approx_head"`; `summary.n_heads?`.
+- `gui/frontend/src/components/PatchingControls.tsx` — third mode radio + `PatchingMode` type extension.
+- `gui/frontend/src/components/ProbePanel.tsx` — route `mode === "approx_head"` to `<PerHeadPatchingHeatmap>`.
+- `gui/frontend/tests/e2e/smoke.spec.ts` — one new per-head smoke test.
 
 ---
 
@@ -51,12 +51,12 @@
 **Why first:** both `attribution_patch` (Phase 3.5) and the new `attribution_patch_per_head` call `_capture_residual_stream_with_grad`. Extending the return from 4-tuple to 5-tuple must happen before any new code references the 5th element, and the existing Phase 3.5 caller must be updated atomically to avoid breaking tests.
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py`
-- Modify (if it exists): `testing/tests/test_probe_attribution_patch.py` (add assert for `n_heads` default)
+- Modify: `llm_surgeon/probe.py`
+- Modify (if it exists): `tests/test_probe_attribution_patch.py` (add assert for `n_heads` default)
 
 - [ ] **Step 1: Write failing test**
 
-Create `testing/tests/test_probe_per_head_ap.py` (new file):
+Create `tests/test_probe_per_head_ap.py` (new file):
 
 ```python
 """Tests for probe.attribution_patch_per_head — per-head gradient AP (Phase 3.6)."""
@@ -107,14 +107,14 @@ class TestPatchingResultNHeads:
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py::TestPatchingResultNHeads -v
+cd . && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py::TestPatchingResultNHeads -v
 ```
 
 Expected: FAIL with `TypeError` (no `n_heads` parameter) or `AttributeError`.
 
 - [ ] **Step 3: Add `n_heads` field to `PatchingResult`**
 
-Edit `testing/llm_surgeon/probe.py` — locate the `PatchingResult` dataclass (around line 801). Add the new field after `mode`:
+Edit `llm_surgeon/probe.py` — locate the `PatchingResult` dataclass (around line 801). Add the new field after `mode`:
 
 ```python
 @dataclass
@@ -132,7 +132,7 @@ class PatchingResult:
 
 - [ ] **Step 4: Extend `_capture_residual_stream_with_grad` to return 5-tuple**
 
-Edit `testing/llm_surgeon/probe.py` — change the function signature and body to accept `capture_concat_z: bool = False` and add the `o_proj` pre-hook:
+Edit `llm_surgeon/probe.py` — change the function signature and body to accept `capture_concat_z: bool = False` and add the `o_proj` pre-hook:
 
 New signature:
 ```python
@@ -186,7 +186,7 @@ return captured, h_ins, model_output.logits[0], prompt_tokens, concat_z_captured
 
 - [ ] **Step 5: Update the `attribution_patch` (Phase 3.5) caller to unpack 5 values**
 
-Edit `testing/llm_surgeon/probe.py` — inside `attribution_patch()`, there are two calls to `_capture_residual_stream_with_grad`. Update both from 4-tuple to 5-tuple unpack:
+Edit `llm_surgeon/probe.py` — inside `attribution_patch()`, there are two calls to `_capture_residual_stream_with_grad`. Update both from 4-tuple to 5-tuple unpack:
 
 ```python
 # In attribution_patch — from-prompt call (no_grad branch):
@@ -207,7 +207,7 @@ The 5th return element (empty dict when `capture_concat_z=False`) is discarded v
 - [ ] **Step 6: Run all tests to verify no regression**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py::TestPatchingResultNHeads tests/test_probe_attribution_patch.py tests/test_probe_activation_patch.py -v
+cd . && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py::TestPatchingResultNHeads tests/test_probe_attribution_patch.py tests/test_probe_activation_patch.py -v
 ```
 
 Expected: all tests PASS.
@@ -215,7 +215,7 @@ Expected: all tests PASS.
 - [ ] **Step 7: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_per_head_ap.py tests/test_probe_attribution_patch.py
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_per_head_ap.py tests/test_probe_attribution_patch.py
 ```
 
 Expected: `0 errors, 0 warnings, 0 informations`.
@@ -223,8 +223,8 @@ Expected: `0 errors, 0 warnings, 0 informations`.
 - [ ] **Step 8: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py testing/tests/test_probe_per_head_ap.py
-git -C /home/ai/ai-projects/llm commit -m "feat(probe): PatchingResult.n_heads + capture_concat_z flag on _capture_residual_stream_with_grad"
+git add llm_surgeon/probe.py tests/test_probe_per_head_ap.py
+git commit -m "feat(probe): PatchingResult.n_heads + capture_concat_z flag on _capture_residual_stream_with_grad"
 ```
 
 ---
@@ -234,11 +234,11 @@ git -C /home/ai/ai-projects/llm commit -m "feat(probe): PatchingResult.n_heads +
 **Why:** before implementing the full `attribution_patch_per_head`, lock in that `_capture_residual_stream_with_grad(capture_concat_z=True)` delivers a correctly shaped, graph-attached tensor whose `.grad` is populated after backward. This is the foundational correctness claim for per-head decomposition.
 
 **Files:**
-- Modify: `testing/tests/test_probe_per_head_ap.py`
+- Modify: `tests/test_probe_per_head_ap.py`
 
 - [ ] **Step 1: Write failing tests**
 
-Append to `testing/tests/test_probe_per_head_ap.py`:
+Append to `tests/test_probe_per_head_ap.py`:
 
 ```python
 # Reusable mock model for capture tests (hidden=8, n_heads=2, head_dim=4)
@@ -369,7 +369,7 @@ class TestCaptureConcat_z:
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py::TestCaptureConcat_z -v
+cd . && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py::TestCaptureConcat_z -v
 ```
 
 Expected: most FAIL (shape wrong, or import error, or concat_z is empty when it shouldn't be).
@@ -383,7 +383,7 @@ If any fail: revisit the `capture_concat_z` hook in `_capture_residual_stream_wi
 - [ ] **Step 4: Run full test suite to verify no regression**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py tests/test_probe_attribution_patch.py -v
+cd . && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py tests/test_probe_attribution_patch.py -v
 ```
 
 Expected: all tests PASS.
@@ -391,7 +391,7 @@ Expected: all tests PASS.
 - [ ] **Step 5: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_per_head_ap.py
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_per_head_ap.py
 ```
 
 Expected: `0/0/0`.
@@ -399,8 +399,8 @@ Expected: `0/0/0`.
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py testing/tests/test_probe_per_head_ap.py
-git -C /home/ai/ai-projects/llm commit -m "test(probe): TestCaptureConcat_z — concat_z shape, graph, grad population"
+git add llm_surgeon/probe.py tests/test_probe_per_head_ap.py
+git commit -m "test(probe): TestCaptureConcat_z — concat_z shape, graph, grad population"
 ```
 
 ---
@@ -410,12 +410,12 @@ git -C /home/ai/ai-projects/llm commit -m "test(probe): TestCaptureConcat_z — 
 **Why:** implement the new function and lock in correctness via the sum-over-heads invariant on a small mock model before running on a real model.
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py`
-- Modify: `testing/tests/test_probe_per_head_ap.py`
+- Modify: `llm_surgeon/probe.py`
+- Modify: `tests/test_probe_per_head_ap.py`
 
 - [ ] **Step 1: Write failing tests**
 
-Append to `testing/tests/test_probe_per_head_ap.py`:
+Append to `tests/test_probe_per_head_ap.py`:
 
 ```python
 from llm_surgeon.probe import attribution_patch, attribution_patch_per_head
@@ -631,14 +631,14 @@ class TestPerHeadAP:
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py::TestPerHeadAP -v
+cd . && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py::TestPerHeadAP -v
 ```
 
 Expected: FAIL with `ImportError: cannot import name 'attribution_patch_per_head'`.
 
 - [ ] **Step 3: Implement `attribution_patch_per_head`**
 
-Append to `testing/llm_surgeon/probe.py` after `attribution_patch`:
+Append to `llm_surgeon/probe.py` after `attribution_patch`:
 
 ```python
 def attribution_patch_per_head(
@@ -834,7 +834,7 @@ def attribution_patch_per_head(
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py::TestPerHeadAP -v
+cd . && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py::TestPerHeadAP -v
 ```
 
 Expected: all 7 tests PASS.
@@ -844,7 +844,7 @@ If `test_sum_invariant_mock` fails with diff > 1e-5: this is a sign error in the
 - [ ] **Step 5: Run full test suite**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py tests/test_probe_attribution_patch.py tests/test_probe_activation_patch.py -v
+cd . && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py tests/test_probe_attribution_patch.py tests/test_probe_activation_patch.py -v
 ```
 
 Expected: all tests PASS.
@@ -852,7 +852,7 @@ Expected: all tests PASS.
 - [ ] **Step 6: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_per_head_ap.py
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_per_head_ap.py
 ```
 
 Expected: `0/0/0`.
@@ -860,8 +860,8 @@ Expected: `0/0/0`.
 - [ ] **Step 7: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py testing/tests/test_probe_per_head_ap.py
-git -C /home/ai/ai-projects/llm commit -m "feat(probe): attribution_patch_per_head with sum-over-heads invariant"
+git add llm_surgeon/probe.py tests/test_probe_per_head_ap.py
+git commit -m "feat(probe): attribution_patch_per_head with sum-over-heads invariant"
 ```
 
 ---
@@ -871,11 +871,11 @@ git -C /home/ai/ai-projects/llm commit -m "feat(probe): attribution_patch_per_he
 **Why:** the mock-model sum invariant proves the chain-rule algebra is correct in principle. The TinyLlama test proves (a) the invariant holds on real LLaMA weights at numerical precision, and (b) the `o_proj.weight` orientation is correct for a real HF model.
 
 **Files:**
-- Modify: `testing/tests/test_probe_per_head_ap.py`
+- Modify: `tests/test_probe_per_head_ap.py`
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `testing/tests/test_probe_per_head_ap.py`:
+Append to `tests/test_probe_per_head_ap.py`:
 
 ```python
 class TestTinyLlamaSpearman:
@@ -962,7 +962,7 @@ class TestTinyLlamaSpearman:
 Run with `dangerouslyDisableSandbox: true`:
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py::TestTinyLlamaSpearman -v -s
+cd . && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py::TestTinyLlamaSpearman -v -s
 ```
 
 Expected: runs ~30–60 s, prints ρ (should be >0.999), passes.
@@ -975,7 +975,7 @@ Expected: runs ~30–60 s, prints ρ (should be >0.999), passes.
 - [ ] **Step 3: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright tests/test_probe_per_head_ap.py
+cd . && .venv/bin/python -m pyright tests/test_probe_per_head_ap.py
 ```
 
 Expected: `0/0/0`.
@@ -983,8 +983,8 @@ Expected: `0/0/0`.
 - [ ] **Step 4: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/tests/test_probe_per_head_ap.py
-git -C /home/ai/ai-projects/llm commit -m "test(probe): TinyLlama Spearman sum-over-heads vs node-level attn AP"
+git add tests/test_probe_per_head_ap.py
+git commit -m "test(probe): TinyLlama Spearman sum-over-heads vs node-level attn AP"
 ```
 
 ---
@@ -994,7 +994,7 @@ git -C /home/ai/ai-projects/llm commit -m "test(probe): TinyLlama Spearman sum-o
 **Why:** wire the new Python function into the existing WS handler. No new route; just a third branch.
 
 **Files:**
-- Modify: `testing/gui/backend/routes/probes.py`
+- Modify: `gui/backend/routes/probes.py`
 
 - [ ] **Step 1: Read the current `activation_patching_ws` handler**
 
@@ -1100,7 +1100,7 @@ await _send_json(ws, {"type": "complete", "summary": summary})
 - [ ] **Step 6: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright gui/backend/routes/probes.py
+cd . && .venv/bin/python -m pyright gui/backend/routes/probes.py
 ```
 
 Expected: `0/0/0`.
@@ -1108,8 +1108,8 @@ Expected: `0/0/0`.
 - [ ] **Step 7: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/backend/routes/probes.py
-git -C /home/ai/ai-projects/llm commit -m "feat(gui/backend): approx_head mode branch + unit-keyed frames + n_heads in complete"
+git add gui/backend/routes/probes.py
+git commit -m "feat(gui/backend): approx_head mode branch + unit-keyed frames + n_heads in complete"
 ```
 
 ---
@@ -1119,7 +1119,7 @@ git -C /home/ai/ai-projects/llm commit -m "feat(gui/backend): approx_head mode b
 **Why:** `unit` and `n_heads` must be typed before any consuming component is written.
 
 **Files:**
-- Modify: `testing/gui/frontend/src/types/api.ts`
+- Modify: `gui/frontend/src/types/api.ts`
 
 - [ ] **Step 1: Extend `PatchingCellData`**
 
@@ -1170,7 +1170,7 @@ export interface PatchingCompleteData {
 - [ ] **Step 3: tsc clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 Expected: clean. If making `sublayer` optional causes downstream errors in `ActivationPatchingHeatmap.tsx`, add a narrow `cell.sublayer!` guard there (Task 7 will cover any more surgical fix).
@@ -1178,8 +1178,8 @@ Expected: clean. If making `sublayer` optional causes downstream errors in `Acti
 - [ ] **Step 4: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/types/api.ts
-git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): api.ts types for per-head AP (unit, head, n_heads)"
+git add gui/frontend/src/types/api.ts
+git commit -m "feat(gui/frontend): api.ts types for per-head AP (unit, head, n_heads)"
 ```
 
 ---
@@ -1189,8 +1189,8 @@ git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): api.ts types for 
 **Why:** expose the new mode to users, and route `approx_head` results to the new component.
 
 **Files:**
-- Modify: `testing/gui/frontend/src/components/PatchingControls.tsx`
-- Modify: `testing/gui/frontend/src/components/ProbePanel.tsx`
+- Modify: `gui/frontend/src/components/PatchingControls.tsx`
+- Modify: `gui/frontend/src/components/ProbePanel.tsx`
 
 - [ ] **Step 1: Extend `PatchingMode` type and add radio in `PatchingControls.tsx`**
 
@@ -1250,7 +1250,7 @@ if (result.operation === "activation-patching") {
 - [ ] **Step 3: tsc clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 Expected: clean. The `PerHeadPatchingHeatmap` import may fail until Task 8 creates the file — stub it first with an empty component:
@@ -1267,11 +1267,11 @@ export function PerHeadPatchingHeatmap({ result: _result }: Props) {
 - [ ] **Step 4: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add \
-  testing/gui/frontend/src/components/PatchingControls.tsx \
-  testing/gui/frontend/src/components/ProbePanel.tsx \
-  testing/gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx
-git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): approx_head mode radio + ProbePanel routing stub"
+git add \
+  gui/frontend/src/components/PatchingControls.tsx \
+  gui/frontend/src/components/ProbePanel.tsx \
+  gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx
+git commit -m "feat(gui/frontend): approx_head mode radio + ProbePanel routing stub"
 ```
 
 ---
@@ -1281,7 +1281,7 @@ git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): approx_head mode 
 **Why:** the core new viz. Rows = layers, cols = (ffn | head 0 | head 1 | … | head N-1) at a selected position.
 
 **Files:**
-- Modify (replace stub): `testing/gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx`
+- Modify (replace stub): `gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx`
 
 - [ ] **Step 1: Write the component**
 
@@ -1526,7 +1526,7 @@ export function PerHeadPatchingHeatmap({ result }: Props) {
 - [ ] **Step 2: tsc clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 Expected: clean.
@@ -1534,7 +1534,7 @@ Expected: clean.
 - [ ] **Step 3: Vite build (Tier 2)**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/vite build
+cd ./gui/frontend && ./node_modules/.bin/vite build
 ```
 
 Run with `dangerouslyDisableSandbox: true`. Expected: build succeeds.
@@ -1542,8 +1542,8 @@ Run with `dangerouslyDisableSandbox: true`. Expected: build succeeds.
 - [ ] **Step 4: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx
-git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): PerHeadPatchingHeatmap component"
+git add gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx
+git commit -m "feat(gui/frontend): PerHeadPatchingHeatmap component"
 ```
 
 ---
@@ -1551,8 +1551,8 @@ git -C /home/ai/ai-projects/llm commit -m "feat(gui/frontend): PerHeadPatchingHe
 ## Task 9: Playwright smoke — fixture + per-head test
 
 **Files:**
-- Create: `testing/gui/frontend/tests/e2e/fixtures/activation-patching-per-head.json`
-- Modify: `testing/gui/frontend/tests/e2e/smoke.spec.ts`
+- Create: `gui/frontend/tests/e2e/fixtures/activation-patching-per-head.json`
+- Modify: `gui/frontend/tests/e2e/smoke.spec.ts`
 
 - [ ] **Step 1: Create the fixture**
 
@@ -1614,7 +1614,7 @@ The fixture must have `mode: "approx_head"` in the complete frame and cells with
 
 - [ ] **Step 2: Write the failing Playwright test**
 
-Append to `testing/gui/frontend/tests/e2e/smoke.spec.ts`:
+Append to `gui/frontend/tests/e2e/smoke.spec.ts`:
 
 ```typescript
 const PH_FIXTURE_PATH = path.join(__dirname, "fixtures", "activation-patching-per-head.json");
@@ -1655,7 +1655,7 @@ test("per-head attribution heatmap renders with position selector", async ({ pag
 Run with `dangerouslyDisableSandbox: true`:
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npm run e2e
+cd ./gui/frontend && npm run e2e
 ```
 
 Expected: 12/12 tests pass (11 existing + 1 new).
@@ -1665,10 +1665,10 @@ If the heading test fails: check that `ProbePanel.tsx` routes `mode === "approx_
 - [ ] **Step 4: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add \
-  testing/gui/frontend/tests/e2e/fixtures/activation-patching-per-head.json \
-  testing/gui/frontend/tests/e2e/smoke.spec.ts
-git -C /home/ai/ai-projects/llm commit -m "test(gui/frontend): Playwright smoke for per-head AP heatmap"
+git add \
+  gui/frontend/tests/e2e/fixtures/activation-patching-per-head.json \
+  gui/frontend/tests/e2e/smoke.spec.ts
+git commit -m "test(gui/frontend): Playwright smoke for per-head AP heatmap"
 ```
 
 ---
@@ -1680,19 +1680,19 @@ git -C /home/ai/ai-projects/llm commit -m "test(gui/frontend): Playwright smoke 
 Run in parallel where possible:
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py tests/test_probe_attribution_patch.py tests/test_probe_activation_patch.py -v
+cd . && .venv/bin/python -m pytest tests/test_probe_per_head_ap.py tests/test_probe_attribution_patch.py tests/test_probe_activation_patch.py -v
 ```
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py gui/backend/routes/probes.py tests/test_probe_per_head_ap.py tests/test_probe_attribution_patch.py
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py gui/backend/routes/probes.py tests/test_probe_per_head_ap.py tests/test_probe_attribution_patch.py
 ```
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npm run e2e
+cd ./gui/frontend && npm run e2e
 ```
 
 GPU test and Playwright require `dangerouslyDisableSandbox: true`.

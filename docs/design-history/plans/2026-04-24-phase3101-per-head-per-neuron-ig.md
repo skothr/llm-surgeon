@@ -12,13 +12,13 @@
 
 ## Files
 
-- **Modify:** `testing/llm_surgeon/probe.py:1418-1607` (`attribution_patch_per_head`).
-- **Modify:** `testing/llm_surgeon/probe.py:1610-1810` (`attribution_patch_per_neuron`).
-- **Modify:** `testing/tests/test_probe_per_head_ap.py` — append 1 unit test + 1 TinyLlama.
-- **Modify:** `testing/tests/test_probe_per_neuron_ap.py` — append 1 unit test + 1 TinyLlama.
-- **Modify:** `testing/gui/backend/routes/probes.py` — `approx_head` and `approx_neuron` mode branches gain `n_steps` parsing identical to `approx` branch.
-- **Modify:** `testing/gui/frontend/src/components/PatchingControls.tsx` — expand `state.mode === "approx"` condition to `["approx", "approx_head", "approx_neuron"].includes(state.mode)` for the IG-steps input.
-- **Modify:** `testing/gui/frontend/src/components/ProbePanel.tsx` — forward `n_steps` in WS cfg for the two new modes too.
+- **Modify:** `llm_surgeon/probe.py:1418-1607` (`attribution_patch_per_head`).
+- **Modify:** `llm_surgeon/probe.py:1610-1810` (`attribution_patch_per_neuron`).
+- **Modify:** `tests/test_probe_per_head_ap.py` — append 1 unit test + 1 TinyLlama.
+- **Modify:** `tests/test_probe_per_neuron_ap.py` — append 1 unit test + 1 TinyLlama.
+- **Modify:** `gui/backend/routes/probes.py` — `approx_head` and `approx_neuron` mode branches gain `n_steps` parsing identical to `approx` branch.
+- **Modify:** `gui/frontend/src/components/PatchingControls.tsx` — expand `state.mode === "approx"` condition to `["approx", "approx_head", "approx_neuron"].includes(state.mode)` for the IG-steps input.
+- **Modify:** `gui/frontend/src/components/ProbePanel.tsx` — forward `n_steps` in WS cfg for the two new modes too.
 
 ---
 
@@ -141,12 +141,12 @@ Find the return around line 1597-1607. Add `n_steps=(n_steps if n_steps > 1 else
 
 - [ ] **Step 5: Pyright.**
 
-Run: `testing/.venv/bin/python -m pyright testing/llm_surgeon/probe.py`
+Run: `python -m pyright llm_surgeon/probe.py`
 Expected: 0/0/0.
 
 - [ ] **Step 6: Regression — existing per-head tests pass.**
 
-Run: `testing/.venv/bin/python -m pytest testing/tests/test_probe_per_head_ap.py -v`
+Run: `python -m pytest tests/test_probe_per_head_ap.py -v`
 Expected: all existing tests pass (n_steps=1 preserves behavior).
 
 No commit yet — combine with Task 2.
@@ -178,18 +178,18 @@ Add `n_steps=(n_steps if n_steps > 1 else None),` kwarg.
 
 - [ ] **Step 5: Pyright.**
 
-Run: `testing/.venv/bin/python -m pyright testing/llm_surgeon/probe.py`
+Run: `python -m pyright llm_surgeon/probe.py`
 Expected: 0/0/0.
 
 - [ ] **Step 6: Regression.**
 
-Run: `testing/.venv/bin/python -m pytest testing/tests/test_probe_per_neuron_ap.py -v`
+Run: `python -m pytest tests/test_probe_per_neuron_ap.py -v`
 Expected: all existing tests pass.
 
 - [ ] **Step 7: Commit Tasks 1+2.**
 
 ```bash
-git add testing/llm_surgeon/probe.py
+git add llm_surgeon/probe.py
 git commit -m "$(cat <<'EOF'
 feat(probe): n_steps IG for attribution_patch_per_head and _per_neuron
 
@@ -208,7 +208,7 @@ EOF
 
 - [ ] **Step 1: Write `test_per_head_n_steps_converges`.**
 
-Append to `testing/tests/test_probe_per_head_ap.py`. Use the existing per-head mock fixture (read the file to find its exact name). Template:
+Append to `tests/test_probe_per_head_ap.py`. Use the existing per-head mock fixture (read the file to find its exact name). Template:
 
 ```python
 def test_per_head_n_steps_converges(existing_per_head_fixture):
@@ -283,13 +283,13 @@ Use the SAME skipif guard for GPU/TinyLlama that existing TinyLlama tests in the
 - [ ] **Step 3: Run tests.**
 
 ```bash
-testing/.venv/bin/python -m pytest testing/tests/test_probe_per_head_ap.py -v -k "n_steps or ig_tinyllama"
+python -m pytest tests/test_probe_per_head_ap.py -v -k "n_steps or ig_tinyllama"
 ```
 Expected: 2 PASS (or TinyLlama SKIPPED if no GPU).
 
 - [ ] **Step 4: Pyright.**
 
-Run: `testing/.venv/bin/python -m pyright testing/tests/test_probe_per_head_ap.py`
+Run: `python -m pyright tests/test_probe_per_head_ap.py`
 Expected: 0/0/0.
 
 ---
@@ -298,7 +298,7 @@ Expected: 0/0/0.
 
 - [ ] **Step 1: Write `test_per_neuron_n_steps_converges`.**
 
-Append to `testing/tests/test_probe_per_neuron_ap.py`. Mirror Task 3 Step 1 but:
+Append to `tests/test_probe_per_neuron_ap.py`. Mirror Task 3 Step 1 but:
 - call `attribution_patch_per_neuron` instead
 - assert `r.n_neurons == intermediate_size` and `r.n_steps == 10`
 - compare cells by `(layer, neuron, position)` key (Phase 3.9 cell keys)
@@ -310,21 +310,21 @@ Mirror Task 3 Step 2 but call `attribution_patch_per_neuron` with `top_k_neurons
 - [ ] **Step 3: Run.**
 
 ```bash
-testing/.venv/bin/python -m pytest testing/tests/test_probe_per_neuron_ap.py -v -k "n_steps or ig_tinyllama"
+python -m pytest tests/test_probe_per_neuron_ap.py -v -k "n_steps or ig_tinyllama"
 ```
 Expected: 2 PASS.
 
 - [ ] **Step 4: Pyright on both test files.**
 
 ```bash
-testing/.venv/bin/python -m pyright testing/tests/test_probe_per_head_ap.py testing/tests/test_probe_per_neuron_ap.py
+python -m pyright tests/test_probe_per_head_ap.py tests/test_probe_per_neuron_ap.py
 ```
 Expected: 0/0/0.
 
 - [ ] **Step 5: Commit Tasks 3+4.**
 
 ```bash
-git add testing/tests/test_probe_per_head_ap.py testing/tests/test_probe_per_neuron_ap.py
+git add tests/test_probe_per_head_ap.py tests/test_probe_per_neuron_ap.py
 git commit -m "$(cat <<'EOF'
 test(probe): IG unit + TinyLlama tests for per-head and per-neuron AP
 
@@ -343,7 +343,7 @@ EOF
 
 - [ ] **Step 1: Locate the two branches.**
 
-In `testing/gui/backend/routes/probes.py`, find the `cfg.mode == "approx_head"` branch and the `cfg.mode == "approx_neuron"` branch.
+In `gui/backend/routes/probes.py`, find the `cfg.mode == "approx_head"` branch and the `cfg.mode == "approx_neuron"` branch.
 
 - [ ] **Step 2: Copy Phase 3.10's `n_steps` parsing to both.**
 
@@ -354,7 +354,7 @@ Phase 3.10's `approx` branch now has `n_steps` parsing + validation + forwarding
 
 - [ ] **Step 3: Pyright.**
 
-Run: `testing/.venv/bin/python -m pyright testing/gui/backend/routes/probes.py`
+Run: `python -m pyright gui/backend/routes/probes.py`
 Expected: 0/0/0.
 
 No commit yet — combine with Task 6.
@@ -378,21 +378,21 @@ Find where `n_steps` is added to the WS cfg payload (Phase 3.10 added it conditi
 
 - [ ] **Step 3: tsc.**
 
-Run: `cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit`
+Run: `cd gui/frontend && ./node_modules/.bin/tsc --noEmit`
 Expected: clean.
 
 - [ ] **Step 4: Run Vitest + Playwright regression.**
 
 ```bash
-cd testing/gui/frontend && ./node_modules/.bin/vitest run
-cd testing/gui/frontend && npm run e2e
+cd gui/frontend && ./node_modules/.bin/vitest run
+cd gui/frontend && npm run e2e
 ```
 Expected: Vitest 19/19, Playwright 18/18 (unchanged — no new smokes).
 
 - [ ] **Step 5: Commit Tasks 5+6.**
 
 ```bash
-git add testing/gui/backend/routes/probes.py testing/gui/frontend/src/components/PatchingControls.tsx testing/gui/frontend/src/components/ProbePanel.tsx
+git add gui/backend/routes/probes.py gui/frontend/src/components/PatchingControls.tsx gui/frontend/src/components/ProbePanel.tsx
 git commit -m "$(cat <<'EOF'
 feat(backend+gui): n_steps passthrough for approx_head and approx_neuron
 

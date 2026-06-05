@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3 · PyTorch · transformers · lm-evaluation-harness 0.4.11 (`lm_eval.simple_evaluate`, `lm_eval.models.huggingface.HFLM`) · SQLite · pytest
 
-**Spec:** `testing/docs/superpowers/specs/2026-04-17-phase2-lm-eval-harness-design.md`
+**Spec:** `docs/design-history/specs/2026-04-17-phase2-lm-eval-harness-design.md`
 
 ---
 
@@ -16,11 +16,11 @@
 
 | File | Action | Responsibility |
 |---|---|---|
-| `testing/llm_surgeon/benchmark.py` | Modify | Rewrite `eval_downstream` (kwarg-split signature + in-process path); add `eval_and_log`, `FAST_TRIPLET`, `PAPER_STANDARD_FEWSHOT`, `_in_process_eval`, `_resolve_fewshot`, `_group_by_fewshot`, `_serialize_harness_metrics`. Keep subprocess `model_path=` path and all existing helpers (`_find_and_parse_results`, `_extract_accuracies`). Leave `perplexity()`, `compare()`, `generation_metrics()` untouched. |
-| `testing/llm_surgeon/tracking.py` | Modify | Add `harness_results` CREATE TABLE clause to `_SCHEMA_SQL`; add matching `DELETE FROM harness_results` in `start()`'s rerun-clean block; add module-level `_log_harness_result(db_path, experiment_name, tasks, num_fewshot, limit, result)` writer. Leave `Experiment` class and public API untouched. |
-| `testing/llm_surgeon/recipe.py` | Modify | Lines 214–230: swap `save_checkpoint → tempdir → eval_downstream(ckpt, ...)` for direct in-memory `benchmark.eval_downstream(tasks=..., model=..., tokenizer=..., ...)`. Drops the tempdir + `_export.save_checkpoint` block. |
-| `testing/tests/test_benchmark.py` | Modify | Migrate existing `TestEvalDownstream` (lines 117–147) to new kwarg signature (`model_path=...`). Add new `TestEvalDownstreamInProcess`, `TestEvalDownstreamValidation`, `TestFewShotResolution`, `TestEvalAndLog`, `TestEvalAndLogIntegration` classes. |
-| `testing/tests/test_tracking.py` | Modify | Add `TestHarnessResultsTable` class — one test for `_log_harness_result`, one for rerun-clean cascade. |
+| `llm_surgeon/benchmark.py` | Modify | Rewrite `eval_downstream` (kwarg-split signature + in-process path); add `eval_and_log`, `FAST_TRIPLET`, `PAPER_STANDARD_FEWSHOT`, `_in_process_eval`, `_resolve_fewshot`, `_group_by_fewshot`, `_serialize_harness_metrics`. Keep subprocess `model_path=` path and all existing helpers (`_find_and_parse_results`, `_extract_accuracies`). Leave `perplexity()`, `compare()`, `generation_metrics()` untouched. |
+| `llm_surgeon/tracking.py` | Modify | Add `harness_results` CREATE TABLE clause to `_SCHEMA_SQL`; add matching `DELETE FROM harness_results` in `start()`'s rerun-clean block; add module-level `_log_harness_result(db_path, experiment_name, tasks, num_fewshot, limit, result)` writer. Leave `Experiment` class and public API untouched. |
+| `llm_surgeon/recipe.py` | Modify | Lines 214–230: swap `save_checkpoint → tempdir → eval_downstream(ckpt, ...)` for direct in-memory `benchmark.eval_downstream(tasks=..., model=..., tokenizer=..., ...)`. Drops the tempdir + `_export.save_checkpoint` block. |
+| `tests/test_benchmark.py` | Modify | Migrate existing `TestEvalDownstream` (lines 117–147) to new kwarg signature (`model_path=...`). Add new `TestEvalDownstreamInProcess`, `TestEvalDownstreamValidation`, `TestFewShotResolution`, `TestEvalAndLog`, `TestEvalAndLogIntegration` classes. |
+| `tests/test_tracking.py` | Modify | Add `TestHarnessResultsTable` class — one test for `_log_harness_result`, one for rerun-clean cascade. |
 | `/home/skothr/.claude/projects/-home-ai-ai-projects-llm/memory/project_llm_surgeon_roadmap.md` | Modify | Update status block to mark Phase 2 shipped and point to the commit SHA. No git commit (memory lives outside the repo). |
 
 ---
@@ -37,11 +37,11 @@ Single implementation commit (per spec §8) plus a roadmap-memory update:
 ## Task 1 — In-process lm-eval-harness + tracking integration
 
 **Files:**
-- Modify: `testing/llm_surgeon/benchmark.py`
-- Modify: `testing/llm_surgeon/tracking.py`
-- Modify: `testing/llm_surgeon/recipe.py`
-- Modify: `testing/tests/test_benchmark.py`
-- Modify: `testing/tests/test_tracking.py`
+- Modify: `llm_surgeon/benchmark.py`
+- Modify: `llm_surgeon/tracking.py`
+- Modify: `llm_surgeon/recipe.py`
+- Modify: `tests/test_benchmark.py`
+- Modify: `tests/test_tracking.py`
 
 ---
 
@@ -49,7 +49,7 @@ Single implementation commit (per spec §8) plus a roadmap-memory update:
 
 - [ ] **Step 1.1 — Write failing test for `harness_results` table creation**
 
-Append to `testing/tests/test_tracking.py`:
+Append to `tests/test_tracking.py`:
 
 ```python
 class TestHarnessResultsTable:
@@ -116,15 +116,15 @@ class TestHarnessResultsTable:
 
 - [ ] **Step 1.2 — Run tests to confirm they fail**
 
-Run from `/home/ai/ai-projects/llm`:
+Run from `.`:
 ```
-testing/.venv/bin/python -m pytest testing/tests/test_tracking.py::TestHarnessResultsTable -v
+python -m pytest tests/test_tracking.py::TestHarnessResultsTable -v
 ```
 Expected: both tests FAIL with `ImportError: cannot import name '_log_harness_result'`.
 
 - [ ] **Step 1.3 — Add `harness_results` table to `_SCHEMA_SQL`**
 
-In `testing/llm_surgeon/tracking.py`, extend the `_SCHEMA_SQL` string (currently ends around line 50 with the `samples` table). Append before the closing `"""`:
+In `llm_surgeon/tracking.py`, extend the `_SCHEMA_SQL` string (currently ends around line 50 with the `samples` table). Append before the closing `"""`:
 
 ```python
 CREATE TABLE IF NOT EXISTS harness_results (
@@ -204,7 +204,7 @@ Add the import if `Any` isn't already used from `typing` at the top of the file 
 
 Run:
 ```
-testing/.venv/bin/python -m pytest testing/tests/test_tracking.py::TestHarnessResultsTable -v
+python -m pytest tests/test_tracking.py::TestHarnessResultsTable -v
 ```
 Expected: both tests PASS.
 
@@ -214,7 +214,7 @@ Expected: both tests PASS.
 
 - [ ] **Step 1.7 — Write failing tests for the signature validation rules**
 
-Append to `testing/tests/test_benchmark.py`:
+Append to `tests/test_benchmark.py`:
 
 ```python
 class TestEvalDownstreamValidation:
@@ -283,13 +283,13 @@ class TestGroupByFewshot:
 
 Run:
 ```
-testing/.venv/bin/python -m pytest testing/tests/test_benchmark.py::TestEvalDownstreamValidation testing/tests/test_benchmark.py::TestFewShotResolution testing/tests/test_benchmark.py::TestGroupByFewshot -v
+python -m pytest tests/test_benchmark.py::TestEvalDownstreamValidation tests/test_benchmark.py::TestFewShotResolution tests/test_benchmark.py::TestGroupByFewshot -v
 ```
 Expected: all tests FAIL (`ImportError` for `_resolve_fewshot`, `_group_by_fewshot`; signature errors for validation tests).
 
 - [ ] **Step 1.9 — Add constants and helpers to `benchmark.py`**
 
-In `testing/llm_surgeon/benchmark.py`, after the existing imports (around line 14) and before `perplexity()`, add:
+In `llm_surgeon/benchmark.py`, after the existing imports (around line 14) and before `perplexity()`, add:
 
 ```python
 # ---------------------------------------------------------------------------
@@ -519,7 +519,7 @@ The `effective_num_fewshot` field captures the resolved per-task count — usefu
 
 Run:
 ```
-testing/.venv/bin/python -m pytest testing/tests/test_benchmark.py::TestEvalDownstreamValidation testing/tests/test_benchmark.py::TestFewShotResolution testing/tests/test_benchmark.py::TestGroupByFewshot -v
+python -m pytest tests/test_benchmark.py::TestEvalDownstreamValidation tests/test_benchmark.py::TestFewShotResolution tests/test_benchmark.py::TestGroupByFewshot -v
 ```
 Expected: all 10 tests PASS.
 
@@ -529,7 +529,7 @@ Expected: all 10 tests PASS.
 
 - [ ] **Step 1.14 — Write failing tests for in-process dispatch**
 
-Append to `testing/tests/test_benchmark.py`:
+Append to `tests/test_benchmark.py`:
 
 ```python
 class TestEvalDownstreamInProcess:
@@ -635,7 +635,7 @@ class TestEvalDownstreamInProcess:
 
 Run:
 ```
-testing/.venv/bin/python -m pytest testing/tests/test_benchmark.py::TestEvalDownstreamInProcess -v
+python -m pytest tests/test_benchmark.py::TestEvalDownstreamInProcess -v
 ```
 Expected: all 5 tests PASS.
 
@@ -645,7 +645,7 @@ Expected: all 5 tests PASS.
 
 - [ ] **Step 1.16 — Write failing tests for `eval_and_log`**
 
-Append to `testing/tests/test_benchmark.py`:
+Append to `tests/test_benchmark.py`:
 
 ```python
 class TestEvalAndLog:
@@ -735,7 +735,7 @@ class TestEvalAndLog:
 
 Run:
 ```
-testing/.venv/bin/python -m pytest testing/tests/test_benchmark.py::TestEvalAndLog -v
+python -m pytest tests/test_benchmark.py::TestEvalAndLog -v
 ```
 Expected: both tests FAIL — `ImportError: cannot import name 'eval_and_log'`.
 
@@ -887,7 +887,7 @@ def _subprocess_eval_full(
 
 Run:
 ```
-testing/.venv/bin/python -m pytest testing/tests/test_benchmark.py::TestEvalAndLog -v
+python -m pytest tests/test_benchmark.py::TestEvalAndLog -v
 ```
 Expected: both tests PASS.
 
@@ -897,7 +897,7 @@ Expected: both tests PASS.
 
 - [ ] **Step 1.21 — Migrate `recipe.py:214–230`**
 
-In `testing/llm_surgeon/recipe.py`, replace the existing downstream-eval block (currently reads approximately the lines below) with the in-memory equivalent:
+In `llm_surgeon/recipe.py`, replace the existing downstream-eval block (currently reads approximately the lines below) with the in-memory equivalent:
 
 ```python
     if "downstream" in eval_cfg:
@@ -921,7 +921,7 @@ The deletions: `import tempfile`, `from llm_surgeon import export as _export`, `
 
 - [ ] **Step 1.22 — Update the existing `TestEvalDownstream` test class**
 
-Two existing tests in `testing/tests/test_benchmark.py` call `eval_downstream(tiny_eval_checkpoint, tasks=[...], num_fewshot=0, limit=5)` positionally. Rewrite their calls to the new signature:
+Two existing tests in `tests/test_benchmark.py` call `eval_downstream(tiny_eval_checkpoint, tasks=[...], num_fewshot=0, limit=5)` positionally. Rewrite their calls to the new signature:
 
 At line ~130 (inside `test_returns_dict_with_task_key`):
 
@@ -950,9 +950,9 @@ Both tests keep their existing decorators (`@requires_network` on the first).
 
 - [ ] **Step 1.23 — Type-check modified modules**
 
-From `testing/`:
+From ``:
 ```
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright \
+cd . && .venv/bin/python -m pyright \
     llm_surgeon/benchmark.py llm_surgeon/tracking.py llm_surgeon/recipe.py \
     tests/test_benchmark.py tests/test_tracking.py
 ```
@@ -962,7 +962,7 @@ Expected: 0 errors / 0 warnings / 0 informations. Fix any diagnostics surfaced b
 - [ ] **Step 1.24 — Run the full benchmark + tracking test suite**
 
 ```
-testing/.venv/bin/python -m pytest testing/tests/test_benchmark.py testing/tests/test_tracking.py -v
+python -m pytest tests/test_benchmark.py tests/test_tracking.py -v
 ```
 
 Expected: all existing + new tests PASS or skip cleanly (e.g. `@requires_network` tests skip offline). No failures.
@@ -973,7 +973,7 @@ Expected: all existing + new tests PASS or skip cleanly (e.g. `@requires_network
 
 - [ ] **Step 1.25 — Add the integration test**
 
-Append to `testing/tests/test_benchmark.py`:
+Append to `tests/test_benchmark.py`:
 
 ```python
 def _tinyllama_cached() -> bool:
@@ -1030,7 +1030,7 @@ class TestEvalAndLogIntegration:
 
 Run:
 ```
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pytest testing/tests/test_benchmark.py::TestEvalAndLogIntegration -v
+cd . && python -m pytest tests/test_benchmark.py::TestEvalAndLogIntegration -v
 ```
 
 Expected: 1 PASS in ~30–90 s (includes a one-time TinyLlama fp16 load from the local cache plus arc_easy eval over 20 items). If runtime exceeds 3 min, something's wrong — investigate before committing.
@@ -1042,7 +1042,7 @@ Expected: 1 PASS in ~30–90 s (includes a one-time TinyLlama fp16 load from the
 - [ ] **Step 1.27 — Final full-suite sanity check**
 
 ```
-testing/.venv/bin/python -m pytest testing/tests/ -v 2>&1 | tail -30
+python -m pytest tests/ -v 2>&1 | tail -30
 ```
 
 Expected: no new failures. Pre-existing skips are acceptable.
@@ -1050,21 +1050,21 @@ Expected: no new failures. Pre-existing skips are acceptable.
 - [ ] **Step 1.28 — Confirm clean working tree intent**
 
 ```
-git -C /home/ai/ai-projects/llm status
+git status
 ```
 
-Expected: the only changes are `testing/llm_surgeon/benchmark.py`, `testing/llm_surgeon/tracking.py`, `testing/llm_surgeon/recipe.py`, `testing/tests/test_benchmark.py`, `testing/tests/test_tracking.py`. No stray files.
+Expected: the only changes are `llm_surgeon/benchmark.py`, `llm_surgeon/tracking.py`, `llm_surgeon/recipe.py`, `tests/test_benchmark.py`, `tests/test_tracking.py`. No stray files.
 
 - [ ] **Step 1.29 — Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm
+cd .
 git add \
-    testing/llm_surgeon/benchmark.py \
-    testing/llm_surgeon/tracking.py \
-    testing/llm_surgeon/recipe.py \
-    testing/tests/test_benchmark.py \
-    testing/tests/test_tracking.py
+    llm_surgeon/benchmark.py \
+    llm_surgeon/tracking.py \
+    llm_surgeon/recipe.py \
+    tests/test_benchmark.py \
+    tests/test_tracking.py
 git commit -m "$(cat <<'EOF'
 feat(benchmark): in-process lm-eval-harness + tracking integration
 
@@ -1102,7 +1102,7 @@ No git commit — memory lives outside the repo.
 Append a new bullet after the existing "Phase 1 shipped" line:
 
 ```
-- 2026-04-17: **Phase 2 shipped** — eval_downstream accepts in-memory (model, tokenizer) via lm_eval.simple_evaluate + HFLM. New eval_and_log helper writes flat `harness.<task>.<metric>` rows + full JSON blob to new `harness_results` table. Defaults: FAST_TRIPLET with paper-standard per-task few-shot. recipe.py migrated off tempdir/save_checkpoint. Commit on `master`: <SHA>. Spec: testing/docs/superpowers/specs/2026-04-17-phase2-lm-eval-harness-design.md. Plan: testing/docs/superpowers/plans/2026-04-17-phase2-lm-eval-harness.md. Pyright clean; unit tests + one TinyLlama integration run (arc_easy, limit=20) green.
+- 2026-04-17: **Phase 2 shipped** — eval_downstream accepts in-memory (model, tokenizer) via lm_eval.simple_evaluate + HFLM. New eval_and_log helper writes flat `harness.<task>.<metric>` rows + full JSON blob to new `harness_results` table. Defaults: FAST_TRIPLET with paper-standard per-task few-shot. recipe.py migrated off tempdir/save_checkpoint. Commit on `master`: <SHA>. Spec: docs/design-history/specs/2026-04-17-phase2-lm-eval-harness-design.md. Plan: docs/design-history/plans/2026-04-17-phase2-lm-eval-harness.md. Pyright clean; unit tests + one TinyLlama integration run (arc_easy, limit=20) green.
 - Next up: **Phase 3 — activation patching**.
 ```
 
@@ -1140,6 +1140,6 @@ No placeholders (no TBD/TODO/"similar to…"/"add validation"). Type consistency
 
 ## Execution Handoff
 
-Plan complete and saved to `testing/docs/superpowers/plans/2026-04-17-phase2-lm-eval-harness.md`.
+Plan complete and saved to `docs/design-history/plans/2026-04-17-phase2-lm-eval-harness.md`.
 
 Per saved feedback memory (`feedback_execution_choice.md`), dispatching via **subagent-driven-development** without asking. The implementation subagent for Step 1.26 will receive the GPU-sandbox instruction in its prompt per `feedback_gpu_sandbox.md`.

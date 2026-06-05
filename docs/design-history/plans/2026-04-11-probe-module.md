@@ -4,11 +4,11 @@
 
 **Goal:** Add a `probe.py` module to llm_surgeon that extracts hidden states at sub-layer granularity, projects them into token space (logit lens), and supports forward-pass intervention with predefined and custom operations.
 
-**Architecture:** Single new module `testing/llm_surgeon/probe.py` using PyTorch forward hooks to capture/modify residual stream states at post-attention and post-FFN points within each transformer layer. Dataclasses (`LogitLensResult`, `HiddenStates`, `InterventionResult`) hold results. An `ops` namespace provides predefined intervention callables. All functions accept an optional `on_layer` callback for streaming. Recipe integration via a new `analyze` phase in `recipe.py`.
+**Architecture:** Single new module `llm_surgeon/probe.py` using PyTorch forward hooks to capture/modify residual stream states at post-attention and post-FFN points within each transformer layer. Dataclasses (`LogitLensResult`, `HiddenStates`, `InterventionResult`) hold results. An `ops` namespace provides predefined intervention callables. All functions accept an optional `on_layer` callback for streaming. Recipe integration via a new `analyze` phase in `recipe.py`.
 
 **Tech Stack:** PyTorch (hooks, tensors), HuggingFace Transformers (LlamaForCausalLM), dataclasses, existing llm_surgeon tracking/recipe infrastructure.
 
-**Spec:** `docs/superpowers/specs/2026-04-11-probe-module-design.md`
+**Spec:** `docs/design-history/specs/2026-04-11-probe-module-design.md`
 
 ---
 
@@ -16,11 +16,11 @@
 
 | File | Action | Responsibility |
 |---|---|---|
-| `testing/llm_surgeon/probe.py` | Create | All probe/intervention logic: dataclasses, logit_lens, extract_hidden_states, intervene, ops namespace, layer_predictions_table |
-| `testing/tests/test_probe.py` | Create | Tests for all probe.py public API |
-| `testing/llm_surgeon/__init__.py` | Modify | Add `probe` to imports |
-| `testing/llm_surgeon/recipe.py` | Modify | Add `analyze` phase calling probe functions |
-| `testing/tests/test_recipe.py` | Modify | Add test for `analyze` recipe section |
+| `llm_surgeon/probe.py` | Create | All probe/intervention logic: dataclasses, logit_lens, extract_hidden_states, intervene, ops namespace, layer_predictions_table |
+| `tests/test_probe.py` | Create | Tests for all probe.py public API |
+| `llm_surgeon/__init__.py` | Modify | Add `probe` to imports |
+| `llm_surgeon/recipe.py` | Modify | Add `analyze` phase calling probe functions |
+| `tests/test_recipe.py` | Modify | Add test for `analyze` recipe section |
 
 ---
 
@@ -29,13 +29,13 @@
 ### Task 1: Dataclasses and module skeleton
 
 **Files:**
-- Create: `testing/llm_surgeon/probe.py`
-- Create: `testing/tests/test_probe.py`
-- Modify: `testing/llm_surgeon/__init__.py`
+- Create: `llm_surgeon/probe.py`
+- Create: `tests/test_probe.py`
+- Modify: `llm_surgeon/__init__.py`
 
 - [ ] **Step 1: Write failing test for LogitLensResult**
 
-In `testing/tests/test_probe.py`:
+In `tests/test_probe.py`:
 
 ```python
 """Tests for probe module — logit lens, hidden state extraction, intervention."""
@@ -96,13 +96,13 @@ def test_logit_lens_result_first_correct_layer():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_probe.py::test_logit_lens_result_summary tests/test_probe.py::test_logit_lens_result_prediction_flips tests/test_probe.py::test_logit_lens_result_first_correct_layer -v`
+Run: `cd . && python -m pytest tests/test_probe.py::test_logit_lens_result_summary tests/test_probe.py::test_logit_lens_result_prediction_flips tests/test_probe.py::test_logit_lens_result_first_correct_layer -v`
 
 Expected: FAIL — `ImportError: cannot import name 'LogitLensResult' from 'llm_surgeon.probe'`
 
 - [ ] **Step 3: Write LogitLensResult dataclass**
 
-In `testing/llm_surgeon/probe.py`:
+In `llm_surgeon/probe.py`:
 
 ```python
 """Hidden state probing, logit lens, and forward-pass intervention."""
@@ -166,13 +166,13 @@ class LogitLensResult:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_probe.py::test_logit_lens_result_summary tests/test_probe.py::test_logit_lens_result_prediction_flips tests/test_probe.py::test_logit_lens_result_first_correct_layer -v`
+Run: `cd . && python -m pytest tests/test_probe.py::test_logit_lens_result_summary tests/test_probe.py::test_logit_lens_result_prediction_flips tests/test_probe.py::test_logit_lens_result_first_correct_layer -v`
 
 Expected: 3 passed
 
 - [ ] **Step 5: Write failing test for HiddenStates**
 
-Append to `testing/tests/test_probe.py`:
+Append to `tests/test_probe.py`:
 
 ```python
 import torch
@@ -206,13 +206,13 @@ def test_hidden_states_save_load(tmp_path):
 
 - [ ] **Step 6: Run tests to verify they fail**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_probe.py::test_hidden_states_cosine_similarity_identical tests/test_probe.py::test_hidden_states_save_load -v`
+Run: `cd . && python -m pytest tests/test_probe.py::test_hidden_states_cosine_similarity_identical tests/test_probe.py::test_hidden_states_save_load -v`
 
 Expected: FAIL — `ImportError: cannot import name 'HiddenStates'`
 
 - [ ] **Step 7: Write HiddenStates dataclass**
 
-Append to `testing/llm_surgeon/probe.py`:
+Append to `llm_surgeon/probe.py`:
 
 ```python
 @dataclass
@@ -246,13 +246,13 @@ class HiddenStates:
 
 - [ ] **Step 8: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_probe.py::test_hidden_states_cosine_similarity_identical tests/test_probe.py::test_hidden_states_save_load -v`
+Run: `cd . && python -m pytest tests/test_probe.py::test_hidden_states_cosine_similarity_identical tests/test_probe.py::test_hidden_states_save_load -v`
 
 Expected: 2 passed
 
 - [ ] **Step 9: Update __init__.py**
 
-Change `testing/llm_surgeon/__init__.py` to:
+Change `llm_surgeon/__init__.py` to:
 
 ```python
 """LLM Surgeon — surgical layer-level manipulation of LLaMA models."""
@@ -263,7 +263,7 @@ from llm_surgeon import surgery, verify, export, benchmark, inspect, tracking, r
 - [ ] **Step 10: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing
+cd .
 git add llm_surgeon/probe.py tests/test_probe.py llm_surgeon/__init__.py
 git commit -m "feat(probe): add LogitLensResult and HiddenStates dataclasses with tests"
 ```
@@ -273,12 +273,12 @@ git commit -m "feat(probe): add LogitLensResult and HiddenStates dataclasses wit
 ### Task 2: Hook infrastructure and extract_hidden_states
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py`
-- Modify: `testing/tests/test_probe.py`
+- Modify: `llm_surgeon/probe.py`
+- Modify: `tests/test_probe.py`
 
 - [ ] **Step 1: Write failing tests for extract_hidden_states**
 
-Append to `testing/tests/test_probe.py`:
+Append to `tests/test_probe.py`:
 
 ```python
 from llm_surgeon.probe import extract_hidden_states
@@ -335,13 +335,13 @@ def _make_test_tokenizer(vocab_size):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_probe.py::test_extract_hidden_states_ffn_only tests/test_probe.py::test_extract_hidden_states_both_sublayers tests/test_probe.py::test_extract_hidden_states_specific_layers tests/test_probe.py::test_extract_hidden_states_callback -v`
+Run: `cd . && python -m pytest tests/test_probe.py::test_extract_hidden_states_ffn_only tests/test_probe.py::test_extract_hidden_states_both_sublayers tests/test_probe.py::test_extract_hidden_states_specific_layers tests/test_probe.py::test_extract_hidden_states_callback -v`
 
 Expected: FAIL — `ImportError: cannot import name 'extract_hidden_states'`
 
 - [ ] **Step 3: Implement extract_hidden_states**
 
-Append to `testing/llm_surgeon/probe.py`:
+Append to `llm_surgeon/probe.py`:
 
 ```python
 def _capture_residual_stream(model, tokenizer, prompt, sublayers=("ffn",), layers=None):
@@ -431,14 +431,14 @@ def extract_hidden_states(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_probe.py::test_extract_hidden_states_ffn_only tests/test_probe.py::test_extract_hidden_states_both_sublayers tests/test_probe.py::test_extract_hidden_states_specific_layers tests/test_probe.py::test_extract_hidden_states_callback -v`
+Run: `cd . && python -m pytest tests/test_probe.py::test_extract_hidden_states_ffn_only tests/test_probe.py::test_extract_hidden_states_both_sublayers tests/test_probe.py::test_extract_hidden_states_specific_layers tests/test_probe.py::test_extract_hidden_states_callback -v`
 
 Expected: 4 passed
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing
+cd .
 git add llm_surgeon/probe.py tests/test_probe.py
 git commit -m "feat(probe): add extract_hidden_states with sub-layer hook capture"
 ```
@@ -448,12 +448,12 @@ git commit -m "feat(probe): add extract_hidden_states with sub-layer hook captur
 ### Task 3: logit_lens
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py`
-- Modify: `testing/tests/test_probe.py`
+- Modify: `llm_surgeon/probe.py`
+- Modify: `tests/test_probe.py`
 
 - [ ] **Step 1: Write failing tests for logit_lens**
 
-Append to `testing/tests/test_probe.py`:
+Append to `tests/test_probe.py`:
 
 ```python
 from llm_surgeon.probe import logit_lens, layer_predictions_table
@@ -534,13 +534,13 @@ def test_layer_predictions_table(tiny_llama, tiny_llama_config):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_probe.py::test_logit_lens_basic tests/test_probe.py::test_logit_lens_full_logits tests/test_probe.py::test_logit_lens_positions_filter tests/test_probe.py::test_logit_lens_callback tests/test_probe.py::test_layer_predictions_table -v`
+Run: `cd . && python -m pytest tests/test_probe.py::test_logit_lens_basic tests/test_probe.py::test_logit_lens_full_logits tests/test_probe.py::test_logit_lens_positions_filter tests/test_probe.py::test_logit_lens_callback tests/test_probe.py::test_layer_predictions_table -v`
 
 Expected: FAIL — `ImportError: cannot import name 'logit_lens'`
 
 - [ ] **Step 3: Implement logit_lens and layer_predictions_table**
 
-Append to `testing/llm_surgeon/probe.py`:
+Append to `llm_surgeon/probe.py`:
 
 ```python
 def _project_to_logits(model, hidden_state: torch.Tensor) -> torch.Tensor:
@@ -636,20 +636,20 @@ def layer_predictions_table(result: LogitLensResult, position: int = -1) -> str:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_probe.py::test_logit_lens_basic tests/test_probe.py::test_logit_lens_full_logits tests/test_probe.py::test_logit_lens_positions_filter tests/test_probe.py::test_logit_lens_callback tests/test_probe.py::test_layer_predictions_table -v`
+Run: `cd . && python -m pytest tests/test_probe.py::test_logit_lens_basic tests/test_probe.py::test_logit_lens_full_logits tests/test_probe.py::test_logit_lens_positions_filter tests/test_probe.py::test_logit_lens_callback tests/test_probe.py::test_layer_predictions_table -v`
 
 Expected: 5 passed
 
 - [ ] **Step 5: Run all probe tests so far**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_probe.py -v`
+Run: `cd . && python -m pytest tests/test_probe.py -v`
 
 Expected: All tests pass (10 total)
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing
+cd .
 git add llm_surgeon/probe.py tests/test_probe.py
 git commit -m "feat(probe): add logit_lens and layer_predictions_table"
 ```
@@ -661,12 +661,12 @@ git commit -m "feat(probe): add logit_lens and layer_predictions_table"
 ### Task 4: Predefined operations (ops namespace)
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py`
-- Modify: `testing/tests/test_probe.py`
+- Modify: `llm_surgeon/probe.py`
+- Modify: `tests/test_probe.py`
 
 - [ ] **Step 1: Write failing tests for ops**
 
-Append to `testing/tests/test_probe.py`:
+Append to `tests/test_probe.py`:
 
 ```python
 from llm_surgeon.probe import ops
@@ -741,13 +741,13 @@ def test_ops_project_out():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_probe.py::test_ops_scale tests/test_probe.py::test_ops_zero_dims tests/test_probe.py::test_ops_clamp tests/test_probe.py::test_ops_noise tests/test_probe.py::test_ops_replace tests/test_probe.py::test_ops_project_out -v`
+Run: `cd . && python -m pytest tests/test_probe.py::test_ops_scale tests/test_probe.py::test_ops_zero_dims tests/test_probe.py::test_ops_clamp tests/test_probe.py::test_ops_noise tests/test_probe.py::test_ops_replace tests/test_probe.py::test_ops_project_out -v`
 
 Expected: FAIL — `ImportError: cannot import name 'ops'`
 
 - [ ] **Step 3: Implement ops namespace**
 
-Append to `testing/llm_surgeon/probe.py`:
+Append to `llm_surgeon/probe.py`:
 
 ```python
 class _Op:
@@ -811,14 +811,14 @@ ops = _Ops()
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_probe.py::test_ops_scale tests/test_probe.py::test_ops_zero_dims tests/test_probe.py::test_ops_clamp tests/test_probe.py::test_ops_noise tests/test_probe.py::test_ops_replace tests/test_probe.py::test_ops_project_out tests/test_probe.py::test_ops_scale_identity -v`
+Run: `cd . && python -m pytest tests/test_probe.py::test_ops_scale tests/test_probe.py::test_ops_zero_dims tests/test_probe.py::test_ops_clamp tests/test_probe.py::test_ops_noise tests/test_probe.py::test_ops_replace tests/test_probe.py::test_ops_project_out tests/test_probe.py::test_ops_scale_identity -v`
 
 Expected: 7 passed
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing
+cd .
 git add llm_surgeon/probe.py tests/test_probe.py
 git commit -m "feat(probe): add predefined intervention ops (scale, zero_dims, clamp, noise, replace, project_out)"
 ```
@@ -828,12 +828,12 @@ git commit -m "feat(probe): add predefined intervention ops (scale, zero_dims, c
 ### Task 5: intervene()
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py`
-- Modify: `testing/tests/test_probe.py`
+- Modify: `llm_surgeon/probe.py`
+- Modify: `tests/test_probe.py`
 
 - [ ] **Step 1: Write failing tests for intervene**
 
-Append to `testing/tests/test_probe.py`:
+Append to `tests/test_probe.py`:
 
 ```python
 from llm_surgeon.probe import intervene, Intervention, InterventionResult
@@ -924,13 +924,13 @@ def test_intervene_metadata(tiny_llama, tiny_llama_config):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_probe.py::test_intervene_scale_identity tests/test_probe.py::test_intervene_scale_zero_changes_output tests/test_probe.py::test_intervene_with_logit_lens tests/test_probe.py::test_intervene_callback_modified_flag tests/test_probe.py::test_intervene_metadata -v`
+Run: `cd . && python -m pytest tests/test_probe.py::test_intervene_scale_identity tests/test_probe.py::test_intervene_scale_zero_changes_output tests/test_probe.py::test_intervene_with_logit_lens tests/test_probe.py::test_intervene_callback_modified_flag tests/test_probe.py::test_intervene_metadata -v`
 
 Expected: FAIL — `ImportError: cannot import name 'intervene'`
 
 - [ ] **Step 3: Implement Intervention dataclass and intervene()**
 
-Append to `testing/llm_surgeon/probe.py`:
+Append to `llm_surgeon/probe.py`:
 
 ```python
 @dataclass
@@ -1106,20 +1106,20 @@ def intervene(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_probe.py::test_intervene_scale_identity tests/test_probe.py::test_intervene_scale_zero_changes_output tests/test_probe.py::test_intervene_with_logit_lens tests/test_probe.py::test_intervene_callback_modified_flag tests/test_probe.py::test_intervene_metadata -v`
+Run: `cd . && python -m pytest tests/test_probe.py::test_intervene_scale_identity tests/test_probe.py::test_intervene_scale_zero_changes_output tests/test_probe.py::test_intervene_with_logit_lens tests/test_probe.py::test_intervene_callback_modified_flag tests/test_probe.py::test_intervene_metadata -v`
 
 Expected: 5 passed
 
 - [ ] **Step 5: Run all probe tests**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_probe.py -v`
+Run: `cd . && python -m pytest tests/test_probe.py -v`
 
 Expected: All tests pass (22 total)
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing
+cd .
 git add llm_surgeon/probe.py tests/test_probe.py
 git commit -m "feat(probe): add intervene() with hook-based hidden state modification"
 ```
@@ -1131,12 +1131,12 @@ git commit -m "feat(probe): add intervene() with hook-based hidden state modific
 ### Task 6: Recipe integration
 
 **Files:**
-- Modify: `testing/llm_surgeon/recipe.py`
-- Modify: `testing/tests/test_recipe.py`
+- Modify: `llm_surgeon/recipe.py`
+- Modify: `tests/test_recipe.py`
 
 - [ ] **Step 1: Write failing test for analyze recipe section**
 
-Append to `testing/tests/test_recipe.py`:
+Append to `tests/test_recipe.py`:
 
 ```python
 def test_run_with_analyze(tiny_llama, tmp_path):
@@ -1177,13 +1177,13 @@ def test_run_with_analyze(tiny_llama, tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_recipe.py::test_run_with_analyze -v`
+Run: `cd . && python -m pytest tests/test_recipe.py::test_run_with_analyze -v`
 
 Expected: FAIL — `analyze` key not in result
 
 - [ ] **Step 3: Add analyze phase to recipe.py**
 
-In `testing/llm_surgeon/recipe.py`, add import at top:
+In `llm_surgeon/recipe.py`, add import at top:
 
 ```python
 from llm_surgeon import surgery, verify, tracking
@@ -1244,20 +1244,20 @@ In the `run()` function, add the analyze phase between verification and evaluati
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_recipe.py::test_run_with_analyze -v`
+Run: `cd . && python -m pytest tests/test_recipe.py::test_run_with_analyze -v`
 
 Expected: PASS
 
 - [ ] **Step 5: Run all recipe tests to check for regressions**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_recipe.py -v`
+Run: `cd . && python -m pytest tests/test_recipe.py -v`
 
 Expected: All tests pass
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing
+cd .
 git add llm_surgeon/recipe.py tests/test_recipe.py
 git commit -m "feat(recipe): add analyze phase for logit_lens and hidden_states"
 ```
@@ -1270,13 +1270,13 @@ git commit -m "feat(recipe): add analyze phase for logit_lens and hidden_states"
 
 - [ ] **Step 1: Run the complete test suite**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/ -v --tb=short`
+Run: `cd . && python -m pytest tests/ -v --tb=short`
 
 Expected: All tests pass, no regressions in existing modules.
 
 - [ ] **Step 2: Verify probe module imports cleanly**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -c "from llm_surgeon import probe; print(dir(probe))"`
+Run: `cd . && python -c "from llm_surgeon import probe; print(dir(probe))"`
 
 Expected: Output includes `LogitLensResult`, `HiddenStates`, `Intervention`, `InterventionResult`, `extract_hidden_states`, `intervene`, `layer_predictions_table`, `logit_lens`, `ops`.
 

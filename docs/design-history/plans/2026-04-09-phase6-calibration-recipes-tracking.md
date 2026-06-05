@@ -4,9 +4,9 @@
 >
 > **Tool rules (for subagents):**
 > - Use Read (not cat/head/tail), Grep (not grep/rg/awk), Glob (not find/ls), Edit (not sed/awk) for all file operations
-> - You are already in the project root (/home/ai/ai-projects/llm) — never cd
-> - Python venv: `/home/ai/ai-projects/llm/testing/.venv/bin/python`
-> - Run tests: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/ -v`
+> - You are already in the project root (the repo root) — never cd
+> - Python venv: `python`
+> - Run tests: `python -m pytest tests/ -v`
 
 **Goal:** Add LayerNorm calibration to surgery.py, declarative YAML recipe execution to recipe.py, and SQLite experiment tracking to tracking.py.
 
@@ -14,14 +14,14 @@
 
 **Tech Stack:** PyTorch (for calibration), pyyaml, sqlite3 (stdlib)
 
-**Reference:** `docs/superpowers/specs/2026-04-08-llm-surgeon-design.md` (v2), Phase 6 section of phase plan.
+**Reference:** `docs/design-history/specs/2026-04-08-llm-surgeon-design.md` (v2), Phase 6 section of phase plan.
 
 ---
 
 ## File Map
 
 ```
-testing/
+
   llm_surgeon/
     surgery.py           — MODIFY — add calibrate()
     recipe.py            — CREATE — run(), run_batch(), generate_layer_sweep()
@@ -38,12 +38,12 @@ testing/
 ### Task 1: calibrate() in surgery.py
 
 **Files:**
-- Modify: `testing/llm_surgeon/surgery.py`
-- Modify: `testing/tests/test_surgery.py`
+- Modify: `llm_surgeon/surgery.py`
+- Modify: `tests/test_surgery.py`
 
 - [ ] **Step 1: Write tests for calibrate**
 
-Add to `testing/tests/test_surgery.py`:
+Add to `tests/test_surgery.py`:
 
 ```python
 from llm_surgeon.surgery import calibrate
@@ -93,7 +93,7 @@ class TestCalibrate:
 
 - [ ] **Step 3: Implement calibrate**
 
-Add to `testing/llm_surgeon/surgery.py`:
+Add to `llm_surgeon/surgery.py`:
 
 ```python
 def calibrate(
@@ -181,7 +181,7 @@ def calibrate(
 - [ ] **Step 5: Commit**
 
 ```bash
-git add testing/llm_surgeon/surgery.py testing/tests/test_surgery.py
+git add llm_surgeon/surgery.py tests/test_surgery.py
 git commit -m "feat: add calibrate() for RMSNorm rescaling after surgery"
 ```
 
@@ -190,13 +190,13 @@ git commit -m "feat: add calibrate() for RMSNorm rescaling after surgery"
 ### Task 2: tracking.py
 
 **Files:**
-- Create: `testing/llm_surgeon/tracking.py`
-- Create: `testing/tests/test_tracking.py`
-- Modify: `testing/llm_surgeon/__init__.py`
+- Create: `llm_surgeon/tracking.py`
+- Create: `tests/test_tracking.py`
+- Modify: `llm_surgeon/__init__.py`
 
 - [ ] **Step 1: Write tests for tracking**
 
-Create `testing/tests/test_tracking.py`:
+Create `tests/test_tracking.py`:
 
 ```python
 """Tests for experiment tracking."""
@@ -284,7 +284,7 @@ class TestTracking:
 - [ ] **Step 2: Run tests to verify they fail**
 - [ ] **Step 3: Implement tracking.py**
 
-Create `testing/llm_surgeon/tracking.py`:
+Create `llm_surgeon/tracking.py`:
 
 ```python
 """Experiment tracking with SQLite."""
@@ -457,7 +457,7 @@ from llm_surgeon import surgery, verify, export, benchmark, inspect, tracking
 - [ ] **Step 6: Commit**
 
 ```bash
-git add testing/llm_surgeon/tracking.py testing/tests/test_tracking.py testing/llm_surgeon/__init__.py
+git add llm_surgeon/tracking.py tests/test_tracking.py llm_surgeon/__init__.py
 git commit -m "feat: add SQLite experiment tracking"
 ```
 
@@ -466,13 +466,13 @@ git commit -m "feat: add SQLite experiment tracking"
 ### Task 3: recipe.py
 
 **Files:**
-- Create: `testing/llm_surgeon/recipe.py`
-- Create: `testing/tests/test_recipe.py`
-- Modify: `testing/llm_surgeon/__init__.py`
+- Create: `llm_surgeon/recipe.py`
+- Create: `tests/test_recipe.py`
+- Modify: `llm_surgeon/__init__.py`
 
 - [ ] **Step 1: Write tests for recipe**
 
-Create `testing/tests/test_recipe.py`:
+Create `tests/test_recipe.py`:
 
 ```python
 """Tests for recipe module."""
@@ -580,7 +580,7 @@ class TestRun:
 - [ ] **Step 2: Run tests to verify they fail**
 - [ ] **Step 3: Implement recipe.py**
 
-Create `testing/llm_surgeon/recipe.py`:
+Create `llm_surgeon/recipe.py`:
 
 ```python
 """Declarative experiment recipes (YAML)."""
@@ -762,7 +762,7 @@ from llm_surgeon import surgery, verify, export, benchmark, inspect, tracking, r
 - [ ] **Step 5: Install pyyaml if not present**
 
 ```bash
-/home/ai/ai-projects/llm/testing/.venv/bin/pip install pyyaml
+.venv/bin/pip install pyyaml
 ```
 
 - [ ] **Step 6: Run tests to verify they pass**
@@ -770,7 +770,7 @@ from llm_surgeon import surgery, verify, export, benchmark, inspect, tracking, r
 - [ ] **Step 8: Commit**
 
 ```bash
-git add testing/llm_surgeon/recipe.py testing/tests/test_recipe.py testing/llm_surgeon/__init__.py
+git add llm_surgeon/recipe.py tests/test_recipe.py llm_surgeon/__init__.py
 git commit -m "feat: add YAML recipe execution and layer sweep generation"
 ```
 
@@ -779,7 +779,7 @@ git commit -m "feat: add YAML recipe execution and layer sweep generation"
 ## Final State
 
 ```
-testing/
+
   llm_surgeon/
     __init__.py          — imports all 7 modules
     surgery.py           — + calibrate()

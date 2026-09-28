@@ -74,12 +74,14 @@ def to_gguf(
 
     Steps:
       1. Run convert_hf_to_gguf.py to produce an f16 GGUF.
-      2. If quantization is not None, quantize it and remove the f16 intermediate.
+      2. If quantization is set (and not "F16"), quantize it. The f16
+         intermediate is removed whether quantization succeeds or fails.
 
     Args:
         checkpoint_path: Path to the saved HF checkpoint directory.
         output_dir: Directory where the GGUF file(s) will be placed.
-        quantization: GGUF quantization type (e.g. "Q4_K_M") or None for f16 only.
+        quantization: GGUF quantization type (e.g. "Q4_K_M"), or None / "F16"
+                      for the f16 conversion only.
         llama_cpp_path: Override the llama.cpp installation directory.
                         Defaults to the LLAMA_CPP_PATH env var; one of the two
                         is required.
@@ -100,7 +102,10 @@ def to_gguf(
     if not os.path.exists(convert_script):
         raise FileNotFoundError(f"convert_hf_to_gguf.py not found at: {convert_script}")
 
-    if quantization is not None and not os.path.exists(quantize_bin):
+    # The converter already writes f16; quantizing "F16" would pass the same
+    # path as input and output and then delete it as the intermediate.
+    quantize = quantization is not None and quantization.upper() != "F16"
+    if quantize and not os.path.exists(quantize_bin):
         raise FileNotFoundError(f"llama-quantize not found at: {quantize_bin}")
 
     os.makedirs(output_dir, exist_ok=True)
@@ -124,24 +129,29 @@ def to_gguf(
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
-    if quantization is None:
+    if not quantize:
         return os.path.abspath(f16_gguf)
+    assert quantization is not None
 
     # Step 2: quantize
     quantized_gguf = os.path.join(output_dir, f"{model_name}-{quantization}.gguf")
     quantize_cmd = [quantize_bin, f16_gguf, quantized_gguf, quantization]
     env = os.environ.copy()
-    env["LD_LIBRARY_PATH"] = os.path.dirname(quantize_bin) + ":" + env.get("LD_LIBRARY_PATH", "")
-    result = subprocess.run(quantize_cmd, capture_output=True, text=True, env=env)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"GGUF quantization failed (exit {result.returncode}):\n"
-            f"stdout: {result.stdout}\nstderr: {result.stderr}"
-        )
-
-    # Clean up intermediate f16 file
-    if os.path.exists(f16_gguf):
-        os.remove(f16_gguf)
+    # An empty LD_LIBRARY_PATH entry means the current directory to the loader.
+    lib_dirs = [os.path.dirname(quantize_bin), env.get("LD_LIBRARY_PATH", "")]
+    env["LD_LIBRARY_PATH"] = os.pathsep.join(d for d in lib_dirs if d)
+    try:
+        result = subprocess.run(quantize_cmd, capture_output=True, text=True, env=env)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"GGUF quantization failed (exit {result.returncode}):\n"
+                f"stdout: {result.stdout}\nstderr: {result.stderr}"
+            )
+    finally:
+        # The f16 file is only an intermediate here; don't leave it behind
+        # on failure either.
+        if os.path.exists(f16_gguf):
+            os.remove(f16_gguf)
 
     return os.path.abspath(quantized_gguf)
 

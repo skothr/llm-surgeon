@@ -1,11 +1,8 @@
-# Working in this repo — worktree discipline (hard rule)
+# Working in this repo — branch and PR
 
-This repo may run concurrent Claude Code sessions; to keep them from
-clobbering each other's uncommitted work, **each session works in its own git
-worktree** (`.claude/worktrees/<scope>/`, gitignored) on its own branch, never
-on the main checkout. Branch → push → PR (`gh pr create`) → merge via PR →
-`git worktree remove`. Only integration commits (merges, or edits to
-`CLAUDE.md`/`.gitignore`) land directly on `main`.
+Work on a feature branch off an up-to-date `main`, push it, and open a PR
+(`gh pr create`); a human merges. Nothing is committed directly on `main` —
+`CLAUDE.md` and `.gitignore` edits go through a PR too.
 
 ---
 
@@ -25,8 +22,8 @@ pytest
 ```
 
 - `pyproject.toml` sets `testpaths = ["tests"]` and `pythonpath = ["."]`.
-- Install dev deps first: `pip install -e ".[dev]"` (system python is
-  not assumed to have torch/pytest).
+- Install dev deps first: `pip install -e ".[dev,eval,gguf]"` (what CI
+  installs; system python is not assumed to have torch/pytest).
 - `llm_surgeon` is installed editable via `pip install -e .`.
 
 ## Dev models
@@ -40,7 +37,7 @@ pytest
 # Type Checking
 
 Project stance: zero errors, warnings, AND informations after every edit
-for pyright. `pyrightconfig.json` (extends the shared base config) is set
+for pyright. `pyrightconfig.json` (self-contained; no `extends`) is set
 so the `<new-diagnostics>` linter messages line up with what we want
 fixed; running pyright via Bash separately costs time — don't, unless the
 user asks or you suspect a cache mismatch.
@@ -66,7 +63,7 @@ user asks or you suspect a cache mismatch.
 ### Type-narrowing tier list
 
 `assert isinstance` > `cast` > `# pyright: ignore[reportXxx]`; never bare
-`# type: ignore`. The base config has `reportUnnecessaryTypeIgnoreComment`
+`# type: ignore`. `pyrightconfig.json` keeps `reportUnnecessaryTypeIgnoreComment`
 ON, so stale `# pyright: ignore` annotations self-surface for deletion
 when stubs catch up.
 
@@ -75,7 +72,7 @@ when stubs catch up.
 - Fully unstubbed packages: `llama_cpp`, `gguf`, `bitsandbytes`.
 - Torch stubs lag runtime for: `torch.OutOfMemoryError`,
   `with torch.device(...)`, `load_state_dict(assign=...)`.
-- `reportPrivateImportUsage` is muted in the shared base config because
+- `reportPrivateImportUsage` is muted in `pyrightconfig.json` because
   torch's `__init__.pyi` doesn't re-export the bulk of its runtime
   surface (`torch.float32`, `torch.zeros`, `torch.tensor`, ...).
 
@@ -84,8 +81,8 @@ when stubs catch up.
 **Honored** (rename to `_name` suppresses): local assignments, tuple
 unpacking, `for _idx, val in enumerate(...)`, function parameters.
 
-**`reportUnusedFunction` and `reportUnusedClass` are muted in the base
-config** — research code legitimately has scratch helpers; the escape
+**`reportUnusedFunction` and `reportUnusedClass` are muted in
+`pyrightconfig.json`** — research code legitimately has scratch helpers; the escape
 hatches are anti-patterns. Use grep / IDE for real dead-code sweeps.
 
 **`reportUnusedImport` is honored** (rename to `_name` does NOT suppress

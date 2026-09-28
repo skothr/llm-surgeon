@@ -58,20 +58,30 @@ pip install -e .
 With the optional dependency groups:
 
 ```bash
-pip install -e ".[dev,gui,eval]"
+pip install -e ".[dev,eval,gguf]"
 ```
 
 Optional groups:
 
-- `dev` — `pytest` (the test runner).
-- `gui` — `fastapi` + `uvicorn`, for a service wrapping the library.
-- `eval` — `lm_eval` + `datasets`, for the harness benchmarks in `benchmark`.
-- `gguf` — `llama-cpp-python`, for the native `LlamaEngine` GGUF inference
+- `dev` — `pytest`, `pyright`, `scipy` (the test and type-check toolchain).
+- `quant` — `bitsandbytes`, for the `nf4` / `int8` `load_model` modes
+  (including the default `nf4`). Other modes work without it.
+- `eval` — `lm_eval`, for the harness benchmarks in `benchmark`.
+- `gguf` — the `gguf` package, for writing GGUF files
+  (`gguf_writer.export_hf_to_gguf`).
+- `llama` — `llama-cpp-python`, for the native `LlamaEngine` GGUF inference
   path. Not needed for HF loading, surgery, or probing.
 
-Requires Python ≥ 3.10. Core dependencies (torch, transformers, accelerate,
-bitsandbytes, numpy, huggingface_hub, ...) are declared in `pyproject.toml`;
-a CUDA-capable GPU is assumed for non-trivial models.
+Requires Python ≥ 3.10 and transformers ≥ 5. Core dependencies (torch,
+transformers, accelerate, datasets, numpy, huggingface_hub, ...) are declared
+in `pyproject.toml`; a CUDA-capable GPU is assumed for non-trivial models.
+
+On-disk state defaults to `~/.cache/llm-surgeon/` (`$XDG_CACHE_HOME` is
+honored; `$LLM_SURGEON_HOME` overrides the root): model downloads under
+`models/` (`$LLM_SURGEON_CACHE_DIR` overrides) and the experiment-tracking
+database at `experiments.db` (`$LLM_SURGEON_DB` overrides). `export.to_gguf`
+needs a llama.cpp checkout via `LLAMA_CPP_PATH` or its `llama_cpp_path`
+argument.
 
 ## Quickstart
 
@@ -110,6 +120,9 @@ bare `pytest` from the repo root runs the suite (17 test files covering
 surgery, export, inspect, recipe, tracking, verify, the GGUF reader, the
 llama engine, and the full probe surface). The suite assumes torch and the
 dev models are available; install with `pip install -e ".[dev]"` first.
+Tests that need a cached real model, CUDA, Ollama, a llama.cpp checkout
+(`LLAMA_CPP_PATH`), the network, or an optional package skip when it is
+absent; set `HF_HUB_OFFLINE=1` to skip the download tests explicitly.
 
 ## Design history
 

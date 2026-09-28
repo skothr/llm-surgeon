@@ -22,7 +22,7 @@ pytest
 ```
 
 - `pyproject.toml` sets `testpaths = ["tests"]` and `pythonpath = ["."]`.
-- Install dev deps first: `pip install -e ".[dev,eval,gguf]"` (what CI
+- Install dev deps first: `pip install -e ".[dev,eval,gguf,quant,llama]"` (what CI
   installs; system python is not assumed to have torch/pytest).
 - `llm_surgeon` is installed editable via `pip install -e .`.
 - `tests/conftest.py` caps torch/BLAS at 2 threads and runs tests at nice 10

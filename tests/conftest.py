@@ -40,6 +40,13 @@ def _make_tiny_tokenizer(vocab_size: int):
     return hf_tokenizer
 
 
+@pytest.fixture(autouse=True)
+def _isolate_surgeon_home(tmp_path, monkeypatch):
+    """Keep default-path writes (e.g. the tracking DB) out of the user's home."""
+    monkeypatch.setenv("LLM_SURGEON_HOME", str(tmp_path / "llm-surgeon-home"))
+    monkeypatch.delenv("LLM_SURGEON_DB", raising=False)
+
+
 @pytest.fixture
 def tiny_llama_config():
     """LLaMA config with small dimensions for fast testing."""

@@ -193,3 +193,19 @@ class TestHarnessResultsTable:
         payload = json.loads(row[0])
         # torch.float16 stringified via default=str.
         assert "float16" in payload["config"]["dtype"]
+
+
+def test_default_db_honors_llm_surgeon_db(tmp_path, monkeypatch):
+    db = tmp_path / "nested" / "exp.db"
+    monkeypatch.setenv("LLM_SURGEON_DB", str(db))
+    start("env-exp")
+    assert db.exists()
+    assert [e["name"] for e in list_experiments()] == ["env-exp"]
+
+
+def test_default_db_lives_under_llm_surgeon_home(tmp_path, monkeypatch):
+    monkeypatch.delenv("LLM_SURGEON_DB", raising=False)
+    monkeypatch.setenv("LLM_SURGEON_HOME", str(tmp_path / "home"))
+    exp = start("home-exp")
+    assert exp.db_path == str(tmp_path / "home" / "experiments.db")
+    assert (tmp_path / "home" / "experiments.db").exists()

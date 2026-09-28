@@ -5,21 +5,19 @@ import logging
 import os
 import warnings
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
+from llm_surgeon._paths import model_cache_dir
+
 logger = logging.getLogger("llm_surgeon.surgery")
 
-# Dedicated cache for clean HF model downloads.
-# Override with LLM_SURGEON_CACHE_DIR env var.
-MODEL_CACHE_DIR = os.environ.get(
-    "LLM_SURGEON_CACHE_DIR",
-    str(Path(__file__).resolve().parent.parent / ".cache" / "models"),
-)
+# Dedicated cache for clean HF model downloads: $LLM_SURGEON_CACHE_DIR, else
+# <llm-surgeon home>/models (see llm_surgeon._paths). Resolved at import time.
+MODEL_CACHE_DIR = model_cache_dir()
 
 # Threshold above which duplicate_layer issues a memory warning. Sized for a
 # 32 GB host with headroom for activations + Python overhead.

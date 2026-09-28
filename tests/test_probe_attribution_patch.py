@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
 from typing import Dict, List, Tuple
 
 import pytest
@@ -13,8 +12,8 @@ from llm_surgeon.probe import PatchingResult, _capture_residual_stream_with_grad
 
 
 def _tinyllama_cached() -> bool:
-    root = Path(__file__).resolve().parents[1] / ".cache" / "models"
-    return any(root.glob("models--TinyLlama--*"))
+    from llm_surgeon.surgery import _is_cached
+    return _is_cached("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
 
 
 class TestCaptureWithGrad:

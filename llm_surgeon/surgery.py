@@ -244,10 +244,20 @@ def _validate_head_args(model, layer: int, heads: list) -> None:
     for h in heads:
         if h < 0 or h >= num_heads:
             raise IndexError(f"Head index {h} out of range [0, {num_heads - 1}]")
+    if len(set(heads)) != len(heads):
+        dupes = sorted({h for h in heads if heads.count(h) > 1})
+        raise ValueError(f"Duplicate head indices: {dupes}")
 
 
 def _head_dim(model) -> int:
-    return model.config.hidden_size // model.config.num_attention_heads
+    """Per-head dimension, honouring an explicit ``config.head_dim``.
+
+    Matches HF ``LlamaAttention``: some LLaMA-family configs (e.g.
+    Mistral-Nemo) set ``head_dim`` to something other than
+    ``hidden_size // num_attention_heads``.
+    """
+    cfg = model.config
+    return getattr(cfg, "head_dim", None) or cfg.hidden_size // cfg.num_attention_heads
 
 
 def zero_heads(model, layer: int, heads: list[int]) -> SurgeryLog:
@@ -280,42 +290,61 @@ def scale_heads(model, layer: int, heads: list[int], factor: float) -> SurgeryLo
     )
 
 
+def _swap_rows(t: torch.Tensor, a: int, b: int, size: int) -> None:
+    """Exchange rows ``[a*size, (a+1)*size)`` and ``[b*size, (b+1)*size)`` of ``t``."""
+    t[a * size : (a + 1) * size], t[b * size : (b + 1) * size] = (
+        t[b * size : (b + 1) * size].clone(),
+        t[a * size : (a + 1) * size].clone(),
+    )
+
+
 def swap_heads(model, layer: int, h1: int, h2: int) -> SurgeryLog:
-    """Exchange two heads' weight slices in q_proj, k_proj, v_proj, and o_proj."""
-    _validate_head_args(model, layer, [h1, h2])
+    """Permute two attention heads: exchange their q/k/v rows and o_proj columns.
+
+    This is a relabelling, not an ablation: the model computes the same
+    function afterwards (logits are unchanged up to float rounding). It is
+    useful for testing position-dependent tooling, not for changing behaviour.
+
+    Under GQA (``num_key_value_heads < num_attention_heads``) query heads in
+    one KV group share a K/V head, so only heads in the same group can be
+    swapped (their q rows and o columns move; the shared K/V stays). A
+    cross-group swap cannot be expressed as a slice exchange — moving a K/V
+    head would rewire every other query head in both groups — and raises
+    ``ValueError``.
+    """
+    _validate_head_args(model, layer, sorted({h1, h2}))
     hd = _head_dim(model)
     attn = model.model.layers[layer].self_attn
 
+    num_q_heads = model.config.num_attention_heads
+    num_kv_heads = getattr(model.config, "num_key_value_heads", None) or num_q_heads
+    kv_group_size = num_q_heads // num_kv_heads
+    kv1 = h1 // kv_group_size
+    kv2 = h2 // kv_group_size
+    if kv1 != kv2 and kv_group_size > 1:
+        raise ValueError(
+            f"swap_heads: heads {h1} and {h2} use different KV heads ({kv1} and {kv2}; "
+            f"{kv_group_size} query heads share each KV head). Only heads in the same "
+            "KV group can be swapped under GQA."
+        )
+
+    q = attn.q_proj.weight.data
+    o = attn.o_proj.weight.data
     with torch.no_grad():
-        # Swap q_proj rows (each head's query projection)
-        q = attn.q_proj.weight.data
-        q[h1 * hd : (h1 + 1) * hd, :], q[h2 * hd : (h2 + 1) * hd, :] = (
-            q[h2 * hd : (h2 + 1) * hd, :].clone(),
-            q[h1 * hd : (h1 + 1) * hd, :].clone(),
-        )
+        # q_proj rows (each head's query projection), plus bias if present.
+        _swap_rows(q, h1, h2, hd)
+        if attn.q_proj.bias is not None:
+            _swap_rows(attn.q_proj.bias.data, h1, h2, hd)
 
-        # Swap k_proj and v_proj rows if heads map 1:1 to KV heads
-        # (GQA: multiple Q heads share one KV head — only swap if they map to different KV heads)
-        num_kv_heads = model.config.num_key_value_heads
-        num_q_heads = model.config.num_attention_heads
-        kv_group_size = num_q_heads // num_kv_heads
-        kv1 = h1 // kv_group_size
-        kv2 = h2 // kv_group_size
+        # MHA: each query head owns its K/V head, so those rows move too.
         if kv1 != kv2:
-            for proj in [attn.k_proj, attn.v_proj]:
-                w = proj.weight.data
-                kv_hd = w.shape[0] // num_kv_heads
-                w[kv1 * kv_hd : (kv1 + 1) * kv_hd, :], w[kv2 * kv_hd : (kv2 + 1) * kv_hd, :] = (
-                    w[kv2 * kv_hd : (kv2 + 1) * kv_hd, :].clone(),
-                    w[kv1 * kv_hd : (kv1 + 1) * kv_hd, :].clone(),
-                )
+            for proj in (attn.k_proj, attn.v_proj):
+                _swap_rows(proj.weight.data, kv1, kv2, hd)
+                if proj.bias is not None:
+                    _swap_rows(proj.bias.data, kv1, kv2, hd)
 
-        # Swap o_proj columns (each head's output contribution)
-        o = attn.o_proj.weight.data
-        o[:, h1 * hd : (h1 + 1) * hd], o[:, h2 * hd : (h2 + 1) * hd] = (
-            o[:, h2 * hd : (h2 + 1) * hd].clone(),
-            o[:, h1 * hd : (h1 + 1) * hd].clone(),
-        )
+        # o_proj columns (each head's output contribution).
+        _swap_rows(o.T, h1, h2, hd)
 
     return SurgeryLog.inplace(model, "swap_heads", f"Swapped heads {h1} and {h2} in layer {layer}")
 

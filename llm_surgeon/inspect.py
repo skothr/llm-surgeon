@@ -229,8 +229,33 @@ def sublayer_influence(
 
 # Weight norms and SVD
 
+def _dense_param(param: torch.Tensor) -> torch.Tensor:
+    """Detached float32 copy of a parameter, dequantizing bitsandbytes weights.
+
+    On an ``nf4``/``int8`` model the stored tensor holds packed 4-bit codes
+    (``Params4bit``, shape ``(numel/2, 1)``) or unscaled int8 codes
+    (``Int8Params``); casting those to float gives meaningless numbers.
+    """
+    quant_state = getattr(param, "quant_state", None)
+    if quant_state is not None:
+        import bitsandbytes.functional as bnb_f
+        return bnb_f.dequantize_4bit(param.data, quant_state).float()
+    scb = getattr(param, "SCB", None)
+    if scb is not None:
+        # LLM.int8() row-wise absmax quantization: w ~= code * absmax / 127.
+        return param.data.float() * (scb.float().unsqueeze(1) / 127.0)
+    if not param.is_floating_point():
+        raise TypeError(
+            f"Cannot read a {type(param).__name__} of dtype {param.dtype} as weights; "
+            "load the model in a dense mode (bf16/fp16/fp32)."
+        )
+    return param.detach().float()
+
+
 def weight_norms(model) -> list[dict]:
     """Compute Frobenius norms of attention and MLP parameter groups per layer.
+
+    bitsandbytes 4-bit/8-bit weights are dequantized first.
 
     Returns a list of dicts:
         [{"layer": int, "attn_norm": float, "mlp_norm": float, "total_norm": float}, ...]
@@ -242,11 +267,11 @@ def weight_norms(model) -> list[dict]:
 
         # Collect attention weights
         for _name, param in layer.self_attn.named_parameters():
-            attn_tensors.append(param.detach().float())
+            attn_tensors.append(_dense_param(param))
 
         # Collect MLP weights
         for _name, param in layer.mlp.named_parameters():
-            mlp_tensors.append(param.detach().float())
+            mlp_tensors.append(_dense_param(param))
 
         def _combined_frob(tensors):
             if not tensors:
@@ -272,6 +297,8 @@ def weight_norms(model) -> list[dict]:
 def weight_svd(model, layers: list[int] | None = None) -> dict[int, dict]:
     """Compute singular values of key weight matrices for specified layers.
 
+    bitsandbytes 4-bit/8-bit weights are dequantized first.
+
     Args:
         model: LlamaForCausalLM instance.
         layers: List of layer indices, or None to process all layers.
@@ -292,14 +319,12 @@ def weight_svd(model, layers: list[int] | None = None) -> dict[int, dict]:
         for proj_name in ["q_proj", "k_proj", "v_proj", "o_proj"]:
             proj = getattr(layer.self_attn, proj_name, None)
             if proj is not None:
-                w = proj.weight.detach().float()
-                layer_svd[proj_name] = torch.linalg.svdvals(w)
+                layer_svd[proj_name] = torch.linalg.svdvals(_dense_param(proj.weight))
 
         for proj_name in ["gate_proj", "up_proj", "down_proj"]:
             proj = getattr(layer.mlp, proj_name, None)
             if proj is not None:
-                w = proj.weight.detach().float()
-                layer_svd[proj_name] = torch.linalg.svdvals(w)
+                layer_svd[proj_name] = torch.linalg.svdvals(_dense_param(proj.weight))
 
         result[i] = layer_svd
 

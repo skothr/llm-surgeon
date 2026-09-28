@@ -260,6 +260,24 @@ def _head_dim(model) -> int:
     return getattr(cfg, "head_dim", None) or cfg.hidden_size // cfg.num_attention_heads
 
 
+def _require_dense_weight(module: nn.Module, op: str) -> torch.Tensor:
+    """Return ``module.weight.data`` if it is a plain floating-point tensor.
+
+    bitsandbytes layers (the ``nf4``/``int8`` load modes) keep packed 4-bit
+    codes or int8 codes in ``weight.data``. Zeroing, scaling or slicing head
+    columns there corrupts the weights instead of editing them, so raise.
+    """
+    weight = module.weight
+    if hasattr(weight, "quant_state") or hasattr(weight, "SCB") or not weight.is_floating_point():
+        raise TypeError(
+            f"{op}: {type(module).__name__} holds a quantized weight "
+            f"({type(weight).__name__}, dtype={weight.dtype}); weight-level surgery "
+            "needs a dense model. Load it with mode 'bf16', 'fp16', 'fp32' or "
+            "'fp32-cpu' ('export') instead of 'nf4'/'int8'."
+        )
+    return weight.data
+
+
 def zero_heads(model, layer: int, heads: list[int]) -> SurgeryLog:
     """Zero out specific attention heads by zeroing their o_proj columns.
 
@@ -268,10 +286,10 @@ def zero_heads(model, layer: int, heads: list[int]) -> SurgeryLog:
     """
     _validate_head_args(model, layer, heads)
     hd = _head_dim(model)
-    o_proj = model.model.layers[layer].self_attn.o_proj
+    o = _require_dense_weight(model.model.layers[layer].self_attn.o_proj, "zero_heads")
     with torch.no_grad():
         for h in heads:
-            o_proj.weight.data[:, h * hd : (h + 1) * hd] = 0
+            o[:, h * hd : (h + 1) * hd] = 0
 
     return SurgeryLog.inplace(model, "zero_heads", f"Zeroed heads {heads} in layer {layer}")
 
@@ -280,10 +298,10 @@ def scale_heads(model, layer: int, heads: list[int], factor: float) -> SurgeryLo
     """Scale specific heads' contribution by multiplying their o_proj columns."""
     _validate_head_args(model, layer, heads)
     hd = _head_dim(model)
-    o_proj = model.model.layers[layer].self_attn.o_proj
+    o = _require_dense_weight(model.model.layers[layer].self_attn.o_proj, "scale_heads")
     with torch.no_grad():
         for h in heads:
-            o_proj.weight.data[:, h * hd : (h + 1) * hd] *= factor
+            o[:, h * hd : (h + 1) * hd] *= factor
 
     return SurgeryLog.inplace(
         model, "scale_heads", f"Scaled heads {heads} in layer {layer} by {factor}"
@@ -328,8 +346,9 @@ def swap_heads(model, layer: int, h1: int, h2: int) -> SurgeryLog:
             "KV group can be swapped under GQA."
         )
 
-    q = attn.q_proj.weight.data
-    o = attn.o_proj.weight.data
+    q = _require_dense_weight(attn.q_proj, "swap_heads")
+    o = _require_dense_weight(attn.o_proj, "swap_heads")
+    kv = [_require_dense_weight(p, "swap_heads") for p in (attn.k_proj, attn.v_proj)]
     with torch.no_grad():
         # q_proj rows (each head's query projection), plus bias if present.
         _swap_rows(q, h1, h2, hd)
@@ -338,8 +357,8 @@ def swap_heads(model, layer: int, h1: int, h2: int) -> SurgeryLog:
 
         # MHA: each query head owns its K/V head, so those rows move too.
         if kv1 != kv2:
-            for proj in (attn.k_proj, attn.v_proj):
-                _swap_rows(proj.weight.data, kv1, kv2, hd)
+            for proj, w in zip((attn.k_proj, attn.v_proj), kv):
+                _swap_rows(w, kv1, kv2, hd)
                 if proj.bias is not None:
                     _swap_rows(proj.bias.data, kv1, kv2, hd)
 
@@ -358,8 +377,9 @@ def zero_mlp(model, layer: int) -> SurgeryLog:
     num_layers = len(model.model.layers)
     if layer < 0 or layer >= num_layers:
         raise IndexError(f"Layer index {layer} out of range [0, {num_layers - 1}]")
+    down = _require_dense_weight(model.model.layers[layer].mlp.down_proj, "zero_mlp")
     with torch.no_grad():
-        model.model.layers[layer].mlp.down_proj.weight.data.zero_()
+        down.zero_()
     return SurgeryLog.inplace(model, "zero_mlp", f"Zeroed MLP in layer {layer}")
 
 
@@ -372,8 +392,9 @@ def zero_attention(model, layer: int) -> SurgeryLog:
     num_layers = len(model.model.layers)
     if layer < 0 or layer >= num_layers:
         raise IndexError(f"Layer index {layer} out of range [0, {num_layers - 1}]")
+    o = _require_dense_weight(model.model.layers[layer].self_attn.o_proj, "zero_attention")
     with torch.no_grad():
-        model.model.layers[layer].self_attn.o_proj.weight.data.zero_()
+        o.zero_()
     return SurgeryLog.inplace(model, "zero_attention", f"Zeroed attention in layer {layer}")
 
 

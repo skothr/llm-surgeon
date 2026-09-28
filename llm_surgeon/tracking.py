@@ -65,18 +65,16 @@ CREATE TABLE IF NOT EXISTS harness_results (
 """
 
 
-_SCHEMA_INITIALIZED: set[str] = set()
-
-
 def _connect(db_path: str) -> sqlite3.Connection:
     if db_path != ":memory:":
         Path(db_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    if db_path not in _SCHEMA_INITIALIZED:
-        conn.executescript(_SCHEMA_SQL)
-        conn.commit()
-        _SCHEMA_INITIALIZED.add(db_path)
+    # Run on every connect: the statements are CREATE ... IF NOT EXISTS, and a
+    # per-path cache goes stale when the file is deleted and recreated, when a
+    # relative path is reused after chdir, or for ":memory:".
+    conn.executescript(_SCHEMA_SQL)
+    conn.commit()
     return conn
 
 
@@ -139,14 +137,25 @@ class Experiment:
 
     def finish(self, notes: str = "") -> None:
         """Mark experiment completed."""
+        self._set_final_status("completed", notes)
+
+    def fail(self, error: str) -> None:
+        """Mark experiment failed, storing ``error`` (e.g. the exception text) in notes.
+
+        Call this from the caller's ``except`` block so a crashed run does not
+        stay in status ``'running'``.
+        """
+        self._set_final_status("failed", error)
+
+    def _set_final_status(self, status: str, notes: str) -> None:
         with _connection(self.db_path) as conn:
             conn.execute(
                 """
                 UPDATE experiments
-                SET status = 'completed', notes = ?, finished_at = ?
+                SET status = ?, notes = ?, finished_at = ?
                 WHERE name = ?
                 """,
-                (notes, _now(), self.name),
+                (status, notes, _now(), self.name),
             )
 
 
@@ -158,8 +167,16 @@ def start(
     base_model: str = "",
     recipe: Mapping[str, Any] | None = None,
     db_path: str | None = None,
+    replace: bool = True,
 ) -> Experiment:
     """Create a new experiment record and return an Experiment handle.
+
+    Experiment names are unique. With ``replace=True`` (the default), an
+    existing experiment of the same name is deleted up front, together with
+    its metrics, surgery ops, samples and harness results, before the new
+    record is inserted: the earlier results are gone even if the new run
+    later fails. Pass ``replace=False`` to raise ``ValueError`` instead.
+    A run that fails should be marked with :meth:`Experiment.fail`.
 
     ``db_path`` defaults to ``$LLM_SURGEON_DB`` or
     ``<llm-surgeon home>/experiments.db`` (see ``llm_surgeon._paths``).
@@ -167,7 +184,14 @@ def start(
     db_path = _resolve_db(db_path)
     recipe_yaml = json.dumps(recipe) if recipe is not None else None
     with _connection(db_path) as conn:
-        # If an experiment with this name already exists, replace it
+        exists = conn.execute(
+            "SELECT 1 FROM experiments WHERE name = ?", (name,)
+        ).fetchone()
+        if exists is not None and not replace:
+            raise ValueError(
+                f"Experiment '{name}' already exists in {db_path}; "
+                f"pass replace=True to overwrite it"
+            )
         for tbl in ("metrics", "surgery_ops", "samples", "harness_results"):
             conn.execute(f"DELETE FROM {tbl} WHERE experiment_name = ?", (name,))
         conn.execute("DELETE FROM experiments WHERE name = ?", (name,))
@@ -190,7 +214,10 @@ def list_experiments(db_path: str | None = None) -> list[dict]:
 
 
 def get_experiment(name: str, db_path: str | None = None) -> dict:
-    """Return a single experiment with its metrics, ops, and samples."""
+    """Return a single experiment with its metrics, ops, samples and harness results.
+
+    Child rows are in insertion order.
+    """
     db_path = _resolve_db(db_path)
     with _connection(db_path) as conn:
         exp_row = conn.execute(
@@ -202,19 +229,28 @@ def get_experiment(name: str, db_path: str | None = None) -> dict:
         result = dict(exp_row)
         result["metrics"] = [
             dict(r) for r in conn.execute(
-                "SELECT key, value FROM metrics WHERE experiment_name = ?", (name,)
+                "SELECT key, value FROM metrics WHERE experiment_name = ? ORDER BY id",
+                (name,),
             ).fetchall()
         ]
         result["ops"] = [
             dict(r) for r in conn.execute(
                 "SELECT operation, description, layer_count_before, layer_count_after "
-                "FROM surgery_ops WHERE experiment_name = ?",
+                "FROM surgery_ops WHERE experiment_name = ? ORDER BY id",
                 (name,),
             ).fetchall()
         ]
         result["samples"] = [
             dict(r) for r in conn.execute(
-                "SELECT data FROM samples WHERE experiment_name = ?", (name,)
+                "SELECT data FROM samples WHERE experiment_name = ? ORDER BY id",
+                (name,),
+            ).fetchall()
+        ]
+        result["harness_results"] = [
+            dict(r) for r in conn.execute(
+                "SELECT tasks_json, num_fewshot, limit_samples, result_json, created_at "
+                "FROM harness_results WHERE experiment_name = ? ORDER BY id",
+                (name,),
             ).fetchall()
         ]
         return result
@@ -222,6 +258,8 @@ def get_experiment(name: str, db_path: str | None = None) -> dict:
 
 def compare_experiments(names: list[str], db_path: str | None = None) -> dict[str, dict]:
     """Return side-by-side metric dicts for the named experiments.
+
+    When a metric key was logged more than once, the last value logged wins.
 
     Returns:
         { experiment_name: { metric_key: value, ... }, ... }

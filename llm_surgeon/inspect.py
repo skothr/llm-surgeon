@@ -1,9 +1,17 @@
 """Inspection and activation analysis tools for LLaMA models."""
 
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import torch
 import torch.nn.functional as F
+
+from llm_surgeon.probe._hooks import (
+    _make_capture_input_hook,
+    _make_capture_output_hook,
+    _unwrap_hook_output,
+)
 
 
 def _get_input_device(model) -> torch.device:
@@ -11,45 +19,135 @@ def _get_input_device(model) -> torch.device:
     return model.get_input_embeddings().weight.device
 
 
-def _capture_layer_io(
-    model, tokenizer, prompts: list[str]
-) -> tuple[dict[int, list[torch.Tensor]], dict[int, list[torch.Tensor]]]:
-    """Run a forward pass per prompt and capture each layer's input + output.
+def _raise_if_missing(fired: Iterable[int], num_layers: int) -> None:
+    """Raise if a layer's forward hook did not fire during the forward pass."""
+    seen = set(fired)
+    missing = [i for i in range(num_layers) if i not in seen]
+    if missing:
+        raise RuntimeError(
+            f"Forward hooks did not fire for layer(s) {missing} of {num_layers}; "
+            f"the model's forward skipped them"
+        )
 
-    Returns ``(layer_inputs, layer_outputs)``: dicts mapping layer index
-    to a list of detached tensors of shape ``(batch, seq, hidden)``,
-    one entry per prompt.
+
+@contextmanager
+def _eager_attention(model) -> Iterator[None]:
+    """Switch the model to eager attention (sdpa cannot return attention
+    weights) and restore the original implementation on exit.
+
+    The original is restored by assignment, also when it is ``None``:
+    ``PretrainedConfig._attn_implementation`` is a property with no deleter.
     """
-    num_layers = len(model.model.layers)
-    layer_inputs: dict[int, list[torch.Tensor]] = {i: [] for i in range(num_layers)}
-    layer_outputs: dict[int, list[torch.Tensor]] = {i: [] for i in range(num_layers)}
+    orig_attn = getattr(model.config, "_attn_implementation", None)
+    model.config._attn_implementation = "eager"
+    try:
+        yield
+    finally:
+        model.config._attn_implementation = orig_attn
 
-    def make_hook(idx: int):
+
+# Block Influence
+
+_METRIC_KEYS = ("magnitude_ratio", "contribution_norm", "bi_score")
+
+# Spans of one block's residual stream, as (name, start point, end point):
+# "in" is the block input, "mid" the residual after attention (the input to
+# post_attention_layernorm), "out" the block output.
+_TOTAL_SPAN = (("total", "in", "out"),)
+_SUBLAYER_SPANS = (
+    ("attention", "in", "mid"),
+    ("mlp", "mid", "out"),
+    ("total", "in", "out"),
+)
+
+
+def _compute_metrics(flat_in: torch.Tensor, flat_out: torch.Tensor) -> dict[str, float]:
+    """Compute magnitude_ratio, contribution_norm, bi_score for a pair of tensors.
+
+    Both inputs should be shaped (num_tokens, hidden_dim) in float. Each
+    metric is a per-token value averaged over tokens.
+    """
+    in_norms = flat_in.norm(dim=-1)
+    out_norms = flat_out.norm(dim=-1)
+    ratio = out_norms / in_norms.clamp(min=1e-10)
+
+    contrib = (flat_out - flat_in).norm(dim=-1)
+
+    cos_sim = F.cosine_similarity(flat_in, flat_out, dim=-1)
+
+    return {
+        "magnitude_ratio": ratio.mean().item(),
+        "contribution_norm": contrib.mean().item(),
+        "bi_score": max(0.0, min(1.0, 1.0 - cos_sim.mean().item())),
+    }
+
+
+def _layer_influence(
+    model, tokenizer, prompts: list[str], spans: tuple[tuple[str, str, str], ...]
+) -> dict[int, dict[str, dict[str, float]]]:
+    """Average :func:`_compute_metrics` over prompts for each layer and span.
+
+    Runs one forward pass per prompt. Metrics are computed right after each
+    pass and only that prompt's hidden states are held, so memory does not
+    grow with the number of prompts.
+    """
+    layers = model.model.layers
+    num_layers = len(layers)
+    points = sorted({pt for _name, a, b in spans for pt in (a, b)})
+    current: dict[tuple[str, int], torch.Tensor] = {}
+
+    def make_block_hook(idx: int):
         def hook(_module, inp, out):
-            layer_inputs[idx].append(inp[0].detach())
-            hidden_out = out[0].detach() if isinstance(out, tuple) else out.detach()
-            layer_outputs[idx].append(hidden_out)
+            current[("in", idx)] = inp[0].detach()
+            current[("out", idx)] = _unwrap_hook_output(out).detach()
         return hook
 
-    hooks = []
-    for i, layer in enumerate(model.model.layers):
-        hooks.append(layer.register_forward_hook(make_hook(i)))
+    hooks = [layer.register_forward_hook(make_block_hook(i)) for i, layer in enumerate(layers)]
+    if "mid" in points:
+        hooks += [
+            layer.post_attention_layernorm.register_forward_pre_hook(
+                _make_capture_input_hook(current, ("mid", i))
+            )
+            for i, layer in enumerate(layers)
+        ]
 
+    sums: dict[int, dict[str, dict[str, float]]] = {
+        i: {name: dict.fromkeys(_METRIC_KEYS, 0.0) for name, _a, _b in spans}
+        for i in range(num_layers)
+    }
+    n_prompts = 0
     device = _get_input_device(model)
     try:
         for prompt in prompts:
+            current.clear()
             enc = tokenizer(prompt, return_tensors="pt")
             input_ids = enc["input_ids"].to(device)
             with torch.no_grad():
                 model(input_ids)
+            _raise_if_missing(
+                (i for i in range(num_layers) if all((pt, i) in current for pt in points)),
+                num_layers,
+            )
+            for i in range(num_layers):
+                flat = {
+                    pt: current[(pt, i)].reshape(-1, current[(pt, i)].shape[-1]).float()
+                    for pt in points
+                }
+                for name, a, b in spans:
+                    for key, value in _compute_metrics(flat[a], flat[b]).items():
+                        sums[i][name][key] += value
+            n_prompts += 1
     finally:
         for h in hooks:
             h.remove()
+        current.clear()
 
-    return layer_inputs, layer_outputs
+    denom = n_prompts or 1
+    return {
+        i: {name: {k: v / denom for k, v in m.items()} for name, m in per_span.items()}
+        for i, per_span in sums.items()
+    }
 
-
-# Block Influence
 
 def block_influence(model, tokenizer, prompts: list[str]) -> dict[int, float]:
     """Compute Block Influence (BI) score per layer: 1 - cos(input, output).
@@ -76,67 +174,12 @@ def magnitude_influence(
             >1 means the layer amplifies, <1 means it attenuates.
         contribution_norm: ||output - input||, the L2 size of the layer's
             residual contribution, averaged over tokens and prompts.
-        bi_score: 1 - cosine_similarity(input, output), same as block_influence.
+        bi_score: 1 - cosine_similarity(input, output), averaged over tokens,
+            clamped to [0, 1] per prompt, then averaged over prompts.
     """
-    layer_inputs, layer_outputs = _capture_layer_io(model, tokenizer, prompts)
-    num_layers = len(model.model.layers)
-
-    results: dict[int, dict[str, float]] = {}
-    for i in range(num_layers):
-        mag_ratios = []
-        contrib_norms = []
-        cosine_sims = []
-
-        for h_in, h_out in zip(layer_inputs[i], layer_outputs[i]):
-            flat_in = h_in.reshape(-1, h_in.shape[-1]).float()
-            flat_out = h_out.reshape(-1, h_out.shape[-1]).float()
-
-            # Per-token magnitude ratio: ||out|| / ||in||
-            in_norms = flat_in.norm(dim=-1)
-            out_norms = flat_out.norm(dim=-1)
-            # Avoid division by zero
-            ratio = out_norms / in_norms.clamp(min=1e-10)
-            mag_ratios.append(ratio.mean().item())
-
-            # Per-token contribution norm: ||out - in||
-            contrib = (flat_out - flat_in).norm(dim=-1)
-            contrib_norms.append(contrib.mean().item())
-
-            # Cosine similarity (same as block_influence)
-            cos_sim = F.cosine_similarity(flat_in, flat_out, dim=-1)
-            cosine_sims.append(cos_sim.mean().item())
-
-        n = len(mag_ratios) or 1
-        avg_ratio = sum(mag_ratios) / n
-        avg_contrib = sum(contrib_norms) / n
-        avg_sim = sum(cosine_sims) / n
-
-        results[i] = {
-            "magnitude_ratio": avg_ratio,
-            "contribution_norm": avg_contrib,
-            "bi_score": max(0.0, min(1.0, 1.0 - avg_sim)),
-        }
-
-    return results
-
-
-def _compute_metrics(flat_in: torch.Tensor, flat_out: torch.Tensor) -> dict[str, float]:
-    """Compute magnitude_ratio, contribution_norm, bi_score for a pair of tensors.
-
-    Both inputs should be shaped (num_tokens, hidden_dim) in float.
-    """
-    in_norms = flat_in.norm(dim=-1)
-    out_norms = flat_out.norm(dim=-1)
-    ratio = out_norms / in_norms.clamp(min=1e-10)
-
-    contrib = (flat_out - flat_in).norm(dim=-1)
-
-    cos_sim = F.cosine_similarity(flat_in, flat_out, dim=-1)
-
     return {
-        "magnitude_ratio": ratio.mean().item(),
-        "contribution_norm": contrib.mean().item(),
-        "bi_score": max(0.0, min(1.0, 1.0 - cos_sim.mean().item())),
+        i: spans["total"]
+        for i, spans in _layer_influence(model, tokenizer, prompts, _TOTAL_SPAN).items()
     }
 
 
@@ -157,74 +200,7 @@ def sublayer_influence(
         mlp:       {magnitude_ratio, contribution_norm, bi_score} for h_mid -> h_out
         total:     {magnitude_ratio, contribution_norm, bi_score} for h_in -> h_out
     """
-    num_layers = len(model.model.layers)
-    layer_h_in: dict[int, list[torch.Tensor]] = {i: [] for i in range(num_layers)}
-    layer_h_mid: dict[int, list[torch.Tensor]] = {i: [] for i in range(num_layers)}
-    layer_h_out: dict[int, list[torch.Tensor]] = {i: [] for i in range(num_layers)}
-
-    hooks = []
-
-    def make_block_hook(idx):
-        def hook(module, inp, out):
-            layer_h_in[idx].append(inp[0].detach())
-            hidden_out = out[0].detach() if isinstance(out, tuple) else out.detach()
-            layer_h_out[idx].append(hidden_out)
-        return hook
-
-    def make_mid_hook(idx):
-        def hook(module, args):
-            # pre-hook on post_attention_layernorm: input is h_mid
-            layer_h_mid[idx].append(args[0].detach())
-        return hook
-
-    for i, layer in enumerate(model.model.layers):
-        hooks.append(layer.register_forward_hook(make_block_hook(i)))
-        hooks.append(
-            layer.post_attention_layernorm.register_forward_pre_hook(make_mid_hook(i))
-        )
-
-    device = _get_input_device(model)
-    try:
-        for prompt in prompts:
-            enc = tokenizer(prompt, return_tensors="pt")
-            input_ids = enc["input_ids"].to(device)
-            with torch.no_grad():
-                model(input_ids)
-    finally:
-        for h in hooks:
-            h.remove()
-
-    results: dict[int, dict[str, dict[str, float]]] = {}
-    for i in range(num_layers):
-        attn_metrics_list = []
-        mlp_metrics_list = []
-        total_metrics_list = []
-
-        for h_in, h_mid, h_out in zip(
-            layer_h_in[i], layer_h_mid[i], layer_h_out[i]
-        ):
-            flat_in = h_in.reshape(-1, h_in.shape[-1]).float()
-            flat_mid = h_mid.reshape(-1, h_mid.shape[-1]).float()
-            flat_out = h_out.reshape(-1, h_out.shape[-1]).float()
-
-            attn_metrics_list.append(_compute_metrics(flat_in, flat_mid))
-            mlp_metrics_list.append(_compute_metrics(flat_mid, flat_out))
-            total_metrics_list.append(_compute_metrics(flat_in, flat_out))
-
-        def _avg(metrics_list):
-            n = len(metrics_list) or 1
-            return {
-                key: sum(m[key] for m in metrics_list) / n
-                for key in ("magnitude_ratio", "contribution_norm", "bi_score")
-            }
-
-        results[i] = {
-            "attention": _avg(attn_metrics_list),
-            "mlp": _avg(mlp_metrics_list),
-            "total": _avg(total_metrics_list),
-        }
-
-    return results
+    return _layer_influence(model, tokenizer, prompts, _SUBLAYER_SPANS)
 
 
 # Weight norms and SVD
@@ -320,17 +296,8 @@ def attention_entropy(model, tokenizer, prompt: str) -> dict[int, list[float]]:
     enc = tokenizer(prompt, return_tensors="pt")
     input_ids = enc["input_ids"].to(_get_input_device(model))
 
-    # sdpa does not support output_attentions; switch to eager temporarily
-    orig_attn = getattr(model.config, "_attn_implementation", None)
-    model.config._attn_implementation = "eager"
-    try:
-        with torch.no_grad():
-            out = model(input_ids, output_attentions=True)
-    finally:
-        if orig_attn is not None:
-            model.config._attn_implementation = orig_attn
-        else:
-            del model.config._attn_implementation
+    with _eager_attention(model), torch.no_grad():
+        out = model(input_ids, output_attentions=True)
 
     # out.attentions: tuple of (batch, heads, seq_q, seq_k) per layer
     eps = 1e-10
@@ -358,24 +325,19 @@ def residual_stream_norms(model, tokenizer, prompt: str) -> list[float]:
         - Output of embed_tokens (position 0)
         - Output of each transformer layer (positions 1..num_layers)
 
-    Returns a list of length num_layers + 1.
+    Returns a list of length num_layers + 1. Raises ``RuntimeError`` naming
+    the layers whose hooks did not fire.
     """
     num_layers = len(model.model.layers)
-    activations: list[torch.Tensor | None] = [None] * (num_layers + 1)
-    hooks = []
-
-    def embed_hook(module, inp, out):
-        activations[0] = out.detach()
-
-    def make_layer_hook(idx):
-        def hook(module, inp, out):
-            hidden = out[0].detach() if isinstance(out, tuple) else out.detach()
-            activations[idx + 1] = hidden
-        return hook
-
-    hooks.append(model.model.embed_tokens.register_forward_hook(embed_hook))
+    # Key 0 is the embedding output, key i + 1 the output of layer i.
+    activations: dict[int, torch.Tensor] = {}
+    hooks = [
+        model.model.embed_tokens.register_forward_hook(
+            _make_capture_output_hook(activations, 0)
+        )
+    ]
     for i, layer in enumerate(model.model.layers):
-        hooks.append(layer.register_forward_hook(make_layer_hook(i)))
+        hooks.append(layer.register_forward_hook(_make_capture_output_hook(activations, i + 1)))
 
     try:
         enc = tokenizer(prompt, return_tensors="pt")
@@ -386,15 +348,15 @@ def residual_stream_norms(model, tokenizer, prompt: str) -> list[float]:
         for h in hooks:
             h.remove()
 
-    norms = []
-    for act in activations:
-        if act is None:
-            norms.append(0.0)
-        else:
-            # Mean norm across tokens and batch
-            norms.append(act.float().norm(dim=-1).mean().item())
+    if 0 not in activations:
+        raise RuntimeError("Forward hook on embed_tokens did not fire")
+    _raise_if_missing((k - 1 for k in activations if k > 0), num_layers)
 
-    return norms
+    # Mean norm across tokens and batch
+    return [
+        activations[k].float().norm(dim=-1).mean().item()
+        for k in range(num_layers + 1)
+    ]
 
 
 # Individual head inspection
@@ -424,32 +386,25 @@ def inspect_head(
     enc = tokenizer(prompt, return_tensors="pt")
     input_ids = enc["input_ids"].to(device)
 
+    o_proj = model.model.layers[layer].self_attn.o_proj
+    # The o_proj input is num_heads * head_dim wide. head_dim can differ from
+    # hidden_size // num_heads (config.head_dim), so derive it from o_proj.
+    head_dim = o_proj.in_features // num_heads
+
+    # Use a pre-hook on o_proj to capture head outputs before mixing;
+    # its input has shape (batch, seq, num_heads * head_dim).
+    o_proj_input: dict[str, torch.Tensor] = {}
+
     # Need attention weights — force eager attention
-    orig_attn = getattr(model.config, "_attn_implementation", None)
-    model.config._attn_implementation = "eager"
-
-    head_dim = model.config.hidden_size // num_heads
-
-    # Use a pre-hook on o_proj to capture head outputs before mixing
-    o_proj_input = {}
-    def _o_proj_pre_hook(module, args):
-        # args[0] shape: (batch, seq, num_heads * head_dim)
-        o_proj_input["val"] = args[0].detach()
-
-    hook = model.model.layers[layer].self_attn.o_proj.register_forward_pre_hook(_o_proj_pre_hook)
-
-    try:
-        with torch.no_grad():
-            outputs = model(input_ids, output_attentions=True)
-    finally:
-        hook.remove()
-        if orig_attn is not None:
-            model.config._attn_implementation = orig_attn
-        else:
-            try:
-                del model.config._attn_implementation
-            except AttributeError:
-                pass
+    with _eager_attention(model):
+        hook = o_proj.register_forward_pre_hook(
+            _make_capture_input_hook(o_proj_input, "val")
+        )
+        try:
+            with torch.no_grad():
+                outputs = model(input_ids, output_attentions=True)
+        finally:
+            hook.remove()
 
     # Extract attention pattern for this head at this layer
     # outputs.attentions is a tuple: one (batch, num_heads, seq, seq) per layer

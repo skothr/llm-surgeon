@@ -10,12 +10,34 @@ import torch.nn.functional as F
 
 @dataclass
 class LogitLensResult:
+    """Logit-lens rows, one per (layer, sublayer, position).
+
+    ``position`` in each row is the resolved (non-negative) index. The query
+    methods below accept negative positions too, resolved against
+    ``len(prompt_tokens)`` the same way ``logit_lens(positions=...)`` resolves
+    them.
+    """
+
     predictions: list[dict]
     logits: dict[tuple[int, str], torch.Tensor] | None
     prompt_tokens: list[str]
 
+    def _resolve_position(self, position: int) -> int:
+        n = len(self.prompt_tokens)
+        return position % n if n and position < 0 else position
+
+    def _top1_rows(self, position: int, sublayer: str | None) -> list[dict]:
+        pos = self._resolve_position(position)
+        return [
+            p for p in self.predictions
+            if p["position"] == pos and p["top_k"]
+            and (sublayer is None or p["sublayer"] == sublayer)
+        ]
+
     def summary(self, position: int = -1) -> str:
-        filtered = [p for p in self.predictions if p["position"] == position]
+        filtered = [
+            p for p in self.predictions if p["position"] == self._resolve_position(position)
+        ]
         if not filtered and position == -1:
             max_pos = max((p["position"] for p in self.predictions), default=0)
             filtered = [p for p in self.predictions if p["position"] == max_pos]
@@ -30,21 +52,43 @@ class LogitLensResult:
             lines.append(f"{p['layer']:>7} {p['sublayer']:>5} {top1:>12} {prob:>7} {top3}")
         return "\n".join(lines)
 
-    def first_correct_layer(self, position: int, target_token: str) -> int | None:
-        for p in self.predictions:
-            if p["position"] != position:
-                continue
-            if p["top_k"] and p["top_k"][0]["token"] == target_token:
+    def first_correct_layer(
+        self, position: int, target_token: str | int, sublayer: str | None = None,
+    ) -> int | None:
+        """Earliest layer whose top-1 prediction at ``position`` is the target.
+
+        ``target_token`` is either a token id (exact) or a decoded string.
+        Prefer the id: single-token decoding drops SentencePiece's leading
+        space, so the id of ``"▁Paris"`` decodes to ``"Paris"``, and a string
+        match against ``" Paris"`` never succeeds.
+
+        ``sublayer`` restricts the scan to one capture point ("attn" or
+        "ffn"); None scans both in row order (L0.attn, L0.ffn, L1.attn, ...),
+        and the returned layer does not say which sublayer matched.
+        """
+        for p in self._top1_rows(position, sublayer):
+            top1 = p["top_k"][0]
+            hit = (
+                top1.get("token_id") == target_token
+                if isinstance(target_token, int)
+                else top1["token"] == target_token
+            )
+            if hit:
                 return p["layer"]
         return None
 
-    def prediction_flips(self, position: int) -> int:
-        tokens = []
-        for p in self.predictions:
-            if p["position"] != position:
-                continue
-            if p["top_k"]:
-                tokens.append(p["top_k"][0]["token"])
+    def prediction_flips(self, position: int, sublayer: str | None = None) -> int:
+        """Number of top-1 changes along the rows at ``position``.
+
+        Compares token ids (distinct ids that decode alike count as a flip).
+        With ``sublayer=None`` the sequence interleaves attn and ffn rows
+        (L0.attn, L0.ffn, L1.attn, ...), so a flip inside one layer counts;
+        pass ``sublayer="ffn"`` to count layer-to-layer flips only.
+        """
+        tokens = [
+            p["top_k"][0].get("token_id", p["top_k"][0]["token"])
+            for p in self._top1_rows(position, sublayer)
+        ]
         flips = 0
         for i in range(1, len(tokens)):
             if tokens[i] != tokens[i - 1]:
@@ -94,7 +138,7 @@ class HiddenStates:
 
     @staticmethod
     def load(path: str) -> "HiddenStates":
-        data = torch.load(path, weights_only=False)
+        data = torch.load(path, weights_only=True)
         states = {}
         for k, v in data["states"].items():
             parts = k.split("_", 1)
@@ -104,6 +148,24 @@ class HiddenStates:
 
 @dataclass
 class Intervention:
+    """One hidden-state edit applied by ``intervene``.
+
+    Both capture points are on the residual stream, not on a sublayer's own
+    output:
+
+    - ``"attn"``: ``h_in + attn_out``, the residual after the attention add
+      (the input to the post-attention norm). ``ops.zero_dims`` here zeroes
+      residual dims, not attention-output dims.
+    - ``"ffn"``: the decoder layer's output ``h_in + attn_out + mlp_out``.
+      ``ops.scale(0.0)`` here zeroes the whole residual stream, not only the
+      MLP contribution.
+
+    ``layer`` may be negative (``-1`` is the last layer). ``fn`` receives the
+    state with the batch dim stripped, shape ``(seq_len, d_model)``, plus the
+    resolved layer index, and returns a tensor of the same shape. Several
+    interventions at one (layer, sublayer) are applied in list order.
+    """
+
     layer: int
     sublayer: str  # "attn" or "ffn"
     fn: Callable[[torch.Tensor, int], torch.Tensor]

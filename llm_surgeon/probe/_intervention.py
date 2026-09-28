@@ -8,8 +8,8 @@ import torch
 import torch.nn.functional as F
 
 from llm_surgeon.probe._capture import _capture_residual_stream
-from llm_surgeon.probe._hooks import _get_input_device
-from llm_surgeon.probe._logit_lens import _cell_metrics, _project_to_logits
+from llm_surgeon.probe._hooks import _get_input_device, _unwrap_hook_output
+from llm_surgeon.probe._logit_lens import _cell_metrics, _project_to_logits, _topk_tokens
 from llm_surgeon.probe._types import (
     Intervention,
     InterventionResult,
@@ -52,11 +52,17 @@ class _Ops:
 
     @staticmethod
     def noise(std: float, seed: int | None = None) -> _Op:
+        """Add N(0, std) noise. With ``seed`` every call draws the same noise;
+        without it each call draws fresh noise from torch's global RNG (a new
+        ``torch.Generator`` starts from a fixed default seed, so it is not
+        random)."""
         def fn(h, _):
-            gen = torch.Generator(device=h.device)
-            if seed is not None:
+            if seed is None:
+                n = torch.randn(h.shape, device=h.device, dtype=h.dtype)
+            else:
+                gen = torch.Generator(device=h.device)
                 gen.manual_seed(seed)
-            n = torch.randn(h.shape, generator=gen, device=h.device, dtype=h.dtype)
+                n = torch.randn(h.shape, generator=gen, device=h.device, dtype=h.dtype)
             return h + n * std
         return _Op(fn, f"noise(std={std})")
 
@@ -78,15 +84,16 @@ def _apply_block_intervention(
     state: torch.Tensor,
     layer_idx: int,
     sublayer: str,
-    intervention_map: dict[tuple[int, str], Callable],
+    intervention_map: dict[tuple[int, str], list[Callable]],
     captured_states: dict[tuple[int, str], torch.Tensor] | None,
     on_layer: Callable[[int, str, dict], None] | None,
 ) -> tuple[torch.Tensor, bool]:
-    """Apply intervention at ``(layer_idx, sublayer)`` and fire side-effects.
+    """Apply the interventions at ``(layer_idx, sublayer)`` and fire side-effects.
 
     Returns ``(new_state, modified)`` — the (possibly-replaced) hidden state
     cast back to the original dtype/device and a flag indicating whether the
-    intervention map fired. Captures the post-intervention state into
+    intervention map fired. Several fns at one key are applied in list order.
+    Captures the post-intervention state into
     ``captured_states`` and invokes ``on_layer`` when supplied. The shared
     body of the per-block forward hooks; only the result-construction step
     differs between attn and ffn paths.
@@ -95,10 +102,8 @@ def _apply_block_intervention(
     orig_device = state.device
     modified = False
     key = (layer_idx, sublayer)
-    if key in intervention_map:
-        state = intervention_map[key](state, layer_idx).to(
-            dtype=orig_dtype, device=orig_device,
-        )
+    for fn in intervention_map.get(key, ()):
+        state = fn(state, layer_idx).to(dtype=orig_dtype, device=orig_device)
         modified = True
     if captured_states is not None:
         captured_states[key] = state
@@ -138,6 +143,13 @@ def intervene(
 ) -> InterventionResult:
     """Run a forward pass with hidden state modifications at specified points.
 
+    See ``Intervention`` for the capture points: both are on the residual
+    stream, and ``fn`` receives a ``(seq_len, d_model)`` tensor. Negative
+    layers count from the end. An out-of-range layer raises IndexError and a
+    sublayer other than "attn"/"ffn" raises ValueError, so no requested edit
+    is silently skipped. Several interventions at one (layer, sublayer) are
+    applied in list order.
+
     Optionally captures logit lens data at every capture point to observe
     the downstream effect of interventions.
     """
@@ -148,9 +160,21 @@ def intervene(
 
     num_layers = len(model.model.layers)
 
-    intervention_map: dict[tuple[int, str], Callable] = {}
+    resolved: list[tuple[int, Intervention]] = []
     for iv in interventions:
-        intervention_map[(iv.layer, iv.sublayer)] = iv.fn
+        if iv.sublayer not in ("attn", "ffn"):
+            raise ValueError(
+                f"intervention sublayer must be 'attn' or 'ffn', got {iv.sublayer!r}"
+            )
+        if not -num_layers <= iv.layer < num_layers:
+            raise IndexError(
+                f"intervention layer {iv.layer} out of range for {num_layers} layers"
+            )
+        resolved.append((iv.layer % num_layers, iv))
+
+    intervention_map: dict[tuple[int, str], list[Callable]] = {}
+    for layer_idx, iv in resolved:
+        intervention_map.setdefault((layer_idx, iv.sublayer), []).append(iv.fn)
 
     captured_states: dict[tuple[int, str], torch.Tensor] | None = (
         {} if capture_logit_lens else None
@@ -166,7 +190,7 @@ def intervene(
 
     def make_attn_hook(idx):
         def hook(_mod, _inp, out):
-            attn_out = out[0] if isinstance(out, tuple) else out
+            attn_out = _unwrap_hook_output(out)
             state = (layer_block_inputs[idx] + attn_out.detach())[0]
             state, modified = _apply_block_intervention(
                 state, idx, "attn", intervention_map, captured_states, on_layer,
@@ -180,7 +204,7 @@ def intervene(
 
     def make_ffn_hook(idx):
         def hook(_mod, _inp, out):
-            hidden = out[0] if isinstance(out, tuple) else out
+            hidden = _unwrap_hook_output(out)
             state = hidden[0].detach()
             state, modified = _apply_block_intervention(
                 state, idx, "ffn", intervention_map, captured_states, on_layer,
@@ -219,20 +243,11 @@ def intervene(
             for pos in all_positions:
                 pos_probs = probs[pos]
                 metrics = _cell_metrics(pos_probs)
-                topk_probs, topk_ids = pos_probs.topk(min(top_k, pos_probs.shape[0]))
-                top_k_list = []
-                for rank, (tid, tp) in enumerate(zip(topk_ids.tolist(), topk_probs.tolist())):
-                    top_k_list.append({
-                        "token": tokenizer.decode([tid]),
-                        "token_id": tid,
-                        "prob": tp,
-                        "rank": rank,
-                    })
                 predictions.append({
                     "layer": layer_idx,
                     "sublayer": sublayer,
                     "position": pos,
-                    "top_k": top_k_list,
+                    "top_k": _topk_tokens(pos_probs, top_k, tokenizer),
                     "metrics": metrics,
                 })
         logit_lens_result = LogitLensResult(
@@ -242,8 +257,8 @@ def intervene(
         )
 
     interventions_applied = [
-        {"layer": iv.layer, "sublayer": iv.sublayer, "op_repr": repr(iv.fn)}
-        for iv in interventions
+        {"layer": layer_idx, "sublayer": iv.sublayer, "op_repr": repr(iv.fn)}
+        for layer_idx, iv in resolved
     ]
 
     return InterventionResult(
@@ -281,10 +296,11 @@ def activation_patch(
             output logits are recorded. Out-of-range raises IndexError.
         positions: patch-position subset; None = all positions.
         sublayers: must be subset of {"attn", "ffn"}.
-        layers: layer subset; None = all layers.
+        layers: layer subset; None = all layers. Negative indices count from
+            the end; cells report the non-negative index.
         on_cell: called with (layer, sublayer, position, cell_dict) per frame,
-            before the frame is appended to the result. Used by the WS handler
-            to stream cells live.
+            before the frame is appended to the result, so a caller can
+            stream cells live.
 
     Returns:
         PatchingResult with one cell per iterated (layer, sublayer, position).

@@ -7,7 +7,11 @@ keeps tensors attached to the autograd graph for attribution patching.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import Any
+
 import torch
+from torch.utils.hooks import RemovableHandle
 
 from llm_surgeon.probe._hooks import (
     _attach_reader_grad_hooks,
@@ -17,8 +21,38 @@ from llm_surgeon.probe._hooks import (
     _unwrap_hook_output,
 )
 
-def _capture_residual_stream(model, tokenizer, prompt, sublayers=("ffn",), layers=None):
+_CAPTURE_SUBLAYERS = frozenset({"attn", "ffn", "embed"})
+
+
+def _resolve_layers(layers: Iterable[int] | None, num_layers: int) -> list[int]:
+    """Normalize a layer subset to sorted, unique, non-negative indices.
+
+    Negative indices count from the end (``-1`` is the last layer), as in
+    ``model.model.layers[i]``. Out-of-range indices raise IndexError; without
+    this, a negative index captured under key ``(-1, ...)`` and matched no
+    intervention hook.
+    """
+    if layers is None:
+        return list(range(num_layers))
+    resolved = set()
+    for layer in layers:
+        if not -num_layers <= layer < num_layers:
+            raise IndexError(f"layer {layer} out of range for {num_layers} layers")
+        resolved.add(layer % num_layers)
+    return sorted(resolved)
+
+
+def _capture_residual_stream(
+    model: Any,
+    tokenizer: Any,
+    prompt: str,
+    sublayers: tuple[str, ...] = ("ffn",),
+    layers: Iterable[int] | None = None,
+) -> tuple[dict[tuple[int, str], torch.Tensor], list[str]]:
     """Run a forward pass and capture residual stream states via hooks.
+
+    ``layers`` accepts negative indices (normalized to ``num_layers + i``);
+    ``sublayers`` must be a subset of {"attn", "ffn", "embed"}.
 
     Returns:
         captured: dict mapping (layer_idx, sublayer_name) -> Tensor (seq_len, d_model)
@@ -35,15 +69,21 @@ def _capture_residual_stream(model, tokenizer, prompt, sublayers=("ffn",), layer
     input_ids = enc["input_ids"].to(device)
     prompt_tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
 
+    unknown = set(sublayers) - _CAPTURE_SUBLAYERS
+    if unknown:
+        raise ValueError(
+            f"unknown sublayer(s) {sorted(unknown)}; expected a subset of "
+            f"{sorted(_CAPTURE_SUBLAYERS)}"
+        )
     num_layers = len(model.model.layers)
-    target_layers = set(layers) if layers is not None else set(range(num_layers))
+    target_layers = _resolve_layers(layers, num_layers)
     capture_attn = "attn" in sublayers
     capture_ffn = "ffn" in sublayers
     capture_embed = "embed" in sublayers
 
     captured: dict[tuple[int, str], torch.Tensor] = {}
     layer_block_inputs: dict[int, torch.Tensor] = {}
-    hooks = []
+    hooks: list[RemovableHandle] = []
 
     if capture_embed:
         def embed_hook(_mod, _inp, out):
@@ -122,9 +162,13 @@ def _capture_residual_stream_with_grad(
     For "ffn" rows, `captured[(L, "ffn")]` is the decoder layer's full output
     (residual stream post-layer) and matches exact AP's ffn-row semantics.
 
+    ``layers`` accepts negative indices (normalized to ``num_layers + i``).
+
     Returns: (captured_states, h_ins, output_logits, prompt_tokens,
               concat_z_captured, reader_inputs, ffn_acts).
-        concat_z_captured is empty when capture_concat_z=False.
+        concat_z_captured is empty when capture_concat_z=False, and also
+        when "attn" is not in sublayers (concat_z is only captured alongside
+        the attn rows).
         reader_inputs is empty when capture_reader_grads=False; otherwise
         holds pre-LN residual tensors keyed by ("attn_in", L), ("ffn_in", L),
         ("logits", N_L) with retain_grad() called so .grad is populated after
@@ -146,30 +190,30 @@ def _capture_residual_stream_with_grad(
     # Build inputs_embeds as a grad-tracking leaf (in enable_grad
     # contexts) so the autograd graph has somewhere to anchor when the
     # caller has frozen all model parameters via requires_grad_(False).
-    # The GUI's SessionManager freezes params at registration time for
-    # memory + safety; without an input that requires grad, every
+    # Callers may freeze params (requires_grad_(False)) for memory and
+    # safety; without an input that requires grad, every
     # downstream tensor would inherit requires_grad=False and
     # `metric.backward()` would raise "element 0 of tensors does not
     # require grad". Using inputs_embeds (rather than enabling grads on
     # all params) keeps memory cost at one extra embedding tensor
     # instead of an entire parameter-grad set — critical for 3B+ models
     # on consumer GPUs (RTX 2080 = 8 GB).
+    #
+    # Test mocks that don't extend PreTrainedModel have no
+    # get_input_embeddings; they typically have grad-enabled params already,
+    # so the input_ids path works for them. Only the attribute lookup falls
+    # back: an AttributeError raised inside the embedding forward propagates.
     inputs_embeds: torch.Tensor | None = None
-    try:
-        embed_layer = model.get_input_embeddings()
-        if embed_layer is not None:
-            embedded: torch.Tensor = embed_layer(input_ids)
-            if torch.is_grad_enabled():
-                embedded = embedded.detach().requires_grad_(True)
-            inputs_embeds = embedded
-    except AttributeError:
-        # Test mocks that don't extend PreTrainedModel won't have
-        # get_input_embeddings — they typically have grad-enabled params
-        # already, so the legacy input_ids path works for them.
-        pass
+    get_input_embeddings = getattr(model, "get_input_embeddings", None)
+    embed_layer = get_input_embeddings() if get_input_embeddings is not None else None
+    if embed_layer is not None:
+        embedded: torch.Tensor = embed_layer(input_ids)
+        if torch.is_grad_enabled():
+            embedded = embedded.detach().requires_grad_(True)
+        inputs_embeds = embedded
 
     num_layers = len(model.model.layers)
-    target_layers = set(range(num_layers)) if layers is None else set(layers)
+    target_layers = set(_resolve_layers(layers, num_layers))
 
     captured: dict[tuple[int, str], torch.Tensor] = {}
     h_ins: dict[int, torch.Tensor] = {}

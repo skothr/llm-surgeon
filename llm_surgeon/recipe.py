@@ -16,17 +16,43 @@ def parse_recipe(path: str) -> dict[str, Any]:
 
     Required fields: name, base_model.
 
-    Returns the parsed dict.
-    Raises ValueError if required fields are missing.
+    Returns the parsed dict, with empty ``surgery`` normalized to ``[]`` and
+    empty ``analyze`` / ``evaluate`` / ``export`` sections to ``{}``.
+    Raises ValueError if the file is not a mapping, required fields are
+    missing, a section has the wrong type, or a surgery step is not a
+    single-key mapping.
     """
     with open(path) as f:
         data = yaml.safe_load(f)
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Recipe '{path}' must be a YAML mapping, got {type(data).__name__}"
+        )
 
     missing = [field for field in ("name", "base_model") if field not in data]
     if missing:
         raise ValueError(
             f"Recipe '{path}' is missing required fields: {', '.join(missing)}"
         )
+
+    if data.get("surgery") is None:
+        data["surgery"] = []
+    if not isinstance(data["surgery"], list):
+        raise ValueError(f"Recipe '{path}': 'surgery' must be a list of steps")
+    for i, step in enumerate(data["surgery"]):
+        if not isinstance(step, dict) or len(step) != 1:
+            raise ValueError(
+                f"Recipe '{path}': surgery step {i} must be a mapping with exactly "
+                f"one operation, got {step!r}"
+            )
+
+    for section in ("analyze", "evaluate", "export"):
+        if section in data:
+            if data[section] is None:
+                data[section] = {}
+            if not isinstance(data[section], dict):
+                raise ValueError(f"Recipe '{path}': '{section}' must be a mapping")
     return data
 
 
@@ -61,7 +87,8 @@ def _apply_surgery_step(
         return surgery.duplicate_layer(model, src=args[0], dst=args[1])
     if "calibrate" in step:
         opts = step["calibrate"] or {}
-        _log(f"calibrate(dataset={opts.get('dataset', 'wikitext2')}, num_samples={opts.get('num_samples', 128)})", verbose)
+        corpus = "text=..." if opts.get("text") is not None else f"dataset={opts.get('dataset', 'wikitext2')}"
+        _log(f"calibrate({corpus}, num_samples={opts.get('num_samples', 128)})", verbose)
         surgery.calibrate(
             model,
             tokenizer,
@@ -98,11 +125,29 @@ def run(
     8. Finish tracking
 
     Returns a result dict with name, status, and any collected metrics/paths.
+
+    Raises ValueError if ``model`` is given without ``tokenizer`` while a
+    step that needs one (calibrate, analyze, evaluate, export) would run.
     """
     recipe_data = parse_recipe(recipe_path)
     name = recipe_data["name"]
     base_model = recipe_data.get("base_model", "")
     description = recipe_data.get("description", "")
+    steps = recipe_data["surgery"]
+
+    if model is not None and tokenizer is None:
+        needs_tokenizer = [
+            label for label, needed in (
+                ("calibrate", any("calibrate" in s for s in steps)),
+                ("analyze", bool(recipe_data.get("analyze"))),
+                ("evaluate", not skip_eval and bool(recipe_data.get("evaluate"))),
+                ("export", not skip_export and bool(recipe_data.get("export"))),
+            ) if needed
+        ]
+        if needs_tokenizer:
+            raise ValueError(
+                f"run(): model was given without tokenizer, but {needs_tokenizer} need one"
+            )
 
     _log(f"Starting experiment: {name}", verbose)
     _log(f"Base model: {base_model}", verbose)
@@ -122,12 +167,9 @@ def run(
 
     # Load model if not supplied
     if model is None:
-        _log(f"Loading model in export mode...", verbose)
+        _log("Loading model in export mode...", verbose)
         model, tokenizer = surgery.load_model(base_model, mode="export")
         _log(f"Model loaded ({len(model.model.layers)} layers)", verbose)
-
-    # Execute surgery steps
-    steps = recipe_data.get("surgery", [])
 
     # If calibration is requested, capture baseline stats BEFORE surgery
     baseline_stats: surgery.CalibrationStats | None = None
@@ -253,7 +295,7 @@ def _run_analyze(
     if "hidden_states" in analyze_cfg:
         hs_cfg = analyze_cfg["hidden_states"] or {}
         prompt = hs_cfg.get("prompt", "")
-        _log(f"Extracting hidden states...", verbose)
+        _log("Extracting hidden states...", verbose)
         hs = probe.extract_hidden_states(model, tokenizer, prompt)
         results["hidden_states"] = {
             "num_capture_points": len(hs.states),
@@ -291,14 +333,18 @@ def _run_export(
 def run_batch(pattern: str, **kwargs) -> list[dict]:
     """Run all recipe files matching the glob pattern.
 
+    ``kwargs`` are passed to :func:`run`; ``verbose=False`` also silences the
+    per-file banners.
+
     Returns a list of result dicts from each run() call.
     """
     files = sorted(_glob.glob(pattern))
+    verbose = kwargs.get("verbose", True)
     results = []
     for fpath in files:
-        print(f"\n{'='*60}")
-        print(f"Running recipe: {fpath}")
-        print(f"{'='*60}")
+        _log(f"{'='*60}", verbose)
+        _log(f"Running recipe: {fpath}", verbose)
+        _log(f"{'='*60}", verbose)
         result = run(fpath, **kwargs)
         results.append(result)
     return results

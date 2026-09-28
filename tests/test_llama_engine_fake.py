@@ -230,3 +230,31 @@ class TestBounds:
         # 3 prompt positions + 3 evaluated generated tokens fill n_ctx=6; the
         # logits of the last position still yield one more token.
         assert len(steps) == 4
+
+
+# ---------------------------------------------------------------------------
+# Emitted logits
+# ---------------------------------------------------------------------------
+
+
+class TestEmittedLogits:
+    def test_emitted_logits_are_raw_under_repetition_penalty(self, monkeypatch):
+        rng = np.random.default_rng(3)
+        rows = np.abs(rng.standard_normal((64, len(VOCAB)))).astype(np.float32) + 1.0
+        eng = _engine(monkeypatch, FakeLlama(logit_rows=rows))
+        prompt = [BOS, 3, 4]
+        steps = list(
+            eng.generate(prompt, max_tokens=1, temperature=0, repetition_penalty=2.0)
+        )
+        assert steps[0].logits is not None
+        np.testing.assert_array_equal(steps[0].logits, rows[len(prompt) - 1])
+
+    def test_repetition_penalty_still_applies_to_sampling(self, monkeypatch):
+        rows = np.zeros((64, len(VOCAB)), dtype=np.float32)
+        rows[:, 3] = 4.0  # prompt token: best raw logit, penalized to 2.0
+        rows[:, 4] = 3.0
+        eng = _engine(monkeypatch, FakeLlama(logit_rows=rows))
+        steps = list(
+            eng.generate([BOS, 3], max_tokens=1, temperature=0, repetition_penalty=2.0)
+        )
+        assert steps[0].token_id == 4

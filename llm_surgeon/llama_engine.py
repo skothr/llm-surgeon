@@ -22,7 +22,11 @@ log = logging.getLogger("llm_surgeon.llama_engine")
 
 @dataclass
 class GenerateStep:
-    """One step of streaming generation."""
+    """One step of streaming generation.
+
+    ``logits`` are the model's raw logits for the position that produced
+    ``token_id``: before the repetition penalty and the sampler filters.
+    """
     token_id: int
     token_str: str
     logits: np.ndarray | None
@@ -37,9 +41,15 @@ def _sample(
     min_p: float = 0.0,
     rng: np.random.Generator,
 ) -> int:
-    """Sample one token id from ``logits`` using llama.cpp's filter order:
-    temperature → top_k → top_p → min_p → multinomial. Callers should
-    handle temperature == 0 (greedy) themselves; this assumes temperature > 0.
+    """Sample one token id from ``logits``.
+
+    Filter order: temperature → top_k → top_p → min_p → multinomial. This
+    differs from llama.cpp, whose default chain applies temperature last
+    (top_k → top_p → min_p → temperature); top_p and min_p are not invariant
+    to temperature, so the two keep different token sets when T != 1. Ties at
+    the top_k threshold keep every tied token, so more than ``top_k`` can
+    survive. Callers should handle temperature == 0 (greedy) themselves; this
+    assumes temperature > 0.
     """
     scaled = logits / temperature
     if top_k > 0 and top_k < scaled.shape[-1]:
@@ -107,8 +117,8 @@ def compare_logits(
     nz = pa > 0
     kl = float(np.sum(pa[nz] * np.log(pa[nz] / np.clip(pb[nz], 1e-10, None))))
 
-    top_a = set(np.argsort(logits_a)[-top_k:][::-1].tolist())
-    top_b = set(np.argsort(logits_b)[-top_k:][::-1].tolist())
+    top_a = set(np.argsort(logits_a)[-top_k:].tolist())
+    top_b = set(np.argsort(logits_b)[-top_k:].tolist())
 
     return {
         "cosine_similarity": cosine,
@@ -258,9 +268,16 @@ class LlamaEngine:
     ) -> Iterator[GenerateStep]:
         """Streaming token generation. Greedy when temperature=0.
 
-        Sampler order mirrors llama.cpp: repetition_penalty → temperature →
-        top_k → top_p → min_p → multinomial. Pass ``seed`` for reproducible
-        sampling (temperature > 0 only; greedy is already deterministic).
+        Sampler order: repetition_penalty → temperature → top_k → top_p →
+        min_p → multinomial. Unlike llama.cpp, temperature is applied first
+        (see ``_sample``), and the repetition penalty covers every prompt and
+        generated token rather than the last ``penalty_last_n``. Pass ``seed``
+        for reproducible sampling (temperature > 0 only; greedy is already
+        deterministic).
+
+        Each step's ``logits`` are the raw model logits (see GenerateStep).
+        The step whose text completes a stop sequence is still yielded, so the
+        stop text is part of the stream; callers that want it removed trim it.
 
         Generation stops at EOS, at a stop sequence, after ``max_tokens``
         steps, or when the context window (n_ctx) is full. Raises ValueError
@@ -285,9 +302,11 @@ class LlamaEngine:
         eos_id = llm.token_eos()
 
         for step in range(max_tokens):
-            logits_arr = np.array(_scores(llm)[-1], dtype=np.float32)
+            raw_logits = np.array(_scores(llm)[-1], dtype=np.float32)
+            logits_arr = raw_logits
 
             if repetition_penalty != 1.0:
+                logits_arr = raw_logits.copy()
                 for tid in set(tokens + generated_ids):
                     if logits_arr[tid] > 0:
                         logits_arr[tid] /= repetition_penalty
@@ -319,7 +338,7 @@ class LlamaEngine:
             yield GenerateStep(
                 token_id=next_id,
                 token_str=token_str,
-                logits=logits_arr if emit_logits else None,
+                logits=raw_logits if emit_logits else None,
             )
 
             if next_id == eos_id or ctx_full:

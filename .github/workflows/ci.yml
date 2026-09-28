@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Hermetic run: no model/dataset downloads. Tests needing a cached real
+      # model, CUDA, Ollama, llama.cpp (LLAMA_CPP_PATH) or the network skip.
+      HF_HUB_OFFLINE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # pyrightconfig.json resolves imports from ./.venv, so install there.
+      - name: Create venv
+        run: python -m venv .venv
+
+      - name: Install CPU torch
+        run: .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install package with test extras
+        # Keep the CPU index visible so no dependency pulls a CUDA torch build.
+        run: .venv/bin/pip install -e ".[dev,eval,gguf]" --extra-index-url https://download.pytorch.org/whl/cpu
+
+      - name: pytest
+        run: .venv/bin/python -m pytest -q
+
+      - name: pyright
+        run: .venv/bin/python -m pyright llm_surgeon tests

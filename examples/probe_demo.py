@@ -13,14 +13,7 @@ probabilities shown are the model's raw beliefs at each layer, not sampled
 outputs.
 """
 
-import os
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from llm_surgeon import surgery
 from llm_surgeon.probe import (
     logit_lens, extract_hidden_states, intervene,
     Intervention, ops, layer_predictions_table,
@@ -31,16 +24,11 @@ from llm_surgeon.probe import (
 # -------------------------------------------------------------------------
 
 MODEL_ID = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-CACHE_DIR = os.environ.get("LLM_MODEL_DIR", str(Path(__file__).resolve().parents[1] / ".cache" / "models"))
 
 print("Loading model...")
-tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, cache_dir=CACHE_DIR)
-
-# Load in fp16 with automatic device placement (GPU if available, else CPU).
-# Note: `dtype` is the current parameter name (torch_dtype is deprecated).
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_ID, cache_dir=CACHE_DIR, dtype=torch.float16, device_map="auto",
-)
+# fp16 with automatic device placement (GPU if available, else CPU). The
+# download cache is surgery.MODEL_CACHE_DIR ($LLM_SURGEON_CACHE_DIR if set).
+model, tokenizer = surgery.load_model(MODEL_ID, mode="fp16", device_map="auto")
 
 # eval() disables dropout (not that TinyLlama uses it, but good practice).
 # All forward passes below use torch.no_grad() internally via the probe API.
@@ -103,7 +91,13 @@ print(f"\nPrediction flips (last position): {result.prediction_flips(last_pos)}"
 
 # first_correct_layer finds the earliest layer where a target token
 # appears as the top-1 prediction. Useful for factual recall analysis.
-first = result.first_correct_layer(position=last_pos, target_token=" Paris")
+# Match on the token id: decoding a single SentencePiece token drops its
+# leading-space marker ("▁Paris" decodes to "Paris"), so the string " Paris"
+# never matches. TinyLlama's tokenizer prepends "▁" to text that starts with
+# a word, so the first id of "Paris" is the word-initial piece the model
+# predicts after "is".
+paris_id = tokenizer.encode("Paris", add_special_tokens=False)[0]
+first = result.first_correct_layer(position=last_pos, target_token=paris_id)
 if first is not None:
     print(f"' Paris' first appears as top-1 at layer {first}")
 else:
@@ -141,27 +135,35 @@ for key in sorted(hs.states.keys()):
 
 
 # -------------------------------------------------------------------------
-# 3. Intervention — what happens when we zero out a layer's FFN?
+# 3. Intervention — what happens when we remove a layer's FFN contribution?
 # -------------------------------------------------------------------------
 # intervene() modifies hidden states during the forward pass using PyTorch
-# hooks. Here we scale layer 10's FFN output to zero, effectively removing
-# that layer's FFN contribution from the residual stream.
+# hooks. Both capture points are on the residual stream:
+#   (L, "attn") = h_in + attn_out            (residual after the attention add)
+#   (L, "ffn")  = h_in + attn_out + mlp_out  (the layer's output)
+# So ops.scale(0.0) on (10, "ffn") would zero the WHOLE residual stream, not
+# the FFN. To remove only layer 10's FFN contribution, replace the layer
+# output with the residual as it stood before the FFN, (10, "attn").
 #
 # With capture_logit_lens=True, we also get logit lens data from the
 # modified forward pass, so we can see how the intervention propagates.
 
 print("\n" + "=" * 60)
-print("3. INTERVENTION — zero FFN at layer 10")
+print("3. INTERVENTION — remove the FFN contribution at layer 10")
 print("=" * 60)
 
 # Baseline: normal forward pass with logit lens.
 baseline = logit_lens(model, tokenizer, prompt, top_k=3, positions=[-1])
 
-# Intervention: scale layer 10 FFN output by 0.0 (zeroing it out).
-# ops.scale(0.0) returns a callable that multiplies the hidden state by 0.
+# The pre-FFN residual at layer 10, shape (seq_len, d_model).
+pre_ffn = extract_hidden_states(
+    model, tokenizer, prompt, layers=[10], sublayers=("attn",),
+).states[(10, "attn")]
+
+# Intervention: set layer 10's output to its pre-FFN residual.
 modified = intervene(
     model, tokenizer, prompt,
-    interventions=[Intervention(layer=10, sublayer="ffn", fn=ops.scale(0.0))],
+    interventions=[Intervention(layer=10, sublayer="ffn", fn=ops.replace(pre_ffn))],
     capture_logit_lens=True,
     top_k=3,
 )
@@ -170,7 +172,7 @@ print(f"\nBaseline top-3 (last position, final layer):")
 for t in get_final_predictions(baseline.predictions, baseline.prompt_tokens)[0]["top_k"]:
     print(f"  {t['token']:>15} ({t['prob']:.3f})")
 
-print(f"\nWith layer 10 FFN zeroed:")
+print(f"\nWith layer 10 FFN contribution removed:")
 assert modified.logit_lens_result is not None
 mod_final = get_final_predictions(
     modified.logit_lens_result.predictions,

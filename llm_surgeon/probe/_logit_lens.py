@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -15,6 +17,33 @@ from llm_surgeon.probe._types import (
     LogitLensResult,
 )
 
+# Capture-point order within one layer: the embedding precedes layer 0's
+# attn add, which precedes its ffn output.
+_SUBLAYER_ORDER = {"embed": 0, "attn": 1, "ffn": 2}
+
+
+def _capture_sort_key(key: tuple[int, str]) -> tuple[int, int]:
+    return (key[0], _SUBLAYER_ORDER.get(key[1], len(_SUBLAYER_ORDER)))
+
+
+def _topk_tokens(pos_probs: torch.Tensor, top_k: int, tokenizer: Any) -> list[dict]:
+    """Top-k ``{"token", "token_id", "prob", "rank"}`` rows for one position.
+
+    ``token`` is ``tokenizer.decode([id])``, which drops SentencePiece's
+    leading-space marker; match on ``token_id`` when that matters.
+    """
+    topk_probs, topk_ids = pos_probs.topk(min(top_k, pos_probs.shape[0]))
+    return [
+        {
+            "token": tokenizer.decode([tid]),
+            "token_id": tid,
+            "prob": tp,
+            "rank": rank,
+        }
+        for rank, (tid, tp) in enumerate(zip(topk_ids.tolist(), topk_probs.tolist()))
+    ]
+
+
 def extract_hidden_states(
     model,
     tokenizer,
@@ -26,15 +55,28 @@ def extract_hidden_states(
 ) -> HiddenStates:
     """Extract raw hidden state tensors at specified residual stream capture points.
 
-    Capture points are on the residual stream: post-attention residual add ("attn")
-    and post-FFN residual add / layer output ("ffn").
+    Capture points are on the residual stream: the embedding output ("embed",
+    keyed ``(0, "embed")``), the post-attention residual add ("attn") and the
+    post-FFN residual add / layer output ("ffn"). ``layers`` accepts negative
+    indices; keys always use the non-negative index. ``on_layer`` fires in
+    forward order (embed, then attn before ffn within each layer).
+
+    Tensors are always detached (captured under ``torch.no_grad()``);
+    ``detach=False`` is rejected rather than silently ignored.
     """
+    if not detach:
+        raise ValueError(
+            "detach=False is not supported: states are captured under no_grad. "
+            "Use _capture_residual_stream_with_grad for graph-attached tensors."
+        )
     captured, prompt_tokens = _capture_residual_stream(
         model, tokenizer, prompt, sublayers=sublayers, layers=layers,
     )
 
     if on_layer is not None:
-        for (layer_idx, sub), tensor in sorted(captured.items()):
+        for (layer_idx, sub), tensor in sorted(
+            captured.items(), key=lambda kv: _capture_sort_key(kv[0]),
+        ):
             on_layer(layer_idx, sub, {"hidden_state": tensor})
 
     return HiddenStates(states=captured, prompt_tokens=prompt_tokens)
@@ -115,6 +157,8 @@ def logit_lens(
     """Project each layer's residual stream state through the output head.
 
     Captures at both post-attention and post-FFN points (sub-layer granularity).
+    ``positions`` may be negative (``-1`` is the last token); an index outside
+    ``[-seq_len, seq_len)`` raises IndexError. Rows store the resolved index.
     """
     captured, prompt_tokens = _capture_residual_stream(
         model, tokenizer, prompt, sublayers=("attn", "ffn"),
@@ -122,6 +166,9 @@ def logit_lens(
 
     seq_len = len(prompt_tokens)
     if positions is not None:
+        for p in positions:
+            if not -seq_len <= p < seq_len:
+                raise IndexError(f"position {p} out of range for seq_len={seq_len}")
         resolved_positions = [p % seq_len for p in positions]
     else:
         resolved_positions = list(range(seq_len))
@@ -144,16 +191,7 @@ def logit_lens(
         for pos in resolved_positions:
             pos_probs = probs[pos]
             metrics = _cell_metrics(pos_probs)
-            topk_probs, topk_ids = pos_probs.topk(min(top_k, pos_probs.shape[0]))
-            top_k_list = []
-            for rank, (tid, tp) in enumerate(zip(topk_ids.tolist(), topk_probs.tolist())):
-                token_str = tokenizer.decode([tid])
-                top_k_list.append({
-                    "token": token_str,
-                    "token_id": tid,
-                    "prob": tp,
-                    "rank": rank,
-                })
+            top_k_list = _topk_tokens(pos_probs, top_k, tokenizer)
             predictions.append({
                 "layer": layer_idx,
                 "sublayer": sublayer,
@@ -197,10 +235,26 @@ def compare_logit_lens(
     Alignment is by ORIGINAL layer index. Callers with compressed models should
     pass layer_map_a / layer_map_b where `layer_map_x[compressed_idx] == original_idx`.
     If a map is None, the compressed index IS the original index (identity).
+    A map must have one entry per layer of its model (else ValueError). When a
+    map repeats an original index (e.g. after ``duplicate_layer``), only the
+    last copy in forward order is compared, and a RuntimeWarning names the
+    compressed layers left out.
+
+    The two models may sit on different devices; B's distributions are moved
+    to A's device for the pairwise metrics.
 
     The tokenizer must be shared by both models; KL and JS over different vocabs
     are ill-defined.
     """
+    for name, layer_map, model in (
+        ("layer_map_a", layer_map_a, model_a), ("layer_map_b", layer_map_b, model_b),
+    ):
+        n = len(model.model.layers)
+        if layer_map is not None and len(layer_map) != n:
+            raise ValueError(
+                f"{name} has {len(layer_map)} entries but the model has {n} layers"
+            )
+
     captured_a, prompt_tokens = _capture_residual_stream(
         model_a, tokenizer, prompt, sublayers=("attn", "ffn"),
     )
@@ -208,22 +262,33 @@ def compare_logit_lens(
         model_b, tokenizer, prompt, sublayers=("attn", "ffn"),
     )
 
-    def _map(layer_map, idx):
-        if layer_map is None:
-            return idx
-        return layer_map[idx] if 0 <= idx < len(layer_map) else idx
+    def _reverse(
+        name: str, layer_map: list[int] | None, captured: dict[tuple[int, str], torch.Tensor],
+    ) -> dict[tuple[int, str], tuple[int, str]]:
+        """(original_layer, sublayer) -> compressed key; last copy wins."""
+        reverse: dict[tuple[int, str], tuple[int, str]] = {}
+        dropped: set[int] = set()
+        for (idx, sub) in sorted(captured.keys(), key=_capture_sort_key):
+            orig = idx if layer_map is None else layer_map[idx]
+            if (orig, sub) in reverse:
+                dropped.add(reverse[(orig, sub)][0])
+            reverse[(orig, sub)] = (idx, sub)
+        if dropped:
+            warnings.warn(
+                f"{name} maps several layers to one original index (duplicate "
+                f"layers); comparing only the last copy, leaving out compressed "
+                f"layer(s) {sorted(dropped)}",
+                RuntimeWarning, stacklevel=3,
+            )
+        return reverse
 
-    # Build reverse lookups: (original_layer, sublayer) -> compressed key.
-    reverse_a: dict[tuple[int, str], tuple[int, str]] = {}
-    for (idx, sub) in captured_a.keys():
-        reverse_a[(_map(layer_map_a, idx), sub)] = (idx, sub)
-    reverse_b: dict[tuple[int, str], tuple[int, str]] = {}
-    for (idx, sub) in captured_b.keys():
-        reverse_b[(_map(layer_map_b, idx), sub)] = (idx, sub)
+    reverse_a = _reverse("layer_map_a", layer_map_a, captured_a)
+    reverse_b = _reverse("layer_map_b", layer_map_b, captured_b)
 
     # Preserve original-layer order; (attn, ffn) ordering within each layer.
-    sort_key = lambda k: (k[0], 0 if k[1] == "attn" else 1)
-    aligned_keys = sorted(set(reverse_a.keys()) & set(reverse_b.keys()), key=sort_key)
+    aligned_keys = sorted(
+        set(reverse_a.keys()) & set(reverse_b.keys()), key=_capture_sort_key,
+    )
 
     seq_len = len(prompt_tokens)
     positions = list(range(seq_len))
@@ -237,31 +302,18 @@ def compare_logit_lens(
             logits_a = _project_to_logits(model_a, hidden_a)
             logits_b = _project_to_logits(model_b, hidden_b)
         probs_a = F.softmax(logits_a.float(), dim=-1)
-        probs_b = F.softmax(logits_b.float(), dim=-1)
+        probs_b = F.softmax(logits_b.float(), dim=-1).to(probs_a.device)
 
         cb_frames = []
         for pos in positions:
             pa = probs_a[pos]
             pb = probs_b[pos]
-
-            def _topk(probs, k):
-                vals, ids = probs.topk(min(k, probs.shape[0]))
-                return [
-                    {
-                        "token": tokenizer.decode([int(tid)]),
-                        "token_id": int(tid),
-                        "prob": float(p),
-                        "rank": rank,
-                    }
-                    for rank, (tid, p) in enumerate(zip(ids.tolist(), vals.tolist()))
-                ]
-
             cell = {
                 "original_layer": orig_layer,
                 "sublayer": sublayer,
                 "position": pos,
-                "top_k_a": _topk(pa, top_k),
-                "top_k_b": _topk(pb, top_k),
+                "top_k_a": _topk_tokens(pa, top_k, tokenizer),
+                "top_k_b": _topk_tokens(pb, top_k, tokenizer),
                 "metrics_a": _cell_metrics(pa),
                 "metrics_b": _cell_metrics(pb),
                 "compare": _pair_metrics(pa, pb),

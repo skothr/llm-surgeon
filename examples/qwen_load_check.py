@@ -2,7 +2,8 @@
 
 Smallest base model with a released Anthropic NLA checkpoint
 (kitft/nla-models, NLA paper 2026-05-07). ~15 GB on disk; ~4-5 GB VRAM
-after nf4 quantization.
+after nf4 quantization. Requires a CUDA GPU (bitsandbytes nf4) and the
+model already in the cache (loads with local_files_only=True).
 """
 
 import os
@@ -20,11 +21,18 @@ import time
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-from llm_surgeon import surgery  # noqa: F401 — kept for cache_dir parity
+from llm_surgeon import surgery
 
 
 MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"
-NLA_TARGET_LAYER = 20  # kitft/nla-models pins layer 20/28 for this base.
+# kitft/nla-models pins layer 20/28 for this base. Index convention: HF's
+# out.hidden_states[0] is the embedding output, so hidden_states[20] (used
+# below) is the output of decoder layer index 19, which is
+# llm_surgeon.probe.extract_hidden_states key (19, "ffn"), not (20, "ffn").
+# Which of the two kitft's "L20" means is not verified here; check the
+# extraction section of the AV's nla_meta.yaml before feeding
+# extract_hidden_states output to nla_verbalize.
+NLA_TARGET_LAYER = 20
 
 
 def _gb(n_bytes: int) -> float:
@@ -43,6 +51,8 @@ def _gpu_state() -> tuple[float, float] | None:
 
 
 def main() -> None:
+    if not torch.cuda.is_available():
+        raise SystemExit("qwen_load_check requires a CUDA GPU (nf4 via bitsandbytes)")
     print(f"disk free before: {_disk_free_gb():.1f} GB")
     gpu = _gpu_state()
     if gpu is not None:

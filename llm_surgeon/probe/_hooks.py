@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-import torch
+from collections.abc import Callable, Hashable, Iterable
+from typing import Any
 
-def _get_input_device(model) -> torch.device:
+import torch
+from torch.utils.hooks import RemovableHandle
+
+def _get_input_device(model: Any) -> torch.device:
     return model.model.embed_tokens.weight.device
 
 
@@ -20,9 +24,11 @@ def _unwrap_hook_output(
     return out[0] if isinstance(out, tuple) else out
 
 
-def _make_capture_output_hook(store, key, *, retain_grad: bool = False):
+def _make_capture_output_hook(
+    store: dict[Any, torch.Tensor], key: Hashable, *, retain_grad: bool = False,
+) -> Callable[..., None]:
     """Build a forward hook that stores the output tensor at ``store[key]``."""
-    def hook(_mod, _inp, out):
+    def hook(_mod: Any, _inp: Any, out: torch.Tensor | tuple[torch.Tensor, ...]) -> None:
         t = _unwrap_hook_output(out)
         if retain_grad and t.requires_grad:
             t.retain_grad()
@@ -30,9 +36,11 @@ def _make_capture_output_hook(store, key, *, retain_grad: bool = False):
     return hook
 
 
-def _make_capture_input_hook(store, key, *, retain_grad: bool = False):
+def _make_capture_input_hook(
+    store: dict[Any, torch.Tensor], key: Hashable, *, retain_grad: bool = False,
+) -> Callable[..., None]:
     """Build a pre-hook that stores ``args[0]`` (the module input) at ``store[key]``."""
-    def hook(_mod, args):
+    def hook(_mod: Any, args: tuple[Any, ...]) -> None:
         t = args[0]
         if retain_grad and t.requires_grad:
             t.retain_grad()
@@ -40,7 +48,9 @@ def _make_capture_input_hook(store, key, *, retain_grad: bool = False):
     return hook
 
 
-def _attach_reader_grad_hooks(model, store, layers=None):
+def _attach_reader_grad_hooks(
+    model: Any, store: dict[Any, torch.Tensor], layers: Iterable[int] | None = None,
+) -> list[RemovableHandle]:
     """Register pre-hooks to capture pre-norm residual states with retain_grad.
 
     Stores tensors at keys ``("attn_in", L)`` (input to layer-L's input_layernorm),
@@ -50,7 +60,7 @@ def _attach_reader_grad_hooks(model, store, layers=None):
     """
     n = len(model.model.layers)
     target = range(n) if layers is None else layers
-    hooks = []
+    hooks: list[RemovableHandle] = []
     for L in target:
         layer = model.model.layers[L]
         hooks.append(layer.input_layernorm.register_forward_pre_hook(

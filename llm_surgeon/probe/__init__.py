@@ -1,7 +1,7 @@
 """Hidden state probing, logit lens, intervention, and NLA verbalization.
 
-Re-exports the public API and the private helpers that tests / GUI
-consume, so ``from llm_surgeon.probe import X`` keeps working
+Re-exports the public API (``__all__``) plus the private helpers that the
+tests import, so ``from llm_surgeon.probe import X`` keeps working
 unchanged across the package split.
 """
 
@@ -67,6 +67,7 @@ from llm_surgeon.probe._nla import (
 )
 
 __all__ = [
+    "AR_ID",
     "AV_ID",
     "CompareLogitLensResult",
     "HiddenStates",
@@ -84,9 +85,13 @@ __all__ = [
     "extract_hidden_states",
     "intervene",
     "layer_predictions_table",
+    "load_ar",
+    "load_ar_meta",
     "load_av",
     "load_av_meta",
     "logit_lens",
+    "nla_reconstruct",
+    "nla_score",
     "nla_verbalize",
     "ops",
 ]

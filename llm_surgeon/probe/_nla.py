@@ -81,6 +81,10 @@ def nla_verbalize(
     d = meta["d_model"]
     if activation.shape != (d,):
         raise ValueError(f"expected ({d},), got {tuple(activation.shape)}")
+    h = activation.detach().float().cpu()
+    norm = h.norm()
+    if not torch.isfinite(norm) or norm == 0:
+        raise ValueError("activation has zero or non-finite norm; cannot unit-normalize it")
 
     prompt = meta["prompt_templates"]["av"].format(
         injection_char=meta["tokens"]["injection_char"]
@@ -97,6 +101,11 @@ def nla_verbalize(
     if pos.numel() != 1:
         raise RuntimeError(f"expected exactly 1 injection token, found {pos.numel()}")
     p = int(pos.item())
+    if p == 0 or p == input_ids.shape[1] - 1:
+        raise RuntimeError(
+            f"injection token at sequence edge (position {p} of {input_ids.shape[1]}); "
+            "expected neighbors on both sides"
+        )
     left = int(input_ids[0, p - 1].item())
     right = int(input_ids[0, p + 1].item())
     if left != meta["tokens"]["injection_left_neighbor_id"]:
@@ -104,8 +113,7 @@ def nla_verbalize(
     if right != meta["tokens"]["injection_right_neighbor_id"]:
         raise RuntimeError(f"injection right-neighbor drift: {right}")
 
-    h = activation.detach().float().cpu()
-    h = h / h.norm()
+    h = h / norm
     h = h * meta["extraction"]["injection_scale"]
 
     embed = model.get_input_embeddings()

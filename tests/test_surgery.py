@@ -524,13 +524,13 @@ class TestCalibrate:
         assert changed, "calibrate() did not modify any norm parameters"
         assert report.layers_calibrated > 0
 
-    def test_calibrate_without_baseline_warns(self, tiny_llama):
+    def test_calibrate_without_baseline_raises(self, tiny_llama):
         from llm_surgeon.surgery import calibrate, remove_layers
         from tests.conftest import _make_tiny_tokenizer
         tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
         remove_layers(tiny_llama, [3, 4])
         text = " ".join([f"tok{i}" for i in range(4, 20)])
-        with pytest.warns(UserWarning, match="baseline_stats"):
+        with pytest.raises(ValueError, match="baseline_stats"):
             calibrate(tiny_llama, tokenizer, text=text)
 
     def test_model_still_runs_after_calibration(self, tiny_llama):

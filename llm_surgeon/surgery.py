@@ -95,6 +95,29 @@ def _renumber_layers(model) -> None:
             layer.self_attn.layer_idx = i
 
 
+# Attribute set on each decoder layer module recording its index before any
+# structural surgery. Module identity survives remove/keep/reorder/swap, and
+# duplicate_layer's deepcopy carries it to the copy, so calibrate() can match
+# a surviving layer to the baseline stats of the layer it came from.
+_ORIGIN_ATTR = "_llm_surgeon_origin"
+
+
+def _layer_origins(model) -> list[int]:
+    """Return each current layer's original index, tagging untagged layers.
+
+    A layer without a tag is tagged with its current position, so the first
+    call on a freshly loaded model yields ``[0, 1, ..., n-1]``. Tags live on
+    the module objects and are not saved by ``save_pretrained``; a reloaded
+    model starts numbering afresh.
+    """
+    origins = []
+    for i, layer in enumerate(model.model.layers):
+        if not hasattr(layer, _ORIGIN_ATTR):
+            setattr(layer, _ORIGIN_ATTR, i)
+        origins.append(getattr(layer, _ORIGIN_ATTR))
+    return origins
+
+
 def get_layer_info(model) -> dict[str, Any]:
     """Print and return summary of model layer structure."""
     layers = model.model.layers
@@ -126,6 +149,7 @@ def remove_layers(model, layer_indices: list[int]) -> SurgeryLog:
     """Remove layers at the specified indices. Indices are current positions."""
     layers = model.model.layers
     num_before = len(layers)
+    _layer_origins(model)  # tag layers before their positions change
 
     # Reject duplicates explicitly — without this, sorted(reverse=True) would
     # pop the same index twice and silently remove a neighbouring layer.
@@ -157,6 +181,7 @@ def keep_layers(model, layer_indices: list[int]) -> SurgeryLog:
     """
     layers = model.model.layers
     num_before = len(layers)
+    _layer_origins(model)  # tag layers before their positions change
 
     if len(set(layer_indices)) != len(layer_indices):
         dupes = sorted({i for i in layer_indices if layer_indices.count(i) > 1})
@@ -182,6 +207,7 @@ def reorder_layers(model, new_order: list[int]) -> SurgeryLog:
     """Rearrange layers to the specified order. new_order must be a permutation."""
     layers = model.model.layers
     num_before = len(layers)
+    _layer_origins(model)  # tag layers before their positions change
 
     if len(new_order) != num_before:
         raise ValueError(f"new_order length ({len(new_order)}) must match layer count ({num_before})")
@@ -202,6 +228,7 @@ def swap_layers(model, i: int, j: int) -> SurgeryLog:
     """Swap two layers' positions."""
     layers = model.model.layers
     num_before = len(layers)
+    _layer_origins(model)  # tag layers before their positions change
 
     for idx in (i, j):
         if idx < 0 or idx >= num_before:
@@ -219,6 +246,7 @@ def duplicate_layer(model, src: int, dst: int) -> SurgeryLog:
     """Deep-copy a layer and insert it at the destination position."""
     layers = model.model.layers
     num_before = len(layers)
+    _layer_origins(model)  # tag layers before their positions change
 
     if src < 0 or src >= num_before:
         raise IndexError(f"Source index {src} out of range [0, {num_before - 1}]")
@@ -427,9 +455,13 @@ class CalibrationStats:
     Attributes:
         input_norm: Mean-square of each layer's ``input_layernorm`` output.
         post_attn_norm: Same for ``post_attention_layernorm``.
+        layer_origins: Original (pre-surgery) index of each captured layer,
+            used by :func:`calibrate` to pair surviving layers with their
+            baseline. ``None`` means stats index ``i`` is original layer ``i``.
     """
     input_norm: list[torch.Tensor]
     post_attn_norm: list[torch.Tensor]
+    layer_origins: list[int] | None = None
 
     @property
     def num_layers(self) -> int:
@@ -444,13 +476,17 @@ class CalibrationReport:
     """Summary of a :func:`calibrate` run.
 
     Attributes:
-        layers_calibrated: Count of layer/norm pairs whose weight was rescaled.
+        layers_calibrated: Count of layer/norm pairs whose weight was rescaled
+            (a norm whose every channel was skipped is not counted).
         channels_clipped: Total channels whose scale hit the clip bounds
             (indicates severe variance mismatch — often a dead channel).
         channels_skipped: Channels skipped due to sub-threshold variance in
             either baseline or current stats.
-        per_layer_scale_mean: Mean of the applied scale vector per layer/norm
-            (diagnostic — values far from 1.0 indicate large drift).
+        per_layer_scale_mean: Mean of the applied scale vector for each
+            layer/norm pair visited, in order (``input_layernorm`` then
+            ``post_attention_layernorm`` per layer), so its length is up to
+            twice the layer count (diagnostic — values far from 1.0 indicate
+            large drift).
         layers_fully_skipped: Current-model layer indices where every channel
             of at least one norm was skipped — i.e. the layer is
             mathematically untouched. Usually indicates a hook that never
@@ -478,6 +514,10 @@ def capture_calibration_stats(
     RMSNorm gain per-channel so the post-norm output distribution
     downstream layers see matches what they were trained on.
 
+    The stats record each layer's original index (see
+    :attr:`CalibrationStats.layer_origins`), so capturing on a model that
+    has already had structural surgery is also supported.
+
     Returns:
         :class:`CalibrationStats` with ``input_norm[i]`` and
         ``post_attn_norm[i]`` each a ``(hidden_size,)`` tensor on CPU.
@@ -504,9 +544,13 @@ def calibrate(
     For each surviving layer's ``input_layernorm`` and
     ``post_attention_layernorm``, captures the current per-channel
     mean-square of the norm's output, and multiplies the gain vector
-    element-wise by ``sqrt(baseline_mean_sq / current_mean_sq)``. That is
-    the exact scalar that restores each channel's post-norm magnitude to
-    its pre-surgery value (since RMSNorm's scale is linear in the gain).
+    element-wise by ``sqrt(baseline_mean_sq / current_mean_sq)``.
+
+    This is a first-order correction. The current stats are captured in one
+    forward pass before any gain changes, and rescaling a norm changes the
+    residual stream every later norm sees. The per-channel scale is exact
+    only for the first rescaled norm; for later norms it is computed from
+    stale inputs.
 
     This does NOT correct directional drift in the residual stream — layer
     removal changes the direction of activations, and no amount of gain
@@ -517,12 +561,16 @@ def calibrate(
     Args:
         model: The surgically-modified model to calibrate.
         tokenizer: Tokenizer matching the model.
-        baseline_stats: :class:`CalibrationStats` from the pre-surgery model.
-            If ``None``, calibration is skipped with a warning.
-        layer_map: Maps current-model layer index → baseline layer index. Use
-            this when ``remove_layers`` or ``reorder_layers`` shifted the
-            correspondence. If ``None``, uses identity mapping up to the
-            shorter depth (assumes no reordering).
+        baseline_stats: :class:`CalibrationStats` from the pre-surgery model
+            (required; ``None`` raises ``ValueError``).
+        layer_map: Maps current-model layer index → baseline layer index.
+            If ``None``, each current layer is paired with the baseline entry
+            for the layer it originally was: structural ops in this module
+            (``remove_layers``, ``keep_layers``, ``reorder_layers``,
+            ``swap_layers``, ``duplicate_layer``) record each layer's
+            original index. A duplicated layer is paired with its source.
+            Layers with no baseline counterpart are left unchanged, with a
+            warning.
         scale_clip: Per-channel scale factor is clipped to
             ``[1/scale_clip, scale_clip]`` so dead or near-dead channels
             don't produce astronomical gains.
@@ -535,28 +583,41 @@ def calibrate(
     Returns:
         :class:`CalibrationReport` summarising what was changed.
     """
-    report = CalibrationReport()
     if baseline_stats is None:
-        warnings.warn(
-            "calibrate() called without baseline_stats. "
-            "Call capture_calibration_stats() on the original model before surgery, "
-            "then pass the result here. Skipping calibration.",
-            UserWarning,
+        raise ValueError(
+            "calibrate() needs baseline_stats. Call capture_calibration_stats() "
+            "on the original model before surgery and pass the result here."
         )
-        return report
+    report = CalibrationReport()
+
+    current_layers = model.model.layers
+    mapping: list[int | None]
+    if layer_map is None:
+        mapping = _default_layer_map(model, baseline_stats)
+        unmatched = [i for i, b in enumerate(mapping) if b is None]
+        if unmatched:
+            warnings.warn(
+                f"calibrate(): current layers {unmatched} have no counterpart in "
+                f"baseline_stats and are left uncalibrated.",
+                UserWarning,
+                stacklevel=2,
+            )
+    else:
+        bad = [b for b in layer_map if not 0 <= b < baseline_stats.num_layers]
+        if bad:
+            raise ValueError(
+                f"layer_map entries {bad} out of range [0, {baseline_stats.num_layers - 1}]"
+            )
+        mapping = list(layer_map)
 
     current_stats = _capture_norm_outputs(
         model, tokenizer, text=text, dataset=dataset, num_samples=num_samples
     )
 
-    current_layers = model.model.layers
-    if layer_map is None:
-        layer_map = list(range(min(len(current_layers), baseline_stats.num_layers)))
-
-    for cur_idx, base_idx in enumerate(layer_map):
+    for cur_idx, base_idx in enumerate(mapping):
         if cur_idx >= len(current_layers):
             break
-        if base_idx >= baseline_stats.num_layers:
+        if base_idx is None:
             continue
 
         layer = current_layers[cur_idx]
@@ -595,7 +656,8 @@ def calibrate(
 
             with torch.no_grad():
                 norm.weight.data.mul_(clipped.to(norm.weight.dtype))
-            report.layers_calibrated += 1
+            if skipped_here < base_ms.numel():
+                report.layers_calibrated += 1
 
         if layer_has_full_skip:
             report.layers_fully_skipped.append(cur_idx)
@@ -613,6 +675,62 @@ def calibrate(
     return report
 
 
+def _default_layer_map(model, baseline_stats: CalibrationStats) -> list[int | None]:
+    """Pair each current layer with the baseline index of the layer it came from."""
+    if baseline_stats.layer_origins is None:
+        # Hand-built stats: entry i is original layer i.
+        position = {i: i for i in range(baseline_stats.num_layers)}
+    else:
+        position = {}
+        for i, origin in enumerate(baseline_stats.layer_origins):
+            position.setdefault(origin, i)
+    return [position.get(origin) for origin in _layer_origins(model)]
+
+
+# Tokens per calibration sequence (capped by the model's context length).
+_CALIB_SEQ_LEN = 512
+_CALIB_DATASETS = ("wikitext2",)
+
+
+def _calibration_sequences(
+    model, tokenizer, text: str | None, dataset: str | None, num_samples: int,
+) -> list[torch.Tensor]:
+    """Tokenize the calibration corpus into at most ``num_samples`` sequences.
+
+    ``text`` wins over ``dataset``; with neither, wikitext-2 (train split,
+    blank lines dropped) is used. The corpus is tokenized once and cut into
+    consecutive chunks of up to ``_CALIB_SEQ_LEN`` tokens.
+    """
+    if num_samples < 1:
+        raise ValueError(f"num_samples must be >= 1, got {num_samples}")
+    source = "text"
+    if text is None:
+        dataset = dataset or "wikitext2"
+        if dataset not in _CALIB_DATASETS:
+            raise ValueError(
+                f"Unsupported calibration dataset {dataset!r}. Supported: "
+                f"{list(_CALIB_DATASETS)}; or pass text=..."
+            )
+        from datasets import load_dataset
+        ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+        text = "".join(line for line in ds["text"] if line.strip())
+        source = dataset
+
+    seq_len = min(_CALIB_SEQ_LEN, getattr(model.config, "max_position_embeddings", None) or _CALIB_SEQ_LEN)
+    ids = tokenizer(text, return_tensors="pt")["input_ids"][0]
+    chunks = [c.unsqueeze(0) for c in ids.split(seq_len)][:num_samples]
+    if not chunks:
+        raise ValueError("Calibration corpus tokenized to zero tokens.")
+    if source != "text" and len(chunks) < num_samples:
+        warnings.warn(
+            f"Calibration corpus {source!r} yields {len(chunks)} sequences of "
+            f"{seq_len} tokens; {num_samples} were requested.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return chunks
+
+
 def _capture_norm_outputs(
     model,
     tokenizer,
@@ -623,56 +741,56 @@ def _capture_norm_outputs(
     """Run the calibration corpus through ``model`` and capture per-channel
     mean-square of each layer's RMSNorm outputs.
 
-    Uses forward hooks on ``input_layernorm`` and ``post_attention_layernorm``
-    so the captured tensors are genuine post-norm activations (not the
-    pre-norm input). All tensors are moved to CPU before returning so callers
-    can keep them around without pinning GPU memory.
+    The corpus is cut into up to ``num_samples`` sequences (see
+    :func:`_calibration_sequences`); the mean is taken over every token of
+    every sequence. Uses forward hooks on ``input_layernorm`` and
+    ``post_attention_layernorm`` so the captured tensors are genuine
+    post-norm activations (not the pre-norm input). All tensors are moved to
+    CPU before returning so callers can keep them around without pinning
+    GPU memory. The model's train/eval mode is restored afterwards.
     """
-    if text is None and dataset is None:
-        dataset = "wikitext2"
-
-    if text is None:
-        from datasets import load_dataset
-        ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
-        available = len(ds["text"])
-        if available < num_samples:
-            warnings.warn(
-                f"_capture_norm_outputs: requested {num_samples} samples but "
-                f"wikitext-2 train has {available} — calibration stats may be noisy.",
-                UserWarning,
-                stacklevel=2,
-            )
-        text = " ".join(ds["text"][:num_samples])
-
+    sequences = _calibration_sequences(model, tokenizer, text, dataset, num_samples)
     device = model.get_input_embeddings().weight.device
-    enc = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
-    input_ids = enc["input_ids"].to(device)
 
     num_layers = len(model.model.layers)
     input_ms: list[torch.Tensor | None] = [None] * num_layers
     post_ms: list[torch.Tensor | None] = [None] * num_layers
+    input_tokens = [0] * num_layers
+    post_tokens = [0] * num_layers
     hooks = []
 
-    def _make_hook(idx: int, target: list[torch.Tensor | None]):
+    def _make_hook(idx: int, target: list[torch.Tensor | None], counts: list[int]):
         def hook(_module, _inp, out):
-            # out: (batch, seq, hidden). Per-channel mean-square over (batch, seq).
+            # out: (batch, seq, hidden). Accumulate the per-channel sum of
+            # squares; divided by the token count after all sequences.
             y = out.detach().float()
-            target[idx] = y.pow(2).mean(dim=(0, 1)).cpu()
+            sq = y.pow(2).sum(dim=(0, 1)).cpu()
+            prev = target[idx]
+            target[idx] = sq if prev is None else prev + sq
+            counts[idx] += y.shape[0] * y.shape[1]
         return hook
 
     for i, layer in enumerate(model.model.layers):
         if hasattr(layer, "input_layernorm"):
-            hooks.append(layer.input_layernorm.register_forward_hook(_make_hook(i, input_ms)))
+            hooks.append(layer.input_layernorm.register_forward_hook(_make_hook(i, input_ms, input_tokens)))
         if hasattr(layer, "post_attention_layernorm"):
-            hooks.append(layer.post_attention_layernorm.register_forward_hook(_make_hook(i, post_ms)))
+            hooks.append(layer.post_attention_layernorm.register_forward_hook(_make_hook(i, post_ms, post_tokens)))
 
+    was_training = model.training
     try:
         model.eval()
         with torch.no_grad():
-            model(input_ids)
+            for seq in sequences:
+                model(seq.to(device), use_cache=False)
     finally:
         for h in hooks:
             h.remove()
+        model.train(was_training)
+
+    for target, counts in ((input_ms, input_tokens), (post_ms, post_tokens)):
+        for i, total in enumerate(target):
+            if total is not None:
+                target[i] = total / counts[i]
 
     hidden = model.config.hidden_size
 
@@ -694,6 +812,7 @@ def _capture_norm_outputs(
     return CalibrationStats(
         input_norm=[v if v is not None else torch.zeros(hidden) for v in input_ms],
         post_attn_norm=[v if v is not None else torch.zeros(hidden) for v in post_ms],
+        layer_origins=_layer_origins(model),
     )
 
 

@@ -25,6 +25,10 @@ pytest
 - Install dev deps first: `pip install -e ".[dev,eval,gguf]"` (what CI
   installs; system python is not assumed to have torch/pytest).
 - `llm_surgeon` is installed editable via `pip install -e .`.
+- `tests/conftest.py` caps torch/BLAS at 2 threads and runs tests at nice 10
+  (`LLM_SURGEON_TEST_THREADS` / `LLM_SURGEON_TEST_NICE` override). While
+  iterating, run the affected test modules only; run the full suite once
+  before committing, not after every edit.
 
 ## Dev models
 

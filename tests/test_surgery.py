@@ -15,32 +15,53 @@ from transformers import AutoModelForCausalLM
 from tests.conftest import _make_tiny_tokenizer
 
 
+def _seed_hf_cache(cache_dir, files, sha="a" * 40, ref="main"):
+    """Lay out models--TinyOrg--TinyModel in the HF cache format with ``files``."""
+    model_dir = cache_dir / "models--TinyOrg--TinyModel"
+    snapshot = model_dir / "snapshots" / sha
+    snapshot.mkdir(parents=True)
+    (model_dir / "refs").mkdir(parents=True, exist_ok=True)
+    (model_dir / "refs" / ref).write_text(sha)
+    (model_dir / "blobs").mkdir(exist_ok=True)
+    for i, name in enumerate(files):
+        blob = model_dir / "blobs" / f"blob-{sha[:4]}-{i}"
+        blob.write_text("{}")
+        (snapshot / name).symlink_to(blob)
+    return "TinyOrg/TinyModel"
+
+
 class TestIsCached:
     def test_returns_false_for_uncached(self, tmp_path):
         from llm_surgeon.surgery import _is_cached
         assert _is_cached("nonexistent/repo", cache_dir=str(tmp_path)) is False
 
-    def test_returns_true_when_config_present(self, tmp_path):
-        """Seed the HF cache layout with a minimal config.json and assert hit."""
+    def test_returns_true_when_config_and_weights_present(self, tmp_path):
         from llm_surgeon.surgery import _is_cached
-        import json
-
-        repo = "TinyOrg/TinyModel"
-        slug = "models--TinyOrg--TinyModel"
-        sha = "a" * 40
-        model_dir = tmp_path / slug
-        (model_dir / "snapshots" / sha).mkdir(parents=True)
-        (model_dir / "refs").mkdir(parents=True)
-        (model_dir / "refs" / "main").write_text(sha)
-        cfg = model_dir / "snapshots" / sha / "config.json"
-        cfg.write_text(json.dumps({"model_type": "llama"}))
-        blob = model_dir / "blobs" / "dummy-blob"
-        blob.parent.mkdir(parents=True, exist_ok=True)
-        blob.write_text(json.dumps({"model_type": "llama"}))
-        cfg.unlink()
-        cfg.symlink_to(blob)
-
+        repo = _seed_hf_cache(tmp_path, ["config.json", "model.safetensors"])
         assert _is_cached(repo, cache_dir=str(tmp_path)) is True
+
+    def test_sharded_index_counts_as_weights(self, tmp_path):
+        from llm_surgeon.surgery import _is_cached
+        repo = _seed_hf_cache(tmp_path, ["config.json", "model.safetensors.index.json"])
+        assert _is_cached(repo, cache_dir=str(tmp_path)) is True
+
+    def test_config_only_is_not_cached(self, tmp_path):
+        """A config-only cache must not force local_files_only=True."""
+        from llm_surgeon.surgery import _is_cached
+        repo = _seed_hf_cache(tmp_path, ["config.json"])
+        assert _is_cached(repo, cache_dir=str(tmp_path)) is False
+
+    def test_other_revision_is_not_cached(self, tmp_path):
+        """main being cached says nothing about a pinned revision."""
+        from llm_surgeon.surgery import _is_cached
+        repo = _seed_hf_cache(tmp_path, ["config.json", "model.safetensors"])
+        assert _is_cached(repo, cache_dir=str(tmp_path), revision="b" * 40) is False
+
+    def test_pinned_revision_cached(self, tmp_path):
+        from llm_surgeon.surgery import _is_cached
+        sha = "c" * 40
+        repo = _seed_hf_cache(tmp_path, ["config.json", "model.safetensors"], sha=sha)
+        assert _is_cached(repo, cache_dir=str(tmp_path), revision=sha) is True
 
 
 class TestSurgeryOp:
@@ -330,17 +351,6 @@ class TestLoadModel:
         with pytest.raises(ValueError, match="Unknown mode"):
             load_model("nonexistent-model", mode="invalid")
 
-    def test_valid_modes_accepted(self, monkeypatch):
-        # Valid modes are accepted; the model lookup fails (OSError for missing model,
-        # or ImportError when bitsandbytes is absent for the nf4 "inspect" mode).
-        # Report the id as cached so load_model passes local_files_only=True and
-        # never reaches the network.
-        from llm_surgeon import surgery
-        monkeypatch.setattr(surgery, "_is_cached", lambda *a, **kw: True)
-        for mode in ("inspect", "eval", "export"):
-            with pytest.raises((OSError, ImportError)):
-                load_model("nonexistent/model-id-that-does-not-exist", mode=mode)
-
     def test_returns_tuple(self, tiny_llama, tmp_path):
         save_path = str(tmp_path / "tiny_model")
         tiny_llama.save_pretrained(save_path)
@@ -361,17 +371,16 @@ class TestLoadModel:
         # misses AddedToken fields (single_word, ...) that tokenizers requires.
         _make_tiny_tokenizer(tiny_llama.config.vocab_size).save_pretrained(save_path)
 
-        # Force offline — if it tries the network, it will fail
-        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        # Setting HF_HUB_OFFLINE here would be a no-op (huggingface_hub reads it
+        # at import time); instead assert the Hub cache probe is never reached.
+        from llm_surgeon import surgery
+
+        def _no_hub(*_a, **_kw):
+            raise AssertionError("local path must not probe the Hub cache")
+
+        monkeypatch.setattr(surgery, "_is_cached", _no_hub)
         model, _tokenizer = load_model(save_path, mode="export")
         assert len(model.model.layers) == 8
-
-    def test_cache_dir_used_for_hub_models(self):
-        """load_model should use MODEL_CACHE_DIR for HF Hub downloads."""
-        from llm_surgeon.surgery import MODEL_CACHE_DIR
-        assert MODEL_CACHE_DIR is not None
-        # The cache dir should be a path (string), not empty
-        assert len(MODEL_CACHE_DIR) > 0
 
 
 class TestLoadModelKwargs:
@@ -454,6 +463,47 @@ class TestLoadModelKwargs:
 
         assert captured["model_kwargs"]["revision"] == "abc123"
         assert captured["tok_kwargs"]["revision"] == "abc123"
+
+    def test_revision_passed_to_cache_probe(self, monkeypatch):
+        from llm_surgeon import surgery
+        self._install_mocks(monkeypatch)
+        probed = {}
+
+        def fake_is_cached(model_id, cache_dir=None, revision=None):
+            probed["revision"] = revision
+            return False
+
+        monkeypatch.setattr(surgery, "_is_cached", fake_is_cached)
+        surgery.load_model("Org/Model", mode="fp16", revision="abc123")
+        assert probed["revision"] == "abc123"
+
+    @pytest.mark.parametrize(
+        "alias, expected",
+        [
+            ("eval", {"torch_dtype": "float16"}),
+            ("export", {"torch_dtype": "float32", "device_map": "cpu"}),
+            ("inspect", {"device_map": "auto", "quant": "nf4"}),
+        ],
+    )
+    def test_mode_aliases(self, monkeypatch, alias, expected):
+        import torch
+        from llm_surgeon import surgery
+        if alias == "inspect":
+            pytest.importorskip("bitsandbytes")
+        captured = self._install_mocks(monkeypatch)
+        monkeypatch.setattr(surgery, "_is_cached", lambda *a, **kw: False)
+
+        surgery.load_model("Org/Model", mode=alias)
+
+        mkw = captured["model_kwargs"]
+        if "torch_dtype" in expected:
+            assert mkw["torch_dtype"] is getattr(torch, expected["torch_dtype"])
+        if "device_map" in expected:
+            assert mkw["device_map"] == expected["device_map"]
+        else:
+            assert "device_map" not in mkw
+        if "quant" in expected:
+            assert mkw["quantization_config"].bnb_4bit_quant_type == expected["quant"]
 
 
 class TestChainedOperations:

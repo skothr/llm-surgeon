@@ -24,18 +24,33 @@ MODEL_CACHE_DIR = model_cache_dir()
 _FP16_GB_WARN_THRESHOLD = 28.0
 
 
-def _is_cached(model_id: str, cache_dir: str | None = None) -> bool:
-    """True if a local HF cache has at least a config.json snapshot for model_id.
+# Any one of these, next to config.json, means the weights were fetched.
+_WEIGHT_FILES = (
+    "model.safetensors", "model.safetensors.index.json",
+    "pytorch_model.bin", "pytorch_model.bin.index.json",
+)
 
-    Wraps huggingface_hub.try_to_load_from_cache. Used as the boolean probe
-    that replaces _snapshot_dir for "is this model present locally?".
+
+def _is_cached(model_id: str, cache_dir: str | None = None, revision: str | None = None) -> bool:
+    """True if the local HF cache holds config.json and a weights file for
+    ``model_id`` at ``revision`` (default: ``main``).
+
+    load_model passes ``local_files_only`` from this probe, so a config-only
+    cache (e.g. left by an ``AutoConfig`` call or an interrupted download)
+    or a different revision must read as not cached, or the download would
+    never be attempted.
     """
     from huggingface_hub import try_to_load_from_cache
-    path = try_to_load_from_cache(
-        model_id, filename="config.json",
-        cache_dir=cache_dir or MODEL_CACHE_DIR,
-    )
-    return path is not None
+
+    def _hit(filename: str) -> bool:
+        path = try_to_load_from_cache(
+            model_id, filename=filename,
+            cache_dir=cache_dir or MODEL_CACHE_DIR, revision=revision,
+        )
+        # None = not cached; a non-str sentinel = cached as known-missing.
+        return isinstance(path, str)
+
+    return _hit("config.json") and any(_hit(f) for f in _WEIGHT_FILES)
 
 
 @dataclass
@@ -834,11 +849,13 @@ def _require_bitsandbytes(mode: str):
     return bitsandbytes
 
 
-def _quantize_in_place(model, bnb_config):
+def _quantize_in_place(model, bnb_config, device: str | int | torch.device = "cuda:0"):
     """Quantize an in-memory model's Linear layers with BitsAndBytes.
 
     Wraps each nn.Linear weight as a BnB Params4bit/Int8Params, then moves
-    to GPU (which triggers quantization). No disk round-trip needed.
+    the model to ``device`` (which triggers quantization). No disk
+    round-trip needed. ``lm_head`` stays in full precision, matching HF's
+    bitsandbytes loader, so GGUF- and HF-sourced nf4 models are comparable.
     """
     is_4bit = getattr(bnb_config, "load_in_4bit", False)
     bnb = _require_bitsandbytes("nf4" if is_4bit else "int8")
@@ -847,6 +864,8 @@ def _quantize_in_place(model, bnb_config):
 
     for name, module in list(model.named_modules()):
         if not isinstance(module, nn.Linear):
+            continue
+        if name == "lm_head" or name.endswith(".lm_head"):
             continue
         parent_name, attr = name.rsplit(".", 1) if "." in name else ("", name)
         parent = model.get_submodule(parent_name) if parent_name else model
@@ -876,9 +895,53 @@ def _quantize_in_place(model, bnb_config):
             new_mod.bias = nn.Parameter(bias_data)
         setattr(parent, attr, new_mod)
 
-    model = model.to("cuda:0")
+    model = model.to(device)
     model.eval()
     return model
+
+
+def _gguf_quant_device(
+    device_map: str | dict[str, int | str] | None,
+    max_memory: dict[int | str, str] | None,
+) -> str | int:
+    """Device for quantizing a GGUF-loaded model in place (nf4/int8).
+
+    The in-place path moves the whole model to one device, so only a
+    single-device ``device_map`` (a device string, or ``{"": device}``) is
+    honoured; a per-module map or ``max_memory`` raises instead of being
+    silently ignored.
+    """
+    if max_memory is not None:
+        raise ValueError(
+            "max_memory is not supported when quantizing an Ollama/GGUF model; "
+            "pass device_map='cuda:0' (or {'': 0}) instead."
+        )
+    if device_map is None or device_map == "auto":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "Quantizing an Ollama/GGUF model needs a device; CUDA is not "
+                "available. Pass device_map='cpu' or use a dense mode."
+            )
+        return "cuda:0"
+    if isinstance(device_map, str):
+        return device_map
+    if set(device_map) == {""}:
+        return device_map[""]
+    raise ValueError(
+        f"Ollama/GGUF quantization supports only a single-device device_map, got {device_map!r}"
+    )
+
+
+def _is_missing_safetensors(e: OSError) -> bool:
+    """True if ``e`` is transformers reporting that no safetensors file exists.
+
+    Other OSErrors that merely mention safetensors (e.g. a corrupt shard)
+    must not trigger the pickle ``.bin`` fallback.
+    """
+    msg = str(e).lower()
+    return "safetensors" in msg and (
+        "does not appear to have a file named" in msg or "no file named" in msg
+    )
 
 
 _MODE_ALIASES = {"inspect": "nf4", "eval": "fp16", "export": "fp32-cpu"}
@@ -895,11 +958,14 @@ def load_model(
 ) -> tuple:
     """Load a model and tokenizer.
 
-    Modes:
-        nf4:      4-bit NormalFloat on GPU (smallest, for surgery/inspection)
-        int8:     8-bit LLM.int8() on GPU (balanced quality/memory)
-        fp16:     half-precision with auto device map
-        fp32:     full precision with auto device map
+    Modes (aliases: inspect=nf4, eval=fp16, export=fp32-cpu):
+        nf4:      4-bit NormalFloat, device_map="auto" (smallest; for
+                  inspection and structural surgery — weight-level ops such
+                  as zero_heads need a dense mode)
+        int8:     8-bit LLM.int8(), device_map="auto" (balanced quality/memory)
+        bf16:     bfloat16; loads on CPU unless ``device_map`` is given
+        fp16:     half precision; loads on CPU unless ``device_map`` is given
+        fp32:     full precision; loads on CPU unless ``device_map`` is given
         fp32-cpu: full precision forced to CPU (for export)
 
     Supports HuggingFace Hub IDs, local paths, and Ollama model IDs
@@ -910,11 +976,13 @@ def load_model(
         revision: Optional HF Hub commit SHA / branch / tag. Pass to pin an
             experiment to an exact model snapshot. Ignored for local paths
             and Ollama IDs.
-        max_memory: Optional accelerate-style budget passed to
-            ``device_map="auto"`` (e.g. ``{0: "5.5GiB", "cpu": "20GiB"}``).
-            Use to force a near-full-fit on a small GPU when the auto-mapper
-            would otherwise dispatch layers to CPU (bnb 4-bit can't span
-            CPU+GPU without ``llm_int8_enable_fp32_cpu_offload``).
+        max_memory: Optional accelerate-style budget for the device map
+            (e.g. ``{0: "5.5GiB", "cpu": "20GiB"}``). Use to force a
+            near-full-fit on a small GPU when the auto-mapper would otherwise
+            dispatch layers to CPU (bnb 4-bit can't span CPU+GPU without
+            ``llm_int8_enable_fp32_cpu_offload``). Needs a device map: it
+            raises ``ValueError`` for fp32-cpu, and for bf16/fp16/fp32
+            without ``device_map``.
         device_map: Optional override for the device map. Useful when
             ``"auto"`` would spill bnb-4bit weights to CPU (which bnb
             refuses) — pass ``{"": 0}`` to force the entire model onto
@@ -942,14 +1010,18 @@ def load_model(
                     load_in_4bit=True, bnb_4bit_quant_type="nf4",
                     bnb_4bit_compute_dtype=torch.float16,
                 )
-                model = _quantize_in_place(model, bnb_config)
+                model = _quantize_in_place(
+                    model, bnb_config, _gguf_quant_device(device_map, max_memory)
+                )
             elif mode == "int8":
                 bnb_config = BitsAndBytesConfig(load_in_8bit=True)
-                model = _quantize_in_place(model, bnb_config)
+                model = _quantize_in_place(
+                    model, bnb_config, _gguf_quant_device(device_map, max_memory)
+                )
             return model, tokenizer
 
     is_local = os.path.isdir(model_id)
-    cached = (not is_local) and _is_cached(model_id)
+    cached = (not is_local) and _is_cached(model_id, revision=revision)
 
     common_kwargs: dict[str, Any] = {
         "use_safetensors": True,
@@ -959,40 +1031,32 @@ def load_model(
         common_kwargs["cache_dir"] = MODEL_CACHE_DIR
         common_kwargs["local_files_only"] = cached
 
+    mode_kwargs: dict[str, Any]
     if mode == "nf4":
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
             bnb_4bit_compute_dtype=torch.float16,
         )
-        mode_kwargs: dict[str, Any] = {"quantization_config": bnb_config, "device_map": "auto"}
-        if max_memory is not None:
-            mode_kwargs["max_memory"] = max_memory
-        if device_map is not None:
-            mode_kwargs["device_map"] = device_map
+        mode_kwargs = {"quantization_config": bnb_config, "device_map": "auto"}
     elif mode == "int8":
         bnb_config = BitsAndBytesConfig(load_in_8bit=True)
         mode_kwargs = {"quantization_config": bnb_config, "device_map": "auto"}
-        if max_memory is not None:
-            mode_kwargs["max_memory"] = max_memory
-        if device_map is not None:
-            mode_kwargs["device_map"] = device_map
-    elif mode == "bf16":
-        mode_kwargs = {"torch_dtype": torch.bfloat16}
-        if device_map is not None:
-            mode_kwargs["device_map"] = device_map
-    elif mode == "fp16":
-        mode_kwargs = {"torch_dtype": torch.float16}
-        if device_map is not None:
-            mode_kwargs["device_map"] = device_map
-    elif mode == "fp32":
-        mode_kwargs = {"torch_dtype": torch.float32}
-        if device_map is not None:
-            mode_kwargs["device_map"] = device_map
     elif mode == "fp32-cpu":
         mode_kwargs = {"torch_dtype": torch.float32, "device_map": "cpu"}
     else:
-        raise ValueError(f"Unknown mode: '{mode}'")
+        dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[mode]
+        mode_kwargs = {"torch_dtype": dtype}
+
+    if device_map is not None and mode != "fp32-cpu":
+        mode_kwargs["device_map"] = device_map
+    if max_memory is not None:
+        if mode == "fp32-cpu" or "device_map" not in mode_kwargs:
+            raise ValueError(
+                f"max_memory needs a device map, which mode {mode!r} does not use "
+                "here; pass device_map as well (not supported for fp32-cpu)."
+            )
+        mode_kwargs["max_memory"] = max_memory
 
     # Try safetensors first (the secure default — pickle-format .bin can
     # exec arbitrary code on load). On a "safetensors not found" failure,
@@ -1005,8 +1069,8 @@ def load_model(
         model = AutoModelForCausalLM.from_pretrained(
             model_id, **common_kwargs, **mode_kwargs,
         )
-    except (OSError, EnvironmentError) as e:
-        if "safetensors" not in str(e).lower():
+    except OSError as e:
+        if not _is_missing_safetensors(e):
             raise
         logger.warning(
             "Model '%s' has no safetensors file accessible — falling back "

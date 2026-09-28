@@ -1,10 +1,24 @@
-"""Export pipeline: HF checkpoint → GGUF → Ollama registration."""
+"""Export pipeline: HF checkpoint → GGUF → Ollama registration.
 
-import json
+There are two HF → GGUF paths in this package:
+
+- ``to_gguf`` (here) shells out to an external llama.cpp checkout
+  (convert_hf_to_gguf.py, then llama-quantize). It supports every
+  quantization type llama.cpp does and the tokenizers its converter knows.
+  ``full_pipeline`` uses this path.
+- ``gguf_writer.export_hf_to_gguf`` writes the GGUF in-process with the
+  ``gguf`` package: no llama.cpp checkout needed, unquantized output only,
+  and its own tokenizer and rope_theta handling.
+
+They share no code; a fix to one does not reach the other.
+"""
+
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 def _resolve_llama_cpp_path(llama_cpp_path: str | None) -> str:
@@ -28,13 +42,23 @@ def _resolve_llama_cpp_path(llama_cpp_path: str | None) -> str:
 def save_checkpoint(model, output_dir: str, tokenizer=None) -> str:
     """Save a HuggingFace checkpoint to output_dir.
 
-    Verifies that the saved config.json reflects the actual number of layers.
+    Checks that config.num_hidden_layers matches the model's actual layer
+    count before saving, since layer surgery can leave them out of sync.
     Optionally saves a tokenizer alongside the model.
 
     Returns output_dir.
-    Raises ValueError if config.num_hidden_layers doesn't match actual layers.
+    Raises TypeError if the model is not LLaMA-shaped (``model.model.layers``),
+    e.g. a PEFT or DataParallel wrapper; ValueError if
+    config.num_hidden_layers doesn't match the actual layers.
     """
-    actual_layers = len(model.model.layers)
+    layers = getattr(getattr(model, "model", None), "layers", None)
+    if layers is None:
+        raise TypeError(
+            f"save_checkpoint expects a LLaMA-style causal LM with "
+            f"`model.model.layers`; got {type(model).__name__}. Unwrap PEFT / "
+            f"DataParallel wrappers before saving."
+        )
+    actual_layers = len(layers)
     config_layers = model.config.num_hidden_layers
 
     if actual_layers != config_layers:
@@ -49,18 +73,6 @@ def save_checkpoint(model, output_dir: str, tokenizer=None) -> str:
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
 
-    # Verify the written config is consistent
-    config_path = os.path.join(output_dir, "config.json")
-    with open(config_path) as f:
-        saved_cfg = json.load(f)
-
-    saved_layers = saved_cfg.get("num_hidden_layers")
-    if saved_layers != actual_layers:
-        raise ValueError(
-            f"num_hidden_layers mismatch in saved config.json: "
-            f"expected={actual_layers}, found={saved_layers}"
-        )
-
     return output_dir
 
 
@@ -69,20 +81,25 @@ def to_gguf(
     output_dir: str,
     quantization: str | None = "Q4_K_M",
     llama_cpp_path: str | None = None,
+    model_name: str | None = None,
 ) -> str:
     """Convert an HF checkpoint to GGUF format.
 
     Steps:
       1. Run convert_hf_to_gguf.py to produce an f16 GGUF.
-      2. If quantization is not None, quantize it and remove the f16 intermediate.
+      2. If quantization is set (and not "F16"), quantize it. The f16
+         intermediate is removed whether quantization succeeds or fails.
 
     Args:
         checkpoint_path: Path to the saved HF checkpoint directory.
         output_dir: Directory where the GGUF file(s) will be placed.
-        quantization: GGUF quantization type (e.g. "Q4_K_M") or None for f16 only.
+        quantization: GGUF quantization type (e.g. "Q4_K_M"), or None / "F16"
+                      for the f16 conversion only.
         llama_cpp_path: Override the llama.cpp installation directory.
                         Defaults to the LLAMA_CPP_PATH env var; one of the two
                         is required.
+        model_name: Stem of the output file name ("<model_name>-<quant>.gguf").
+                    Defaults to the checkpoint directory's name.
 
     Returns:
         Absolute path to the final GGUF file.
@@ -100,13 +117,16 @@ def to_gguf(
     if not os.path.exists(convert_script):
         raise FileNotFoundError(f"convert_hf_to_gguf.py not found at: {convert_script}")
 
-    if quantization is not None and not os.path.exists(quantize_bin):
+    # The converter already writes f16; quantizing "F16" would pass the same
+    # path as input and output and then delete it as the intermediate.
+    quantize = quantization is not None and quantization.upper() != "F16"
+    if quantize and not os.path.exists(quantize_bin):
         raise FileNotFoundError(f"llama-quantize not found at: {quantize_bin}")
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Derive a base name from the checkpoint directory
-    model_name = Path(checkpoint_path).name
+    if model_name is None:
+        model_name = Path(checkpoint_path).name
     f16_gguf = os.path.join(output_dir, f"{model_name}-F16.gguf")
 
     # Step 1: convert to f16 GGUF
@@ -124,24 +144,29 @@ def to_gguf(
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
-    if quantization is None:
+    if not quantize:
         return os.path.abspath(f16_gguf)
+    assert quantization is not None
 
     # Step 2: quantize
     quantized_gguf = os.path.join(output_dir, f"{model_name}-{quantization}.gguf")
     quantize_cmd = [quantize_bin, f16_gguf, quantized_gguf, quantization]
     env = os.environ.copy()
-    env["LD_LIBRARY_PATH"] = os.path.dirname(quantize_bin) + ":" + env.get("LD_LIBRARY_PATH", "")
-    result = subprocess.run(quantize_cmd, capture_output=True, text=True, env=env)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"GGUF quantization failed (exit {result.returncode}):\n"
-            f"stdout: {result.stdout}\nstderr: {result.stderr}"
-        )
-
-    # Clean up intermediate f16 file
-    if os.path.exists(f16_gguf):
-        os.remove(f16_gguf)
+    # An empty LD_LIBRARY_PATH entry means the current directory to the loader.
+    lib_dirs = [os.path.dirname(quantize_bin), env.get("LD_LIBRARY_PATH", "")]
+    env["LD_LIBRARY_PATH"] = os.pathsep.join(d for d in lib_dirs if d)
+    try:
+        result = subprocess.run(quantize_cmd, capture_output=True, text=True, env=env)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"GGUF quantization failed (exit {result.returncode}):\n"
+                f"stdout: {result.stdout}\nstderr: {result.stderr}"
+            )
+    finally:
+        # The f16 file is only an intermediate here; don't leave it behind
+        # on failure either.
+        if os.path.exists(f16_gguf):
+            os.remove(f16_gguf)
 
     return os.path.abspath(quantized_gguf)
 
@@ -155,29 +180,69 @@ def _generate_modelfile(gguf_path: str) -> str:
     return f"FROM {abs_path}\n"
 
 
-def _verify_ollama_registration(name: str) -> bool:
-    """Check that a model named `name` appears in Ollama's model list.
+def _ollama_base_url() -> str:
+    """Base URL of the Ollama daemon, read from OLLAMA_HOST as `ollama` does.
 
-    Returns False on connection errors (Ollama not running). Other failures
-    (malformed JSON, unexpected schema) are surfaced — they indicate a real
-    problem rather than a missing daemon.
+    Accepts "host", "host:port" or "scheme://host[:port]"; the default port
+    is 11434 without a scheme, and the scheme's own port (80/443) with one.
+    """
+    raw = os.environ.get("OLLAMA_HOST", "").strip()
+    scheme, sep, hostport = raw.partition("://")
+    default_port = "11434"
+    if not sep:
+        scheme, hostport = "http", raw
+    elif scheme == "http":
+        default_port = "80"
+    elif scheme == "https":
+        default_port = "443"
+    hostport, _, path = hostport.partition("/")
+    parsed = urlsplit(f"//{hostport}")
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    host = parsed.hostname or "127.0.0.1"
+    if ":" in host:  # IPv6 literal
+        host = f"[{host}]"
+    base = f"{scheme}://{host}:{port or default_port}"
+    return f"{base}/{path}".rstrip("/") if path else base
+
+
+def _ollama_model_ref(name: str) -> str:
+    """Canonical Ollama model reference: `name` with ":latest" if untagged."""
+    return name if ":" in name.rsplit("/", 1)[-1] else f"{name}:latest"
+
+
+def _verify_ollama_registration(name: str) -> bool:
+    """Check that the model `name` is in the Ollama daemon's model list.
+
+    Names are compared exactly after tag normalization ("foo" == "foo:latest"),
+    so an existing "foo-old" or "myfoo" does not count as "foo". Returns False
+    on connection errors (Ollama not running). Other failures (malformed JSON,
+    unexpected schema) are surfaced; they indicate a real problem rather than
+    a missing daemon.
     """
     import requests
     try:
-        r = requests.get("http://localhost:11434/api/tags", timeout=5)
+        r = requests.get(f"{_ollama_base_url()}/api/tags", timeout=5)
     except requests.RequestException:
         return False
     if r.status_code != 200:
         return False
     models = r.json().get("models", [])
-    return any(name in m.get("name", "") for m in models)
+    want = _ollama_model_ref(name)
+    return any(
+        want in (_ollama_model_ref(m.get("name", "")), _ollama_model_ref(m.get("model", "")))
+        for m in models
+    )
 
 
 def register_ollama(gguf_path: str, name: str) -> None:
     """Register a GGUF model with Ollama.
 
-    Generates a Modelfile, writes it alongside the GGUF, then runs
-    `ollama create <name> -f <modelfile>`.
+    Generates a Modelfile, writes it alongside the GGUF as
+    "<gguf stem>.Modelfile" (so GGUFs sharing a directory don't overwrite
+    each other's), then runs `ollama create <name> -f <modelfile>`.
 
     Raises:
         FileNotFoundError: If gguf_path does not exist.
@@ -188,8 +253,9 @@ def register_ollama(gguf_path: str, name: str) -> None:
 
     modelfile_content = _generate_modelfile(gguf_path)
 
-    # Write the Modelfile next to the GGUF
-    modelfile_path = os.path.join(os.path.dirname(os.path.abspath(gguf_path)), "Modelfile")
+    # Write the Modelfile next to the GGUF, named after it
+    abs_gguf = os.path.abspath(gguf_path)
+    modelfile_path = os.path.splitext(abs_gguf)[0] + ".Modelfile"
     with open(modelfile_path, "w") as f:
         f.write(modelfile_content)
 
@@ -203,9 +269,18 @@ def register_ollama(gguf_path: str, name: str) -> None:
 
     if not _verify_ollama_registration(name):
         raise RuntimeError(
-            f"ollama create exited 0 but model '{name}' is not listed by "
-            f"`ollama list` — registration did not take effect."
+            f"ollama create exited 0 but model '{name}' is not listed by the "
+            f"Ollama API at {_ollama_base_url()}/api/tags — registration did "
+            f"not take effect."
         )
+
+
+def _path_stem(name: str) -> str:
+    """`name` made safe as a single file/directory name component."""
+    stem = re.sub(r"[^A-Za-z0-9._-]", "_", name).strip(".")
+    if not stem:
+        raise ValueError(f"model name {name!r} has no usable characters for a path")
+    return stem
 
 
 def full_pipeline(
@@ -219,18 +294,23 @@ def full_pipeline(
     """Run the complete export pipeline.
 
     Steps:
-      1. save_checkpoint  → <output_dir>/<name>/checkpoint/
-      2. to_gguf          → <output_dir>/<name>/gguf/
-      3. register_ollama  → optional
+      1. save_checkpoint  → <output_dir>/<stem>/checkpoint/
+      2. to_gguf          → <output_dir>/<stem>/gguf/<stem>-<quant>.gguf
+      3. register_ollama  → optional, as `name`
+
+    ``stem`` is ``name`` with every character outside [A-Za-z0-9._-]
+    replaced by "_", so an Ollama name such as "user/model:tag" stays one
+    path component.
 
     Returns:
         dict with keys: checkpoint_path, gguf_path, registered
     """
-    checkpoint_path = os.path.join(output_dir, name, "checkpoint")
-    gguf_dir = os.path.join(output_dir, name, "gguf")
+    stem = _path_stem(name)
+    checkpoint_path = os.path.join(output_dir, stem, "checkpoint")
+    gguf_dir = os.path.join(output_dir, stem, "gguf")
 
     save_checkpoint(model, checkpoint_path, tokenizer=tokenizer)
-    gguf_path = to_gguf(checkpoint_path, gguf_dir, quantization=quantization)
+    gguf_path = to_gguf(checkpoint_path, gguf_dir, quantization=quantization, model_name=stem)
 
     registered = False
     if register:

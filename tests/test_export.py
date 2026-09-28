@@ -2,6 +2,8 @@
 
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -43,10 +45,38 @@ requires_llama_quantize = pytest.mark.skipif(
 def _ollama_available() -> bool:
     try:
         import requests
-        r = requests.get("http://localhost:11434/api/tags", timeout=2)
+
+        from llm_surgeon.export import _ollama_base_url
+
+        r = requests.get(f"{_ollama_base_url()}/api/tags", timeout=2)
         return r.status_code == 200
     except Exception:
         return False
+
+
+@pytest.fixture
+def ollama_models():
+    """Skip unless Ollama is up; `ollama rm` every name appended on teardown.
+
+    Probing inside a fixture keeps collection free of network calls.
+    """
+    if not _ollama_available():
+        pytest.skip("ollama not running")
+    names: list[str] = []
+    yield names
+    for name in names:
+        subprocess.run(["ollama", "rm", name], capture_output=True, text=True)
+
+
+class _CopyTokenizer:
+    """Tokenizer stand-in whose save_pretrained copies tiny_checkpoint's SPM files."""
+
+    def __init__(self, src: str):
+        self.src = src
+
+    def save_pretrained(self, out_dir: str) -> None:
+        for fname in ("tokenizer.model", "tokenizer_config.json"):
+            shutil.copy(os.path.join(self.src, fname), out_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +132,8 @@ class TestSaveCheckpoint:
 
     def test_tokenizer_not_required(self, tiny_llama, tmp_path):
         out = save_checkpoint(tiny_llama, str(tmp_path / "ckpt"))
-        assert out is not None
+        assert os.path.exists(os.path.join(out, "config.json"))
+        assert not list(Path(out).glob("tokenizer*"))
 
     def test_output_dir_created_if_missing(self, tiny_llama, tmp_path):
         nested = str(tmp_path / "deep" / "nested" / "ckpt")
@@ -143,7 +174,7 @@ class TestToGguf:
         out_dir = str(tmp_path / "gguf")
         result = to_gguf(tiny_checkpoint, out_dir, quantization="Q4_K_M")
         assert os.path.exists(result)
-        assert "Q4_K_M" in result or result.endswith(".gguf")
+        assert result.endswith("-Q4_K_M.gguf")
 
     @requires_llama_quantize
     def test_f16_intermediate_cleaned_up_after_quantization(self, tiny_checkpoint, tmp_path):
@@ -189,12 +220,11 @@ class TestGenerateModelfile:
         content = _generate_modelfile(gguf)
         assert content.startswith("FROM ")
 
-    def test_contains_absolute_path(self, tmp_path):
-        gguf = str(tmp_path / "model.gguf")
-        Path(gguf).touch()
-        content = _generate_modelfile(gguf)
-        assert os.path.isabs(gguf)
-        assert gguf in content
+    def test_contains_absolute_path(self, tmp_path, monkeypatch):
+        (tmp_path / "model.gguf").touch()
+        monkeypatch.chdir(tmp_path)
+        content = _generate_modelfile("model.gguf")  # relative input
+        assert content == f"FROM {tmp_path / 'model.gguf'}\n"
 
     def test_returns_string(self, tmp_path):
         gguf = str(tmp_path / "model.gguf")
@@ -215,7 +245,7 @@ class TestRegisterOllama:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             with patch("llm_surgeon.export._verify_ollama_registration", return_value=True):
                 register_ollama(gguf, "test-model")
-        modelfiles = list(Path(tmp_path).rglob("Modelfile*"))
+        modelfiles = list(Path(tmp_path).rglob("*Modelfile"))
         assert len(modelfiles) > 0
 
     def test_calls_ollama_create(self, tmp_path):
@@ -239,15 +269,18 @@ class TestRegisterOllama:
                 register_ollama(gguf, "bad-model")
 
     @requires_llama_cpp
-    @pytest.mark.skipif(not _ollama_available(), reason="ollama not running")
-    def test_registers_model_with_ollama(self, tiny_checkpoint, tmp_path):
+    def test_registers_model_with_ollama(self, tiny_checkpoint, tmp_path, ollama_models):
         gguf_path = to_gguf(tiny_checkpoint, str(tmp_path / "gguf"), quantization=None)
         model_name = "test-llm-surgeon-tiny"
+        ollama_models.append(model_name)
         register_ollama(gguf_path, model_name)
         import requests
-        r = requests.get("http://localhost:11434/api/tags", timeout=5)
+
+        from llm_surgeon.export import _ollama_base_url
+
+        r = requests.get(f"{_ollama_base_url()}/api/tags", timeout=5)
         names = [m["name"] for m in r.json().get("models", [])]
-        assert any(model_name in n for n in names)
+        assert f"{model_name}:latest" in names
 
 
 # ---------------------------------------------------------------------------
@@ -376,24 +409,37 @@ class TestFullPipeline:
                 tokenizer=None,
                 register=False,
             )
-        call_kwargs = mock_gguf.call_args
-        # quantization should be passed through
-        assert "Q4_K_M" in str(call_kwargs)
+        assert mock_gguf.call_args.kwargs["quantization"] == "Q4_K_M"
 
     @requires_llama_cpp
-    def test_end_to_end_no_ollama(self, tiny_checkpoint, tmp_path):
-        """Full pipeline from checkpoint dir to GGUF, no registration."""
-        # tiny_checkpoint is already a saved checkpoint — use it as the source
-        # We can't run full_pipeline on it directly (it creates its own checkpoint),
-        # so verify to_gguf works on tiny_checkpoint and the returned path is valid.
-        gguf_path = to_gguf(tiny_checkpoint, str(tmp_path / "gguf"), quantization=None)
-        assert os.path.exists(gguf_path)
-        assert gguf_path.endswith(".gguf")
+    def test_end_to_end_no_ollama(self, tiny_llama, tiny_checkpoint, tmp_path):
+        """Full pipeline from model to GGUF with the real converter, no registration."""
+        result = full_pipeline(
+            tiny_llama,
+            name="tiny-e2e",
+            quantization=None,
+            output_dir=str(tmp_path / "out"),
+            tokenizer=_CopyTokenizer(tiny_checkpoint),
+            register=False,
+        )
+        assert os.path.exists(result["gguf_path"])
+        assert result["gguf_path"].endswith("tiny-e2e-F16.gguf")
+        assert result["registered"] is False
 
     @requires_llama_cpp
-    @pytest.mark.skipif(not _ollama_available(), reason="ollama not running")
-    def test_registers_with_ollama_when_requested(self, tiny_checkpoint, tmp_path):
+    def test_registers_with_ollama_when_requested(
+        self, tiny_llama, tiny_checkpoint, tmp_path, ollama_models
+    ):
         """End-to-end with real ollama registration."""
-        gguf_path = to_gguf(tiny_checkpoint, str(tmp_path / "gguf"), quantization=None)
-        register_ollama(gguf_path, "test-full-pipeline-tiny")
-        assert os.path.exists(gguf_path)
+        name = "test-full-pipeline-tiny"
+        ollama_models.append(name)
+        result = full_pipeline(
+            tiny_llama,
+            name=name,
+            quantization=None,
+            output_dir=str(tmp_path / "out"),
+            tokenizer=_CopyTokenizer(tiny_checkpoint),
+            register=True,
+        )
+        assert result["registered"] is True
+        assert os.path.exists(result["gguf_path"])

@@ -1,10 +1,10 @@
 """llama.cpp engine: native GGUF inference via llama-cpp-python.
 
 Provides LlamaEngine for fast generation/logits/perplexity on quantized
-GGUF models. The HF-to-GGUF export path lives in ``gguf_writer``;
-``export_hf_to_gguf`` is re-exported here for backward compatibility.
+GGUF models. The HF-to-GGUF export path lives in ``gguf_writer``.
 """
 
+import codecs
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +21,11 @@ log = logging.getLogger("llm_surgeon.llama_engine")
 
 @dataclass
 class GenerateStep:
-    """One step of streaming generation."""
+    """One step of streaming generation.
+
+    ``logits`` are the model's raw logits for the position that produced
+    ``token_id``: before the repetition penalty and the sampler filters.
+    """
     token_id: int
     token_str: str
     logits: np.ndarray | None
@@ -36,9 +40,15 @@ def _sample(
     min_p: float = 0.0,
     rng: np.random.Generator,
 ) -> int:
-    """Sample one token id from ``logits`` using llama.cpp's filter order:
-    temperature → top_k → top_p → min_p → multinomial. Callers should
-    handle temperature == 0 (greedy) themselves; this assumes temperature > 0.
+    """Sample one token id from ``logits``.
+
+    Filter order: temperature → top_k → top_p → min_p → multinomial. This
+    differs from llama.cpp, whose default chain applies temperature last
+    (top_k → top_p → min_p → temperature); top_p and min_p are not invariant
+    to temperature, so the two keep different token sets when T != 1. Ties at
+    the top_k threshold keep every tied token, so more than ``top_k`` can
+    survive. Callers should handle temperature == 0 (greedy) themselves; this
+    assumes temperature > 0.
     """
     scaled = logits / temperature
     if top_k > 0 and top_k < scaled.shape[-1]:
@@ -106,8 +116,8 @@ def compare_logits(
     nz = pa > 0
     kl = float(np.sum(pa[nz] * np.log(pa[nz] / np.clip(pb[nz], 1e-10, None))))
 
-    top_a = set(np.argsort(logits_a)[-top_k:][::-1].tolist())
-    top_b = set(np.argsort(logits_b)[-top_k:][::-1].tolist())
+    top_a = set(np.argsort(logits_a)[-top_k:].tolist())
+    top_b = set(np.argsort(logits_b)[-top_k:].tolist())
 
     return {
         "cosine_similarity": cosine,
@@ -116,6 +126,30 @@ def compare_logits(
         "mean_logit_diff": float(diff.mean()),
         "top_k_agreement": len(top_a & top_b),
     }
+
+
+def _scores(llm: "Llama") -> np.ndarray:
+    """Logit rows for every evaluated position: a view of ``llm.scores``.
+
+    ``Llama.eval_logits`` rebuilds every row as Python lists on each access
+    (O(n_tokens * n_vocab)), so reading it once per position or per generated
+    token costs O(n^2 * n_vocab). ``scores`` is the float32 ndarray it is built
+    from. The view aliases a buffer the next ``eval`` overwrites; copy before
+    returning rows to callers.
+    """
+    return llm.scores[: llm.n_tokens]
+
+
+def _decode_utf8(data: bytes, *, final: bool) -> str:
+    """Decode ``data`` as UTF-8, holding back an incomplete trailing character.
+
+    With ``final=False`` a multi-byte character whose bytes are not all
+    present yet (LLaMA byte-fallback tokens split emoji and rare CJK across
+    tokens) is left out instead of becoming U+FFFD; it appears once the
+    token that completes it arrives. ``final=True`` flushes it as U+FFFD.
+    """
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    return decoder.decode(data, final=final)
 
 
 class LlamaEngine:
@@ -183,6 +217,25 @@ class LlamaEngine:
             raise RuntimeError("LlamaEngine is closed")
         return self._llm
 
+    def _eval_prompt(self, tokens: list[int]) -> "Llama":
+        """Reset the context and evaluate ``tokens``, validating them first.
+
+        Raises ValueError for an empty list or one longer than n_ctx, which
+        llama.cpp would otherwise reject with an opaque decode error.
+        """
+        llm = self._engine()
+        if not tokens:
+            raise ValueError("tokens is empty; pass at least one token (e.g. BOS)")
+        n_ctx = llm.n_ctx()
+        if len(tokens) > n_ctx:
+            raise ValueError(
+                f"{len(tokens)} tokens exceed the context window (n_ctx={n_ctx}); "
+                f"shorten the input or construct LlamaEngine with a larger n_ctx"
+            )
+        llm.reset()
+        llm.eval(tokens)
+        return llm
+
     def tokenize(self, text: str, add_bos: bool = True) -> list[int]:
         return self._engine().tokenize(text.encode("utf-8"), add_bos=add_bos)
 
@@ -191,17 +244,13 @@ class LlamaEngine:
 
     def logits(self, tokens: list[int]) -> np.ndarray:
         """Full vocab logits for the last token position. Shape: (n_vocab,)"""
-        llm = self._engine()
-        llm.reset()
-        llm.eval(tokens)
-        return np.array(llm.eval_logits[-1], dtype=np.float32)
+        llm = self._eval_prompt(tokens)
+        return np.array(_scores(llm)[-1], dtype=np.float32)
 
     def logits_all(self, tokens: list[int]) -> list[np.ndarray]:
         """Full vocab logits for every position. List of (n_vocab,) arrays."""
-        llm = self._engine()
-        llm.reset()
-        llm.eval(tokens)
-        return [np.array(row, dtype=np.float32) for row in llm.eval_logits]
+        llm = self._eval_prompt(tokens)
+        return list(np.array(_scores(llm), dtype=np.float32))
 
     def generate(
         self,
@@ -218,13 +267,23 @@ class LlamaEngine:
     ) -> Iterator[GenerateStep]:
         """Streaming token generation. Greedy when temperature=0.
 
-        Sampler order mirrors llama.cpp: repetition_penalty → temperature →
-        top_k → top_p → min_p → multinomial. Pass ``seed`` for reproducible
-        sampling (temperature > 0 only; greedy is already deterministic).
+        Sampler order: repetition_penalty → temperature → top_k → top_p →
+        min_p → multinomial. Unlike llama.cpp, temperature is applied first
+        (see ``_sample``), and the repetition penalty covers every prompt and
+        generated token rather than the last ``penalty_last_n``. Pass ``seed``
+        for reproducible sampling (temperature > 0 only; greedy is already
+        deterministic).
+
+        Each step's ``logits`` are the raw model logits (see GenerateStep).
+        The step whose text completes a stop sequence is still yielded, so the
+        stop text is part of the stream; callers that want it removed trim it.
+
+        Generation stops at EOS, at a stop sequence, after ``max_tokens``
+        steps, or when the context window (n_ctx) is full. Raises ValueError
+        when ``tokens`` is empty or longer than n_ctx.
         """
-        llm = self._engine()
-        llm.reset()
-        llm.eval(tokens)
+        llm = self._eval_prompt(tokens)
+        n_ctx = llm.n_ctx()
 
         rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
 
@@ -235,15 +294,18 @@ class LlamaEngine:
         # prior context). Detokenize `[last_prompt_token, *gen_so_far]` and
         # slice off whatever was already emitted so the first generated
         # token carries its leading space — otherwise " Paris" arrives as
-        # "Paris" and the panel renders "isParis". O(1) extra cost per step.
-        boundary_id = tokens[-1] if tokens else None
-        boundary_text = self.detokenize([boundary_id]) if boundary_id is not None else ""
-        prev_full = boundary_text
+        # "Paris" and the panel renders "isParis". Each step re-detokenizes
+        # the whole generation, O(len(generated)) per step.
+        boundary = [tokens[-1]]
+        prev_full = _decode_utf8(llm.detokenize(boundary), final=False)
+        eos_id = llm.token_eos()
 
-        for _ in range(max_tokens):
-            logits_arr = np.array(llm.eval_logits[-1], dtype=np.float32)
+        for step in range(max_tokens):
+            raw_logits = np.array(_scores(llm)[-1], dtype=np.float32)
+            logits_arr = raw_logits
 
             if repetition_penalty != 1.0:
+                logits_arr = raw_logits.copy()
                 for tid in set(tokens + generated_ids):
                     if logits_arr[tid] > 0:
                         logits_arr[tid] /= repetition_penalty
@@ -263,10 +325,11 @@ class LlamaEngine:
                 )
 
             generated_ids.append(next_id)
-            if boundary_id is not None:
-                full = self.detokenize([boundary_id, *generated_ids])
-            else:
-                full = self.detokenize(generated_ids)
+            # Flush a dangling partial character only when no later token
+            # can complete it.
+            ctx_full = llm.n_tokens >= n_ctx  # no room to evaluate next_id
+            last = step == max_tokens - 1 or next_id == eos_id or ctx_full
+            full = _decode_utf8(llm.detokenize([*boundary, *generated_ids]), final=last)
             token_str = full[len(prev_full):]
             prev_full = full
             generated_text += token_str
@@ -274,10 +337,10 @@ class LlamaEngine:
             yield GenerateStep(
                 token_id=next_id,
                 token_str=token_str,
-                logits=logits_arr if emit_logits else None,
+                logits=raw_logits if emit_logits else None,
             )
 
-            if next_id == llm.token_eos():
+            if next_id == eos_id or ctx_full:
                 break
             if stop_sequences and any(s in generated_text for s in stop_sequences):
                 break
@@ -290,19 +353,12 @@ class LlamaEngine:
         if len(tokens) < 2:
             return float("inf")
 
-        llm = self._engine()
-        llm.reset()
-        llm.eval(tokens)
+        llm = self._eval_prompt(tokens)
 
-        nll_sum = 0.0
-        count = 0
-        for i in range(len(tokens) - 1):
-            logits_i = np.array(llm.eval_logits[i], dtype=np.float32)
-            log_probs = logits_i - np.logaddexp.reduce(logits_i)
-            nll_sum -= log_probs[tokens[i + 1]]
-            count += 1
+        # Row i predicts token i + 1; the last row predicts past the text.
+        rows = _scores(llm)[: len(tokens) - 1]
+        log_z = np.logaddexp.reduce(rows, axis=-1).astype(np.float64)
+        targets = np.asarray(tokens[1:])
+        target_logits = rows[np.arange(len(targets)), targets].astype(np.float64)
+        return float(np.exp(np.mean(log_z - target_logits)))
 
-        return float(np.exp(nll_sum / count))
-
-
-from llm_surgeon.gguf_writer import export_hf_to_gguf  # noqa: F401  (re-export)

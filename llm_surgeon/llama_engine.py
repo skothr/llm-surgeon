@@ -118,6 +118,18 @@ def compare_logits(
     }
 
 
+def _scores(llm: "Llama") -> np.ndarray:
+    """Logit rows for every evaluated position: a view of ``llm.scores``.
+
+    ``Llama.eval_logits`` rebuilds every row as Python lists on each access
+    (O(n_tokens * n_vocab)), so reading it once per position or per generated
+    token costs O(n^2 * n_vocab). ``scores`` is the float32 ndarray it is built
+    from. The view aliases a buffer the next ``eval`` overwrites; copy before
+    returning rows to callers.
+    """
+    return llm.scores[: llm.n_tokens]
+
+
 class LlamaEngine:
     """Native GGUF inference via llama-cpp-python.
 
@@ -194,14 +206,14 @@ class LlamaEngine:
         llm = self._engine()
         llm.reset()
         llm.eval(tokens)
-        return np.array(llm.eval_logits[-1], dtype=np.float32)
+        return np.array(_scores(llm)[-1], dtype=np.float32)
 
     def logits_all(self, tokens: list[int]) -> list[np.ndarray]:
         """Full vocab logits for every position. List of (n_vocab,) arrays."""
         llm = self._engine()
         llm.reset()
         llm.eval(tokens)
-        return [np.array(row, dtype=np.float32) for row in llm.eval_logits]
+        return list(np.array(_scores(llm), dtype=np.float32))
 
     def generate(
         self,
@@ -241,7 +253,7 @@ class LlamaEngine:
         prev_full = boundary_text
 
         for _ in range(max_tokens):
-            logits_arr = np.array(llm.eval_logits[-1], dtype=np.float32)
+            logits_arr = np.array(_scores(llm)[-1], dtype=np.float32)
 
             if repetition_penalty != 1.0:
                 for tid in set(tokens + generated_ids):
@@ -294,15 +306,12 @@ class LlamaEngine:
         llm.reset()
         llm.eval(tokens)
 
-        nll_sum = 0.0
-        count = 0
-        for i in range(len(tokens) - 1):
-            logits_i = np.array(llm.eval_logits[i], dtype=np.float32)
-            log_probs = logits_i - np.logaddexp.reduce(logits_i)
-            nll_sum -= log_probs[tokens[i + 1]]
-            count += 1
-
-        return float(np.exp(nll_sum / count))
+        # Row i predicts token i + 1; the last row predicts past the text.
+        rows = _scores(llm)[: len(tokens) - 1]
+        log_z = np.logaddexp.reduce(rows, axis=-1).astype(np.float64)
+        targets = np.asarray(tokens[1:])
+        target_logits = rows[np.arange(len(targets)), targets].astype(np.float64)
+        return float(np.exp(np.mean(log_z - target_logits)))
 
 
 from llm_surgeon.gguf_writer import export_hf_to_gguf  # noqa: F401  (re-export)

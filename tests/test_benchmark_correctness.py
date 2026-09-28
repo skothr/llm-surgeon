@@ -386,3 +386,70 @@ class TestFindAndParseResults:
     def test_raises_when_absent(self, tmp_path):
         with pytest.raises(RuntimeError, match="No results JSON"):
             benchmark._find_and_parse_results(str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# compare() and generation metrics
+# ---------------------------------------------------------------------------
+
+
+class TestCompareErrors:
+    def test_failure_is_recorded_and_results_saved(self, monkeypatch, tmp_path):
+        import requests
+
+        urls: list[str] = []
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"response": "ok", "eval_count": 4, "eval_duration": 2e9}
+
+        def fake_post(url, json, timeout):
+            urls.append(url)
+            if json["model"] == "bad":
+                raise requests.ConnectionError("refused")
+            return _Resp()
+
+        monkeypatch.setattr(requests, "post", fake_post)
+        out = tmp_path / "out.json"
+        results = benchmark.compare(
+            ["good", "bad"],
+            [{"prompt": "p", "category": "c"}],
+            output_file=str(out),
+            host="http://example:1234",
+        )
+        assert urls[0] == "http://example:1234/api/generate"
+        resp = results[0]["responses"]
+        assert resp["good"]["text"] == "ok"
+        assert resp["bad"]["text"] == ""
+        assert "refused" in resp["bad"]["error"]
+        assert json.loads(out.read_text())[0]["responses"]["bad"]["error"]
+
+        metrics = benchmark.generation_metrics(results)
+        assert metrics["bad"]["coherence"] == 0.0
+        assert metrics["good"]["coherence"] == 1.0
+
+
+class TestGenerationMetricHelpers:
+    def test_multiline_text_is_coherent(self):
+        assert (
+            benchmark._coherence(["- a\n- b\n- c\n", "def f():\n\treturn 1\n"]) == 1.0
+        )
+
+    def test_control_characters_are_incoherent(self):
+        assert benchmark._coherence(["\x00\x01\x02\x03 garbage"]) == 0.0
+
+    def test_repetition_is_per_response(self):
+        """A phrase shared by two different answers is not degenerate repetition."""
+        texts = ["the capital of France is Paris", "the capital of Spain is Madrid"]
+        assert benchmark._repetition_rate(texts) == 0.0
+
+    def test_vocab_diversity_is_per_response(self):
+        """Two answers with no internal repeats both score 1.0."""
+        assert benchmark._vocab_diversity(["red green blue", "red green blue"]) == 1.0
+
+    def test_mean_output_length(self):
+        assert benchmark._mean_output_length(["ab", "abcd"]) == 3.0
+        assert benchmark._mean_output_length([]) == 0.0

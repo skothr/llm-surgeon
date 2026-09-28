@@ -571,6 +571,7 @@ def compare(
     temperature: float = 0.0,
     max_tokens: int = 256,
     output_file: str | None = None,
+    host: str = "http://localhost:11434",
 ) -> list[dict[str, Any]]:
     """Compare multiple ollama models across a set of prompts.
 
@@ -584,6 +585,7 @@ def compare(
         temperature: Sampling temperature.  ``0.0`` is near-deterministic.
         max_tokens: Maximum number of tokens to generate per response.
         output_file: If provided, write results as JSON to this path.
+        host: Base URL of the Ollama server.
 
     Returns:
         List of result dicts, one per prompt::
@@ -597,11 +599,16 @@ def compare(
                             "text": str,
                             "tokens_per_second": float,
                             "total_tokens": int,
+                            "error": str,  # only when the request failed
                         }
                     }
                 },
                 ...
             ]
+
+        A failed request (connection error, timeout, HTTP error, bad JSON)
+        is recorded with ``text=""`` and an ``error`` message instead of
+        aborting the run.
 
     Note:
         ``temperature=0.0`` is near-deterministic but not exact due to
@@ -630,13 +637,22 @@ def compare(
                     "num_predict": max_tokens,
                 },
             }
-            resp = requests.post(
-                "http://localhost:11434/api/generate",
-                json=payload,
-                timeout=120,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            try:
+                resp = requests.post(
+                    f"{host.rstrip('/')}/api/generate",
+                    json=payload,
+                    timeout=120,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except requests.RequestException as exc:
+                responses[model] = {
+                    "text": "",
+                    "tokens_per_second": 0.0,
+                    "total_tokens": 0,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                continue
 
             text = data.get("response", "")
             eval_count = data.get("eval_count", 0)
@@ -704,11 +720,14 @@ def generation_metrics(results: list[dict[str, Any]]) -> dict[str, dict[str, flo
     Metrics computed per model:
 
     - ``mean_output_length``: average character length of responses.
-    - ``vocab_diversity``: ``unique_words / total_words`` (0–1).
-    - ``repetition_rate``: fraction of 3-grams that are repeated
+    - ``vocab_diversity``: ``unique_words / total_words`` per response,
+      averaged over responses with words (0–1).
+    - ``repetition_rate``: fraction of 3-grams repeated within a response,
+      averaged over responses with at least 3 words
       (0 = no repetition, 1 = all repeated).
-    - ``coherence``: fraction of responses that are non-empty,
-      non-error, and contain only printable text.
+    - ``coherence``: fraction of responses that are non-empty, non-error
+      (no ``error`` key from :func:`compare`), and at least 90% printable
+      text (newlines, tabs and carriage returns count as printable).
 
     Args:
         results: Output from :func:`compare`.
@@ -726,7 +745,9 @@ def generation_metrics(results: list[dict[str, Any]]) -> dict[str, dict[str, flo
     texts_per_model: dict[str, list[str]] = {m: [] for m in model_names}
     for entry in results:
         for model in model_names:
-            text = entry["responses"].get(model, {}).get("text", "")
+            resp = entry["responses"].get(model, {})
+            # A failed request scores as an empty (incoherent) response.
+            text = "" if resp.get("error") else resp.get("text", "")
             texts_per_model[model].append(text)
 
     out: dict[str, dict[str, float]] = {}
@@ -748,47 +769,55 @@ def _mean_output_length(texts: list[str]) -> float:
     return sum(len(t) for t in texts) / len(texts)
 
 
+def _words(text: str) -> list[str]:
+    return re.findall(r"\b\w+\b", text.lower())
+
+
 def _vocab_diversity(texts: list[str]) -> float:
-    """Ratio of unique words to total words across all texts (0–1)."""
-    all_words: list[str] = []
-    for text in texts:
-        words = re.findall(r"\b\w+\b", text.lower())
-        all_words.extend(words)
-    if not all_words:
+    """Mean per-response ratio of unique words to total words (0–1).
+
+    Computed per response so the score does not fall with the number or
+    length of responses pooled together.
+    """
+    ratios = [len(set(w)) / len(w) for w in map(_words, texts) if w]
+    if not ratios:
         return 0.0
-    return len(set(all_words)) / len(all_words)
+    return sum(ratios) / len(ratios)
 
 
 def _repetition_rate(texts: list[str]) -> float:
-    """Fraction of 3-grams that are repeated within the combined text.
+    """Mean per-response fraction of 3-grams that are repeated.
 
-    A 3-gram is "repeated" if it appears more than once.  The rate is
-    ``repeated_3gram_count / total_3gram_count``, or 0 if there are
-    fewer than 3 words total.
+    A 3-gram is "repeated" if it appears more than once in the same
+    response.  Each response's rate is
+    ``repeated_3gram_count / total_3gram_count``; responses with fewer
+    than 3 words are skipped, and the result is 0 if none remain.  Phrases
+    shared across different responses do not count.
     """
-    all_words: list[str] = []
-    for text in texts:
-        words = re.findall(r"\b\w+\b", text.lower())
-        all_words.extend(words)
-
-    if len(all_words) < 3:
+    rates: list[float] = []
+    for words in map(_words, texts):
+        if len(words) < 3:
+            continue
+        trigrams = list(zip(words, words[1:], words[2:]))
+        counts: dict[tuple, int] = {}
+        for tg in trigrams:
+            counts[tg] = counts.get(tg, 0) + 1
+        repeated = sum(1 for tg in trigrams if counts[tg] > 1)
+        rates.append(repeated / len(trigrams))
+    if not rates:
         return 0.0
+    return sum(rates) / len(rates)
 
-    trigrams = [
-        (all_words[i], all_words[i + 1], all_words[i + 2])
-        for i in range(len(all_words) - 2)
-    ]
-    total = len(trigrams)
-    counts: dict[tuple, int] = {}
-    for tg in trigrams:
-        counts[tg] = counts.get(tg, 0) + 1
 
-    repeated = sum(1 for tg in trigrams if counts[tg] > 1)
-    return repeated / total
+_ALLOWED_WHITESPACE = frozenset("\n\t\r")
 
 
 def _coherence(texts: list[str]) -> float:
-    """Fraction of responses that are non-empty and contain printable text."""
+    """Fraction of responses that are non-empty and contain printable text.
+
+    ``str.isprintable`` is False for newlines and tabs, so those are
+    counted as printable here; multi-line answers are not failures.
+    """
     if not texts:
         return 0.0
     coherent = 0
@@ -796,7 +825,9 @@ def _coherence(texts: list[str]) -> float:
         if not text or not text.strip():
             continue
         # Check that at least 90% of characters are printable
-        printable_count = sum(1 for c in text if c.isprintable())
+        printable_count = sum(
+            1 for c in text if c.isprintable() or c in _ALLOWED_WHITESPACE
+        )
         if printable_count / len(text) >= 0.9:
             coherent += 1
     return coherent / len(texts)

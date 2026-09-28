@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77", "wheel"]  # >=77: PEP 639 SPDX `license` string
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -11,29 +11,39 @@ license = "GPL-3.0-only"
 authors = [{ name = "Michael Lannum" }]
 dependencies = [
     "torch>=2.0",
-    "transformers>=4.40",
+    "transformers>=5.0",
     "accelerate>=0.27",
-    "bitsandbytes>=0.43",
     "huggingface_hub>=0.20",
+    "safetensors",
+    "tokenizers",
     "numpy>=1.24",
     "requests",
     "pyyaml>=6.0",
     "sentencepiece>=0.1.99",
+    # calibrate() / perplexity(dataset=...) load wikitext-2 by default.
+    "datasets>=2.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pyright",
+    "scipy",  # rank-correlation checks in the real-model probe tests
 ]
-gui = [
-    "fastapi>=0.100",
-    "uvicorn[standard]>=0.20",
+# nf4 / int8 load_model modes (bitsandbytes; CUDA-oriented wheels).
+quant = [
+    "bitsandbytes>=0.43",
 ]
+# lm-eval harness benchmarks in `benchmark`.
 eval = [
     "lm_eval>=0.4",
-    "datasets>=2.0",
 ]
+# Writing GGUF files (gguf_writer.export_hf_to_gguf).
 gguf = [
+    "gguf>=0.10",
+]
+# Native LlamaEngine GGUF inference via llama.cpp bindings.
+llama = [
     "llama-cpp-python>=0.2",
 ]
 

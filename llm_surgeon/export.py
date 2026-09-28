@@ -6,8 +6,23 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Default path to llama.cpp; overridable via env var.
-_DEFAULT_LLAMA_CPP_PATH = str(Path(__file__).resolve().parents[2] / "lib" / "llama.cpp")
+
+def _resolve_llama_cpp_path(llama_cpp_path: str | None) -> str:
+    """Return the llama.cpp checkout to use: the argument, else $LLAMA_CPP_PATH.
+
+    There is no built-in default: llama.cpp is an external checkout whose
+    location only the caller knows.
+    """
+    if llama_cpp_path:
+        return llama_cpp_path
+    env = os.environ.get("LLAMA_CPP_PATH")
+    if env:
+        return env
+    raise FileNotFoundError(
+        "No llama.cpp checkout configured. Pass llama_cpp_path=... or set the "
+        "LLAMA_CPP_PATH environment variable to a llama.cpp checkout containing "
+        "convert_hf_to_gguf.py (and build/bin/llama-quantize for quantization)."
+    )
 
 
 def save_checkpoint(model, output_dir: str, tokenizer=None) -> str:
@@ -66,17 +81,18 @@ def to_gguf(
         output_dir: Directory where the GGUF file(s) will be placed.
         quantization: GGUF quantization type (e.g. "Q4_K_M") or None for f16 only.
         llama_cpp_path: Override the llama.cpp installation directory.
-                        Defaults to the LLAMA_CPP_PATH env var, then the built-in default.
+                        Defaults to the LLAMA_CPP_PATH env var; one of the two
+                        is required.
 
     Returns:
         Absolute path to the final GGUF file.
 
     Raises:
-        FileNotFoundError: If required llama.cpp tools are not found.
+        FileNotFoundError: If no llama.cpp path is configured, or the required
+            llama.cpp tools are not found under it.
         RuntimeError: If conversion or quantization fails.
     """
-    if llama_cpp_path is None:
-        llama_cpp_path = os.environ.get("LLAMA_CPP_PATH", _DEFAULT_LLAMA_CPP_PATH)
+    llama_cpp_path = _resolve_llama_cpp_path(llama_cpp_path)
 
     convert_script = os.path.join(llama_cpp_path, "convert_hf_to_gguf.py")
     quantize_bin = os.path.join(llama_cpp_path, "build", "bin", "llama-quantize")

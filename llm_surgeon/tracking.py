@@ -8,7 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_DEFAULT_DB = str(Path(__file__).parent.parent / "experiments/experiments.db")
+from llm_surgeon._paths import default_db_path
+
+
+def _resolve_db(db_path: str | None) -> str:
+    """Return ``db_path``, or the user-writable default (see ``_paths``)."""
+    return db_path if db_path is not None else default_db_path()
 
 
 # Schema
@@ -64,6 +69,8 @@ _SCHEMA_INITIALIZED: set[str] = set()
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
+    if db_path != ":memory:":
+        Path(db_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     if db_path not in _SCHEMA_INITIALIZED:
@@ -150,9 +157,14 @@ def start(
     description: str = "",
     base_model: str = "",
     recipe: Mapping[str, Any] | None = None,
-    db_path: str = _DEFAULT_DB,
+    db_path: str | None = None,
 ) -> Experiment:
-    """Create a new experiment record and return an Experiment handle."""
+    """Create a new experiment record and return an Experiment handle.
+
+    ``db_path`` defaults to ``$LLM_SURGEON_DB`` or
+    ``<llm-surgeon home>/experiments.db`` (see ``llm_surgeon._paths``).
+    """
+    db_path = _resolve_db(db_path)
     recipe_yaml = json.dumps(recipe) if recipe is not None else None
     with _connection(db_path) as conn:
         # If an experiment with this name already exists, replace it
@@ -169,15 +181,17 @@ def start(
     return Experiment(name=name, db_path=db_path)
 
 
-def list_experiments(db_path: str = _DEFAULT_DB) -> list[dict]:
+def list_experiments(db_path: str | None = None) -> list[dict]:
     """Return all experiments as a list of dicts."""
+    db_path = _resolve_db(db_path)
     with _connection(db_path) as conn:
         rows = conn.execute("SELECT * FROM experiments ORDER BY created_at").fetchall()
         return [dict(row) for row in rows]
 
 
-def get_experiment(name: str, db_path: str = _DEFAULT_DB) -> dict:
+def get_experiment(name: str, db_path: str | None = None) -> dict:
     """Return a single experiment with its metrics, ops, and samples."""
+    db_path = _resolve_db(db_path)
     with _connection(db_path) as conn:
         exp_row = conn.execute(
             "SELECT * FROM experiments WHERE name = ?", (name,)
@@ -206,7 +220,7 @@ def get_experiment(name: str, db_path: str = _DEFAULT_DB) -> dict:
         return result
 
 
-def compare_experiments(names: list[str], db_path: str = _DEFAULT_DB) -> dict[str, dict]:
+def compare_experiments(names: list[str], db_path: str | None = None) -> dict[str, dict]:
     """Return side-by-side metric dicts for the named experiments.
 
     Returns:

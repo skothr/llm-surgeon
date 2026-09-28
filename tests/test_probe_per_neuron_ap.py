@@ -6,10 +6,8 @@ can attach to it, and adds intermediate_size to the config.
 """
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
-import os
 
 import pytest
 import torch
@@ -354,11 +352,8 @@ class TestCaptureFFNAct:
 # -------------------------------------------------------------------------
 
 def _tinyllama_cached() -> bool:
-    env_cache = os.environ.get("TINYLLAMA_CACHE")
-    if env_cache:
-        return Path(env_cache).exists()
-    default = Path(".cache/models/models--TinyLlama--TinyLlama-1.1B-Chat-v1.0")
-    return default.exists()
+    from llm_surgeon.surgery import _is_cached
+    return _is_cached("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

@@ -19,7 +19,7 @@
   "reportUnusedFunction": "none",
   "reportUnusedClass": "none",
 
-  "pythonVersion": "3.12",
+  "pythonVersion": "3.10",
   "venvPath": ".",
   "venv": ".venv",
   "extraPaths": [".", "examples"]

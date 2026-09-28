@@ -3,8 +3,20 @@
 import json
 import os
 
-import pytest
-from transformers import LlamaConfig, LlamaForCausalLM
+# Cap CPU use before torch loads: torch defaults to one thread per core, so a
+# few concurrent test runs saturate the machine. The test models are tiny, so
+# 2 threads cost little wall time. Override with LLM_SURGEON_TEST_THREADS /
+# LLM_SURGEON_TEST_NICE.
+_TEST_THREADS = os.environ.get("LLM_SURGEON_TEST_THREADS", "2")
+for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+    os.environ.setdefault(_var, _TEST_THREADS)
+os.nice(int(os.environ.get("LLM_SURGEON_TEST_NICE", "10")))
+
+import pytest  # noqa: E402
+import torch  # noqa: E402
+from transformers import LlamaConfig, LlamaForCausalLM  # noqa: E402
+
+torch.set_num_threads(int(_TEST_THREADS))
 
 
 def _make_tiny_tokenizer(vocab_size: int):
@@ -38,6 +50,13 @@ def _make_tiny_tokenizer(vocab_size: int):
         eos_token="[EOS]",
     )
     return hf_tokenizer
+
+
+@pytest.fixture(autouse=True)
+def _isolate_surgeon_home(tmp_path, monkeypatch):
+    """Keep default-path writes (e.g. the tracking DB) out of the user's home."""
+    monkeypatch.setenv("LLM_SURGEON_HOME", str(tmp_path / "llm-surgeon-home"))
+    monkeypatch.delenv("LLM_SURGEON_DB", raising=False)
 
 
 @pytest.fixture

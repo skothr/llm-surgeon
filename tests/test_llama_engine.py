@@ -72,6 +72,14 @@ TINYLLAMA_EXISTS = (
 ).exists()
 
 
+import importlib.util
+
+requires_gguf = pytest.mark.skipif(
+    importlib.util.find_spec("gguf") is None,
+    reason="`gguf` not installed (pip install 'llm-surgeon[gguf]')",
+)
+
+
 def _tinyllama_blob() -> Path:
     blob = resolve_ollama_blob("tinyllama:latest")
     assert blob is not None, "TINYLLAMA_EXISTS guard failed to prevent None blob"
@@ -330,6 +338,7 @@ import tempfile
 
 
 @pytest.mark.skipif(not TINYLLAMA_EXISTS, reason="tinyllama not in Ollama")
+@requires_gguf
 class TestExportHfToGguf:
     def test_round_trip_logits(self):
         """Load GGUF -> dequant to PyTorch -> export back -> reload -> compare logits."""
@@ -406,6 +415,7 @@ class TestExportHfToGguf:
                 assert merges is not None and len(merges) > 0
 
 
+@requires_gguf
 class TestExportHfToGgufRopeTheta:
     def test_raises_on_none_rope_theta(self, tiny_llama):
         """rope_theta=None must raise — silent fallback to 10000.0 would corrupt
@@ -422,3 +432,13 @@ class TestExportHfToGgufRopeTheta:
             out_path = Path(tmpdir) / "bad.gguf"
             with pytest.raises(ValueError, match="rope_theta"):
                 export_hf_to_gguf(tiny_llama, None, out_path)
+
+
+def test_export_hf_to_gguf_without_gguf_raises_actionable_error(tiny_llama, tmp_path, monkeypatch):
+    import sys
+
+    from llm_surgeon.gguf_writer import export_hf_to_gguf
+
+    monkeypatch.setitem(sys.modules, "gguf", None)  # makes `import gguf` raise ImportError
+    with pytest.raises(ImportError, match=r"llm-surgeon\[gguf\]"):
+        export_hf_to_gguf(tiny_llama, None, tmp_path / "x.gguf")

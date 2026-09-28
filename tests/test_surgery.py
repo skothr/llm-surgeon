@@ -1,7 +1,6 @@
 """Tests for surgery module."""
 
 import os
-import json
 import pytest
 import torch
 from llm_surgeon.surgery import SurgeryOp, SurgeryLog
@@ -13,6 +12,7 @@ from llm_surgeon.surgery import swap_layers
 from llm_surgeon.surgery import duplicate_layer
 from llm_surgeon.surgery import load_model
 from transformers import AutoModelForCausalLM
+from tests.conftest import _make_tiny_tokenizer
 
 
 class TestIsCached:
@@ -324,9 +324,13 @@ class TestLoadModel:
         with pytest.raises(ValueError, match="Unknown mode"):
             load_model("nonexistent-model", mode="invalid")
 
-    def test_valid_modes_accepted(self):
+    def test_valid_modes_accepted(self, monkeypatch):
         # Valid modes are accepted; the model lookup fails (OSError for missing model,
-        # or ImportError when a SOCKS proxy is configured but socksio is not installed).
+        # or ImportError when bitsandbytes is absent for the nf4 "inspect" mode).
+        # Report the id as cached so load_model passes local_files_only=True and
+        # never reaches the network.
+        from llm_surgeon import surgery
+        monkeypatch.setattr(surgery, "_is_cached", lambda *a, **kw: True)
         for mode in ("inspect", "eval", "export"):
             with pytest.raises((OSError, ImportError)):
                 load_model("nonexistent/model-id-that-does-not-exist", mode=mode)
@@ -334,26 +338,9 @@ class TestLoadModel:
     def test_returns_tuple(self, tiny_llama, tmp_path):
         save_path = str(tmp_path / "tiny_model")
         tiny_llama.save_pretrained(save_path)
-        tokenizer_config = {
-            "model_type": "llama",
-            "bos_token": "<s>",
-            "eos_token": "</s>",
-            "unk_token": "<unk>",
-        }
-        with open(os.path.join(save_path, "tokenizer_config.json"), "w") as f:
-            json.dump(tokenizer_config, f)
-        vocab = {f"token_{i}": i for i in range(64)}
-        tokenizer_data = {
-            "version": "1.0",
-            "model": {"type": "BPE", "vocab": vocab, "merges": []},
-            "added_tokens": [
-                {"id": 0, "content": "<unk>", "special": True},
-                {"id": 1, "content": "<s>", "special": True},
-                {"id": 2, "content": "</s>", "special": True},
-            ],
-        }
-        with open(os.path.join(save_path, "tokenizer.json"), "w") as f:
-            json.dump(tokenizer_data, f)
+        # Build tokenizer.json with the tokenizers library: a hand-written one
+        # misses AddedToken fields (single_word, ...) that tokenizers requires.
+        _make_tiny_tokenizer(tiny_llama.config.vocab_size).save_pretrained(save_path)
 
         model, tokenizer = load_model(save_path, mode="export")
         assert model is not None
@@ -364,26 +351,9 @@ class TestLoadModel:
         """Loading from a local path should not touch HF Hub at all."""
         save_path = str(tmp_path / "local_model")
         tiny_llama.save_pretrained(save_path)
-        tokenizer_config = {
-            "model_type": "llama",
-            "bos_token": "<s>",
-            "eos_token": "</s>",
-            "unk_token": "<unk>",
-        }
-        with open(os.path.join(save_path, "tokenizer_config.json"), "w") as f:
-            json.dump(tokenizer_config, f)
-        vocab = {f"token_{i}": i for i in range(64)}
-        tokenizer_data = {
-            "version": "1.0",
-            "model": {"type": "BPE", "vocab": vocab, "merges": []},
-            "added_tokens": [
-                {"id": 0, "content": "<unk>", "special": True},
-                {"id": 1, "content": "<s>", "special": True},
-                {"id": 2, "content": "</s>", "special": True},
-            ],
-        }
-        with open(os.path.join(save_path, "tokenizer.json"), "w") as f:
-            json.dump(tokenizer_data, f)
+        # Build tokenizer.json with the tokenizers library: a hand-written one
+        # misses AddedToken fields (single_word, ...) that tokenizers requires.
+        _make_tiny_tokenizer(tiny_llama.config.vocab_size).save_pretrained(save_path)
 
         # Force offline — if it tries the network, it will fail
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
@@ -692,3 +662,12 @@ class TestLoadModelIntegration:
         # At least one Linear in an attention block should be Linear4bit.
         attn = model.model.layers[0].self_attn
         assert isinstance(attn.q_proj, bnb.nn.Linear4bit)
+
+
+@pytest.mark.parametrize("mode", ["nf4", "int8", "inspect"])
+def test_quantized_modes_without_bitsandbytes_raise_actionable_error(mode, monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "bitsandbytes", None)  # makes the import raise
+    with pytest.raises(ImportError, match=r"llm-surgeon\[quant\]"):
+        load_model("Org/Model", mode=mode)

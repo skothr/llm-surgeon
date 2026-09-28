@@ -235,63 +235,48 @@ class TestPerNeuronMock:
         assert len(result.cells) == expected
 
     def test_sum_invariant_mock(self) -> None:
-        """Σ_i ap_neuron_raw(L, i, pos) == (Δffn_out · grad_ffn_out)_pos.
+        """Σ_i cell(L, i, pos) · D == Δffn_out(L, pos) · grad_ffn_out(L, pos).
 
-        Computes the right-hand side directly from captures and compares
-        against the left-hand side (reconstructed by summing per-neuron
-        ap_raw from an undivided-by-D path).
+        Calls attribution_patch_per_neuron with top_k covering every cell,
+        so the function's own indexing, top-k and recovery math are what is
+        checked; the right-hand side comes from captures alone.
         """
         model, tok = _make_mock()
+        n_layers = model.config.num_hidden_layers
+        inter = model.config.intermediate_size
+        seq = len(tok(CLEAN_PROMPT)["input_ids"][0])
+        result = attribution_patch_per_neuron(
+            model, tok, CLEAN_PROMPT, CORR_PROMPT,
+            correct_token_id=CORRECT_ID, incorrect_token_id=INCORRECT_ID,
+            top_k_neurons=n_layers * inter * seq,
+        )
+        assert len(result.cells) == n_layers * inter * seq
 
-        from_prompt = CLEAN_PROMPT
-        base_prompt = CORR_PROMPT
-
-        # Capture from pass (no grad)
         with torch.no_grad():
-            from_captured, _, from_logits, _, _, _, from_ffn_acts = \
-                _capture_residual_stream_with_grad(
-                    model, tok, from_prompt,
-                    sublayers=("attn", "ffn"),
-                    capture_ffn_out=True,
-                    capture_ffn_act=True,
-                )
-
-        # Capture base pass (with grad)
-        with torch.enable_grad():
-            base_captured, _, base_logits, _, _, _, base_ffn_acts = \
-                _capture_residual_stream_with_grad(
-                    model, tok, base_prompt,
-                    sublayers=("attn", "ffn"),
-                    capture_ffn_out=True,
-                    capture_ffn_act=True,
-                )
-            meas_pos = base_logits.shape[0] - 1
-            metric = (
-                base_logits[meas_pos, CORRECT_ID]
-                - base_logits[meas_pos, INCORRECT_ID]
+            from_captured, _, from_logits, _, _, _, _ = _capture_residual_stream_with_grad(
+                model, tok, CLEAN_PROMPT, capture_ffn_out=True,
             )
-            metric.backward()
+        with torch.enable_grad():
+            base_captured, _, base_logits, _, _, _, _ = _capture_residual_stream_with_grad(
+                model, tok, CORR_PROMPT, capture_ffn_out=True,
+            )
+            metric = base_logits[-1, CORRECT_ID] - base_logits[-1, INCORRECT_ID]
+            keys = [(L, "ffn_out") for L in range(n_layers)]
+            grads = dict(zip(keys, torch.autograd.grad(metric, [base_captured[k] for k in keys])))
+        denom = (
+            (from_logits[-1, CORRECT_ID] - from_logits[-1, INCORRECT_ID])
+            - (base_logits[-1, CORRECT_ID] - base_logits[-1, INCORRECT_ID])
+        ).item()
 
-        # For each layer, at every position, verify the invariant.
-        for L in range(model.config.num_hidden_layers):
-            if (L, "ffn_out") not in base_captured:
-                continue
-            base_ffn_out = base_captured[(L, "ffn_out")]
-            from_ffn_out_L = from_captured[(L, "ffn_out")]
-            if base_ffn_out.grad is None:
-                continue
-            W_down: torch.Tensor = model.model.layers[L].mlp.down_proj.weight  # pyright: ignore[reportAttributeAccessIssue, reportAssignmentType]
-            for pos in range(base_ffn_out.shape[1]):
-                grad_ffn_out = base_ffn_out.grad[0, pos].detach()
-                delta_ffn_out = (from_ffn_out_L[0, pos] - base_ffn_out[0, pos].detach())
-                target = (delta_ffn_out * grad_ffn_out).sum().item()
-
-                grad_act = grad_ffn_out @ W_down
-                delta_act = from_ffn_acts[L][0, pos] - base_ffn_acts[L][0, pos].detach()
-                reconstructed = (delta_act * grad_act).sum().item()
-
-                assert abs(target - reconstructed) < 1e-4, \
-                    f"Sum invariant broken at L={L}, pos={pos}: target={target}, sum={reconstructed}"
+        sums: Dict[Tuple[int, int], float] = {}
+        for c in result.cells:
+            key = (c["layer"], c["position"])
+            sums[key] = sums.get(key, 0.0) + c["ap_recovery"] * denom
+        assert len(sums) == n_layers * seq
+        for (L, pos), total in sums.items():
+            delta = from_captured[(L, "ffn_out")][0, pos] - base_captured[(L, "ffn_out")][0, pos].detach()
+            target = (delta * grads[(L, "ffn_out")][0, pos]).sum().item()
+            assert abs(total - target) < 1e-4, f"L={L} pos={pos}: Σ neurons={total}, target={target}"
 
     def test_validation(self) -> None:
         model, tok = _make_mock()

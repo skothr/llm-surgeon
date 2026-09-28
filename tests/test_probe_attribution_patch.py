@@ -132,13 +132,13 @@ class TestValidation:
             )
 
     def test_empty_prompt_raises(self):
-        with pytest.raises(ValueError, match="prompt cannot be empty"):
+        with pytest.raises(ValueError, match="prompts cannot be empty"):
             attribution_patch(
                 model=None, tokenizer=None,
                 clean_prompt="", corrupted_prompt="b",
                 correct_token_id=1, incorrect_token_id=2,
             )
-        with pytest.raises(ValueError, match="prompt cannot be empty"):
+        with pytest.raises(ValueError, match="prompts cannot be empty"):
             attribution_patch(
                 model=None, tokenizer=None,
                 clean_prompt="a", corrupted_prompt="",
@@ -411,67 +411,27 @@ class TestNStepsIG:
                 f"default={c_d['ap_recovery']!r}, n_steps=1={c_1['ap_recovery']!r}"
             )
 
-    def test_n_steps_5_runs_and_differs(self):
-        """n_steps=5 runs without error; scores are finite and differ from n_steps=1."""
+    @pytest.mark.parametrize("sublayers", [("attn", "ffn"), ("attn",), ("ffn",)])
+    def test_n_steps_equals_ap_on_linear_model(self, sublayers):
+        """_MockLlamaIG is linear in every sublayer, so each site's gradient
+        is constant along any path and IG must reproduce n_steps=1 for every
+        cell. An IG loop that replaces sublayer outputs with constants cuts
+        the gradient paths through downstream sublayers and fails this; the
+        ffn-only case used to return no cells at all."""
         model, tok = _make_ig_fixtures(seed=2)
         common = dict(
             clean_prompt="clean", corrupted_prompt="corrupted",
             correct_token_id=1, incorrect_token_id=2,
-            direction="denoise",
+            direction="denoise", sublayers=sublayers,
         )
         r1 = attribution_patch(model, tok, n_steps=1, **common)  # type: ignore[arg-type]
         r5 = attribution_patch(model, tok, n_steps=5, **common)  # type: ignore[arg-type]
 
         assert r5.n_steps == 5
-        for c in r5.cells:
-            assert math.isfinite(c["ap_recovery"]), f"non-finite cell: {c}"
-
-        scores_1 = [c["ap_recovery"] for c in r1.cells]
-        scores_5 = [c["ap_recovery"] for c in r5.cells]
-        max_diff = max(abs(a - b) for a, b in zip(scores_1, scores_5))
-        assert max_diff > 1e-4, (
-            f"n_steps=5 scores too close to n_steps=1 (max diff={max_diff:.2e}); "
-            "IG averaging should shift at least one cell by > 1e-4"
-        )
-
-    def test_n_steps_convergence(self):
-        """IG should converge as N grows: n_steps=10 and n_steps=20 should
-        agree more closely with each other than n_steps=2 agrees with n_steps=20.
-
-        Note: Phase 3.5 uses cumulative residual-stream Δs (h_post_attn for
-        attn rows, layer_output for ffn rows), which OVERLAP across depth.
-        These Δs match exact-AP semantics but don't satisfy IG's completeness
-        axiom (Σ ap_recovery ≠ 1.0 in general — it counts each layer's
-        contribution multiple times by construction). What IS meaningful is
-        convergence: as N → ∞, IG approaches the exact path integral, so
-        adjacent-N results should agree ever-closer.
-        """
-        model, tok = _make_ig_fixtures(seed=3)
-
-        def _run(n: int) -> PatchingResult:
-            return attribution_patch(
-                model, tok,
-                clean_prompt="clean", corrupted_prompt="corrupted",
-                correct_token_id=1, incorrect_token_id=2,
-                direction="denoise",
-                sublayers=("attn", "ffn"),
-                n_steps=n,
-            )
-
-        r2 = _run(2)
-        r10 = _run(10)
-        r20 = _run(20)
-
-        def max_abs_diff(a, b):
-            return max(abs(c_a["ap_recovery"] - c_b["ap_recovery"])
-                       for c_a, c_b in zip(a.cells, b.cells))
-
-        diff_10_20 = max_abs_diff(r10, r20)
-        diff_2_20 = max_abs_diff(r2, r20)
-        assert diff_10_20 < diff_2_20, (
-            f"IG did not converge: diff(10, 20)={diff_10_20:.4f} should be "
-            f"< diff(2, 20)={diff_2_20:.4f}"
-        )
+        assert len(r5.cells) == len(r1.cells) == 2 * 3 * len(sublayers)
+        for c1, c5 in zip(r1.cells, r5.cells):
+            assert (c1["layer"], c1["sublayer"], c1["position"]) == (c5["layer"], c5["sublayer"], c5["position"])
+            assert c5["ap_recovery"] == pytest.approx(c1["ap_recovery"], abs=1e-5), (c1, c5)
 
     def test_n_steps_validation(self):
         """n_steps outside [1, 50] raises ValueError."""

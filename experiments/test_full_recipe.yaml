@@ -7,7 +7,7 @@ surgery:
   - remove_layers: [19]
   - calibrate:
       dataset: wikitext2
-      num_samples: 50
+      num_samples: 50  # sequences of up to 512 tokens
 
 evaluate:
   perplexity:

@@ -3,7 +3,7 @@
 import pytest
 import yaml
 
-from llm_surgeon.recipe import parse_recipe, run, generate_layer_sweep
+from llm_surgeon.recipe import parse_recipe, run, run_batch, generate_layer_sweep
 
 
 def test_parses_yaml(tmp_path):
@@ -140,3 +140,100 @@ def test_run_with_analyze(tiny_llama, tmp_path):
     assert "analyze" in result
     assert "logit_lens" in result["analyze"]
     assert "hidden_states" in result["analyze"]
+
+
+class TestParseRecipeShape:
+    def test_empty_file_raises(self, tmp_path):
+        recipe_file = tmp_path / "empty.yaml"
+        recipe_file.write_text("")
+        with pytest.raises(ValueError, match="mapping"):
+            parse_recipe(str(recipe_file))
+
+    def test_top_level_list_raises(self, tmp_path):
+        recipe_file = tmp_path / "list.yaml"
+        recipe_file.write_text(yaml.dump([{"name": "x"}]))
+        with pytest.raises(ValueError, match="mapping"):
+            parse_recipe(str(recipe_file))
+
+    def test_empty_sections_normalized(self, tmp_path):
+        recipe_file = tmp_path / "empty_sections.yaml"
+        recipe_file.write_text("name: x\nbase_model: y\nsurgery:\nanalyze:\n")
+        data = parse_recipe(str(recipe_file))
+        assert data["surgery"] == []
+        assert data["analyze"] == {}
+
+    def test_multi_op_step_raises(self, tmp_path):
+        recipe_file = tmp_path / "multi_op.yaml"
+        recipe_file.write_text(yaml.dump({
+            "name": "x",
+            "base_model": "y",
+            "surgery": [{"remove_layers": [3], "calibrate": {}}],
+        }))
+        with pytest.raises(ValueError, match="exactly one operation"):
+            parse_recipe(str(recipe_file))
+
+    def test_run_with_empty_surgery_section(self, tiny_llama, tmp_path):
+        recipe_file = tmp_path / "no_ops.yaml"
+        recipe_file.write_text("name: x\nbase_model: y\nsurgery:\n")
+        result = run(str(recipe_file), model=tiny_llama, db_path=str(tmp_path / "e.db"),
+                     skip_export=True, skip_eval=True, verbose=False)
+        assert result["status"] == "completed"
+
+
+def test_run_model_without_tokenizer_raises_when_needed(tiny_llama, tmp_path):
+    recipe_file = tmp_path / "cal.yaml"
+    recipe_file.write_text(yaml.dump({
+        "name": "x",
+        "base_model": "y",
+        "surgery": [{"remove_layers": [3]}, {"calibrate": {"text": "word4 word5"}}],
+    }))
+    with pytest.raises(ValueError, match="tokenizer"):
+        run(str(recipe_file), model=tiny_llama, db_path=str(tmp_path / "e.db"),
+            skip_export=True, skip_eval=True, verbose=False)
+    assert len(tiny_llama.model.layers) == 8  # nothing ran
+
+
+def test_run_remove_then_calibrate_scales_toward_original_layers(tiny_llama, tmp_path):
+    """Each surviving layer is rescaled toward the baseline of the layer it was."""
+    import copy
+
+    import torch
+
+    from llm_surgeon.surgery import _capture_norm_outputs, remove_layers
+    from tests.conftest import _make_tiny_tokenizer
+
+    tokenizer = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
+    text = " ".join(f"word{i}" for i in range(4, 60))
+
+    baseline = _capture_norm_outputs(copy.deepcopy(tiny_llama), tokenizer, text=text)
+    removed = copy.deepcopy(tiny_llama)
+    remove_layers(removed, [3])
+    current = _capture_norm_outputs(removed, tokenizer, text=text)
+
+    recipe_file = tmp_path / "cut.yaml"
+    recipe_file.write_text(yaml.dump({
+        "name": "cut-and-calibrate",
+        "base_model": "tiny",
+        "surgery": [{"remove_layers": [3]}, {"calibrate": {"text": text}}],
+    }))
+    run(str(recipe_file), model=tiny_llama, tokenizer=tokenizer,
+        db_path=str(tmp_path / "e.db"), skip_export=True, skip_eval=True, verbose=False)
+
+    origins = [0, 1, 2, 4, 5, 6, 7]
+    for i, origin in enumerate(origins):
+        base = baseline.input_norm[origin]
+        cur = current.input_norm[i]
+        valid = (base > 1e-6) & (cur > 1e-6)
+        expected = torch.where(valid, torch.sqrt(base / cur.clamp_min(1e-6)),
+                               torch.ones_like(base)).clamp(0.2, 5.0)
+        # RMSNorm gains start at 1.0, so the gain now equals the applied scale.
+        got = tiny_llama.model.layers[i].input_layernorm.weight
+        assert torch.allclose(got, expected, rtol=1e-5), f"layer {i} (orig {origin})"
+
+
+def test_run_batch_respects_verbose(tiny_llama, tmp_path, capsys):
+    recipe_file = tmp_path / "a.yaml"
+    recipe_file.write_text(yaml.dump({"name": "a", "base_model": "tiny"}))
+    run_batch(str(tmp_path / "*.yaml"), model=tiny_llama, db_path=str(tmp_path / "e.db"),
+              skip_export=True, skip_eval=True, verbose=False)
+    assert capsys.readouterr().out == ""

@@ -16,7 +16,9 @@ from llm_surgeon import export
 from llm_surgeon.export import (
     _ollama_base_url,
     _verify_ollama_registration,
+    full_pipeline,
     register_ollama,
+    save_checkpoint,
     to_gguf,
 )
 
@@ -117,6 +119,15 @@ class TestToGgufQuantization:
         bin_dir = str(llama_cpp_dir / "build" / "bin")
         assert kwargs["env"]["LD_LIBRARY_PATH"] == f"{bin_dir}:/opt/lib"
 
+    def test_model_name_sets_output_stem(self, llama_cpp_dir, tmp_path):
+        with patch("subprocess.run", FakeRun()):
+            result = to_gguf(
+                str(tmp_path / "checkpoint"),
+                str(tmp_path / "out"),
+                quantization="Q4_K_M",
+                model_name="my-model",
+            )
+        assert os.path.basename(result) == "my-model-Q4_K_M.gguf"
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +207,16 @@ class TestRegisterOllamaFiles:
                 register_ollama(str(gguf), name)
         return mock_run.call_args[0][0]
 
+    def test_modelfile_named_after_gguf(self, tmp_path):
+        a, b = tmp_path / "a-Q4_K_M.gguf", tmp_path / "b-Q4_K_M.gguf"
+        a.touch()
+        b.touch()
+        cmd_a = self._register(a, "a")
+        cmd_b = self._register(b, "b")
+        mf_a, mf_b = Path(cmd_a[-1]), Path(cmd_b[-1])
+        assert mf_a != mf_b
+        assert mf_a.read_text() == f"FROM {a}\n"
+        assert mf_b.read_text() == f"FROM {b}\n"
 
     def test_unverified_registration_raises(self, tmp_path):
         gguf = tmp_path / "m.gguf"
@@ -209,5 +230,48 @@ class TestRegisterOllamaFiles:
 # ---------------------------------------------------------------------------
 
 
+class TestFullPipelineNaming:
+    def test_gguf_named_after_model_not_checkpoint_dir(self, tiny_llama, tmp_path):
+        with patch("llm_surgeon.export.to_gguf") as mock_gguf:
+            mock_gguf.return_value = str(tmp_path / "x.gguf")
+            full_pipeline(
+                tiny_llama, "my-model", "Q4_K_M", str(tmp_path), register=False
+            )
+        assert mock_gguf.call_args.kwargs["model_name"] == "my-model"
+        assert mock_gguf.call_args.kwargs["quantization"] == "Q4_K_M"
+
+    def test_ollama_style_name_is_one_path_component(self, tiny_llama, tmp_path):
+        with patch("llm_surgeon.export.to_gguf") as mock_gguf:
+            mock_gguf.return_value = str(tmp_path / "x.gguf")
+            with patch("llm_surgeon.export.register_ollama") as mock_reg:
+                result = full_pipeline(
+                    tiny_llama, "user/model:tag", None, str(tmp_path), register=True
+                )
+        ckpt = Path(result["checkpoint_path"])
+        assert ckpt == tmp_path / "user_model_tag" / "checkpoint"
+        assert mock_gguf.call_args.kwargs["model_name"] == "user_model_tag"
+        # Ollama still gets the name as given.
+        assert mock_reg.call_args[0][1] == "user/model:tag"
+
+    def test_end_to_end_with_fake_llama_cpp(self, tiny_llama, llama_cpp_dir, tmp_path):
+        del llama_cpp_dir
+        with patch("subprocess.run", FakeRun()):
+            result = full_pipeline(
+                tiny_llama, "tiny", "Q4_K_M", str(tmp_path), register=False
+            )
+        assert result["gguf_path"] == str(
+            tmp_path / "tiny" / "gguf" / "tiny-Q4_K_M.gguf"
+        )
+        assert os.path.exists(result["gguf_path"])
+        assert result["registered"] is False
 
 
+class TestSaveCheckpointShape:
+    def test_wrapped_model_raises_type_error(self, tiny_llama, tmp_path):
+        wrapper = types.SimpleNamespace(module=tiny_llama, config=tiny_llama.config)
+        with pytest.raises(TypeError, match="model.model.layers"):
+            save_checkpoint(wrapper, str(tmp_path / "ckpt"))
+
+    def test_uses_export_module(self):
+        # Guard against the tests above silently importing another copy.
+        assert export.__file__.endswith(os.path.join("llm_surgeon", "export.py"))

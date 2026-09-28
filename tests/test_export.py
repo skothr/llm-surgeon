@@ -215,7 +215,7 @@ class TestRegisterOllama:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             with patch("llm_surgeon.export._verify_ollama_registration", return_value=True):
                 register_ollama(gguf, "test-model")
-        modelfiles = list(Path(tmp_path).rglob("Modelfile*"))
+        modelfiles = list(Path(tmp_path).rglob("*Modelfile"))
         assert len(modelfiles) > 0
 
     def test_calls_ollama_create(self, tmp_path):

@@ -1,7 +1,20 @@
-"""Export pipeline: HF checkpoint → GGUF → Ollama registration."""
+"""Export pipeline: HF checkpoint → GGUF → Ollama registration.
 
-import json
+There are two HF → GGUF paths in this package:
+
+- ``to_gguf`` (here) shells out to an external llama.cpp checkout
+  (convert_hf_to_gguf.py, then llama-quantize). It supports every
+  quantization type llama.cpp does and the tokenizers its converter knows.
+  ``full_pipeline`` uses this path.
+- ``gguf_writer.export_hf_to_gguf`` writes the GGUF in-process with the
+  ``gguf`` package: no llama.cpp checkout needed, unquantized output only,
+  and its own tokenizer and rope_theta handling.
+
+They share no code; a fix to one does not reach the other.
+"""
+
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -29,13 +42,23 @@ def _resolve_llama_cpp_path(llama_cpp_path: str | None) -> str:
 def save_checkpoint(model, output_dir: str, tokenizer=None) -> str:
     """Save a HuggingFace checkpoint to output_dir.
 
-    Verifies that the saved config.json reflects the actual number of layers.
+    Checks that config.num_hidden_layers matches the model's actual layer
+    count before saving, since layer surgery can leave them out of sync.
     Optionally saves a tokenizer alongside the model.
 
     Returns output_dir.
-    Raises ValueError if config.num_hidden_layers doesn't match actual layers.
+    Raises TypeError if the model is not LLaMA-shaped (``model.model.layers``),
+    e.g. a PEFT or DataParallel wrapper; ValueError if
+    config.num_hidden_layers doesn't match the actual layers.
     """
-    actual_layers = len(model.model.layers)
+    layers = getattr(getattr(model, "model", None), "layers", None)
+    if layers is None:
+        raise TypeError(
+            f"save_checkpoint expects a LLaMA-style causal LM with "
+            f"`model.model.layers`; got {type(model).__name__}. Unwrap PEFT / "
+            f"DataParallel wrappers before saving."
+        )
+    actual_layers = len(layers)
     config_layers = model.config.num_hidden_layers
 
     if actual_layers != config_layers:
@@ -50,18 +73,6 @@ def save_checkpoint(model, output_dir: str, tokenizer=None) -> str:
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
 
-    # Verify the written config is consistent
-    config_path = os.path.join(output_dir, "config.json")
-    with open(config_path) as f:
-        saved_cfg = json.load(f)
-
-    saved_layers = saved_cfg.get("num_hidden_layers")
-    if saved_layers != actual_layers:
-        raise ValueError(
-            f"num_hidden_layers mismatch in saved config.json: "
-            f"expected={actual_layers}, found={saved_layers}"
-        )
-
     return output_dir
 
 
@@ -70,6 +81,7 @@ def to_gguf(
     output_dir: str,
     quantization: str | None = "Q4_K_M",
     llama_cpp_path: str | None = None,
+    model_name: str | None = None,
 ) -> str:
     """Convert an HF checkpoint to GGUF format.
 
@@ -86,6 +98,8 @@ def to_gguf(
         llama_cpp_path: Override the llama.cpp installation directory.
                         Defaults to the LLAMA_CPP_PATH env var; one of the two
                         is required.
+        model_name: Stem of the output file name ("<model_name>-<quant>.gguf").
+                    Defaults to the checkpoint directory's name.
 
     Returns:
         Absolute path to the final GGUF file.
@@ -111,8 +125,8 @@ def to_gguf(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Derive a base name from the checkpoint directory
-    model_name = Path(checkpoint_path).name
+    if model_name is None:
+        model_name = Path(checkpoint_path).name
     f16_gguf = os.path.join(output_dir, f"{model_name}-F16.gguf")
 
     # Step 1: convert to f16 GGUF
@@ -226,8 +240,9 @@ def _verify_ollama_registration(name: str) -> bool:
 def register_ollama(gguf_path: str, name: str) -> None:
     """Register a GGUF model with Ollama.
 
-    Generates a Modelfile, writes it alongside the GGUF, then runs
-    `ollama create <name> -f <modelfile>`.
+    Generates a Modelfile, writes it alongside the GGUF as
+    "<gguf stem>.Modelfile" (so GGUFs sharing a directory don't overwrite
+    each other's), then runs `ollama create <name> -f <modelfile>`.
 
     Raises:
         FileNotFoundError: If gguf_path does not exist.
@@ -238,8 +253,9 @@ def register_ollama(gguf_path: str, name: str) -> None:
 
     modelfile_content = _generate_modelfile(gguf_path)
 
-    # Write the Modelfile next to the GGUF
-    modelfile_path = os.path.join(os.path.dirname(os.path.abspath(gguf_path)), "Modelfile")
+    # Write the Modelfile next to the GGUF, named after it
+    abs_gguf = os.path.abspath(gguf_path)
+    modelfile_path = os.path.splitext(abs_gguf)[0] + ".Modelfile"
     with open(modelfile_path, "w") as f:
         f.write(modelfile_content)
 
@@ -259,6 +275,14 @@ def register_ollama(gguf_path: str, name: str) -> None:
         )
 
 
+def _path_stem(name: str) -> str:
+    """`name` made safe as a single file/directory name component."""
+    stem = re.sub(r"[^A-Za-z0-9._-]", "_", name).strip(".")
+    if not stem:
+        raise ValueError(f"model name {name!r} has no usable characters for a path")
+    return stem
+
+
 def full_pipeline(
     model,
     name: str,
@@ -270,18 +294,23 @@ def full_pipeline(
     """Run the complete export pipeline.
 
     Steps:
-      1. save_checkpoint  → <output_dir>/<name>/checkpoint/
-      2. to_gguf          → <output_dir>/<name>/gguf/
-      3. register_ollama  → optional
+      1. save_checkpoint  → <output_dir>/<stem>/checkpoint/
+      2. to_gguf          → <output_dir>/<stem>/gguf/<stem>-<quant>.gguf
+      3. register_ollama  → optional, as `name`
+
+    ``stem`` is ``name`` with every character outside [A-Za-z0-9._-]
+    replaced by "_", so an Ollama name such as "user/model:tag" stays one
+    path component.
 
     Returns:
         dict with keys: checkpoint_path, gguf_path, registered
     """
-    checkpoint_path = os.path.join(output_dir, name, "checkpoint")
-    gguf_dir = os.path.join(output_dir, name, "gguf")
+    stem = _path_stem(name)
+    checkpoint_path = os.path.join(output_dir, stem, "checkpoint")
+    gguf_dir = os.path.join(output_dir, stem, "gguf")
 
     save_checkpoint(model, checkpoint_path, tokenizer=tokenizer)
-    gguf_path = to_gguf(checkpoint_path, gguf_dir, quantization=quantization)
+    gguf_path = to_gguf(checkpoint_path, gguf_dir, quantization=quantization, model_name=stem)
 
     registered = False
     if register:

@@ -380,7 +380,7 @@ def swap_heads(model, layer: int, h1: int, h2: int) -> SurgeryLog:
 
 
 def zero_mlp(model, layer: int) -> SurgeryLog:
-    """Zero out a layer's MLP by zeroing down_proj weights.
+    """Zero out a layer's MLP by zeroing down_proj's weight and bias (if any).
 
     The MLP still exists structurally but contributes nothing to the
     residual stream (the residual connection passes through unchanged).
@@ -388,14 +388,17 @@ def zero_mlp(model, layer: int) -> SurgeryLog:
     num_layers = len(model.model.layers)
     if layer < 0 or layer >= num_layers:
         raise IndexError(f"Layer index {layer} out of range [0, {num_layers - 1}]")
-    down = _require_dense_weight(model.model.layers[layer].mlp.down_proj, "zero_mlp")
+    down_proj = model.model.layers[layer].mlp.down_proj
+    down = _require_dense_weight(down_proj, "zero_mlp")
     with torch.no_grad():
         down.zero_()
+        if down_proj.bias is not None:
+            down_proj.bias.data.zero_()
     return SurgeryLog.inplace(model, "zero_mlp", f"Zeroed MLP in layer {layer}")
 
 
 def zero_attention(model, layer: int) -> SurgeryLog:
-    """Zero out a layer's entire attention by zeroing o_proj weights.
+    """Zero out a layer's entire attention by zeroing o_proj's weight and bias (if any).
 
     The attention module still exists structurally but contributes nothing
     to the residual stream.
@@ -403,9 +406,12 @@ def zero_attention(model, layer: int) -> SurgeryLog:
     num_layers = len(model.model.layers)
     if layer < 0 or layer >= num_layers:
         raise IndexError(f"Layer index {layer} out of range [0, {num_layers - 1}]")
-    o = _require_dense_weight(model.model.layers[layer].self_attn.o_proj, "zero_attention")
+    o_proj = model.model.layers[layer].self_attn.o_proj
+    o = _require_dense_weight(o_proj, "zero_attention")
     with torch.no_grad():
         o.zero_()
+        if o_proj.bias is not None:
+            o_proj.bias.data.zero_()
     return SurgeryLog.inplace(model, "zero_attention", f"Zeroed attention in layer {layer}")
 
 

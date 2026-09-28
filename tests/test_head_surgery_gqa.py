@@ -8,7 +8,13 @@ import pytest
 import torch
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from llm_surgeon.surgery import scale_heads, swap_heads, zero_heads
+from llm_surgeon.surgery import (
+    scale_heads,
+    swap_heads,
+    zero_attention,
+    zero_heads,
+    zero_mlp,
+)
 
 HEAD_DIM = 16  # != hidden_size // num_attention_heads (32 // 4 == 8)
 
@@ -99,6 +105,24 @@ class TestSwapHeadsMHA:
         before = _logits(tiny_llama)
         swap_heads(tiny_llama, layer=0, h1=0, h2=3)
         assert torch.allclose(_logits(tiny_llama), before, atol=1e-5)
+
+
+class TestZeroBlocksWithBias:
+    """attention_bias / mlp_bias add a constant after the zeroed weight."""
+
+    def test_zero_mlp_output_is_zero(self, gqa_llama):
+        zero_mlp(gqa_llama, 0)
+        mlp = gqa_llama.model.layers[0].mlp
+        with torch.no_grad():
+            out = mlp(torch.randn(1, 5, 32))
+        assert torch.all(out == 0)
+
+    def test_zero_attention_o_proj_output_is_zero(self, gqa_llama):
+        zero_attention(gqa_llama, 0)
+        o_proj = gqa_llama.model.layers[0].self_attn.o_proj
+        with torch.no_grad():
+            out = o_proj(torch.randn(1, 5, 4 * HEAD_DIM))
+        assert torch.all(out == 0)
 
 
 class TestDuplicateHeads:

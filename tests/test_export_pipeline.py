@@ -14,6 +14,9 @@ import pytest
 
 from llm_surgeon import export
 from llm_surgeon.export import (
+    _ollama_base_url,
+    _verify_ollama_registration,
+    register_ollama,
     to_gguf,
 )
 
@@ -134,10 +137,71 @@ def _fake_tags(*names: str):
     return get, seen
 
 
+class TestVerifyOllamaRegistration:
+    def test_prefix_or_substring_match_is_not_registration(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        get, _ = _fake_tags("foo-old:latest", "myfoo:latest")
+        with patch("requests.get", get):
+            assert _verify_ollama_registration("foo") is False
+
+    def test_untagged_name_matches_latest(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        get, _ = _fake_tags("foo:latest")
+        with patch("requests.get", get):
+            assert _verify_ollama_registration("foo") is True
+
+    def test_tag_must_match(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        get, _ = _fake_tags("foo:latest")
+        with patch("requests.get", get):
+            assert _verify_ollama_registration("foo:q4") is False
+
+    def test_queries_ollama_host(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_HOST", "10.1.2.3:9999")
+        get, seen = _fake_tags("foo:latest")
+        with patch("requests.get", get):
+            assert _verify_ollama_registration("foo") is True
+        assert seen == ["http://10.1.2.3:9999/api/tags"]
 
 
+class TestOllamaBaseUrl:
+    @pytest.mark.parametrize(
+        ("host", "url"),
+        [
+            (None, "http://127.0.0.1:11434"),
+            ("", "http://127.0.0.1:11434"),
+            ("0.0.0.0", "http://0.0.0.0:11434"),
+            ("example.com:8080", "http://example.com:8080"),
+            ("http://example.com", "http://example.com:80"),
+            ("https://example.com", "https://example.com:443"),
+            ("https://example.com:8443/ollama/", "https://example.com:8443/ollama"),
+            ("[::1]:11500", "http://[::1]:11500"),
+        ],
+    )
+    def test_parses_like_ollama(self, monkeypatch, host, url):
+        if host is None:
+            monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        else:
+            monkeypatch.setenv("OLLAMA_HOST", host)
+        assert _ollama_base_url() == url
 
 
+class TestRegisterOllamaFiles:
+    def _register(self, gguf: Path, name: str, verified: bool = True):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            with patch(
+                "llm_surgeon.export._verify_ollama_registration", return_value=verified
+            ):
+                register_ollama(str(gguf), name)
+        return mock_run.call_args[0][0]
+
+
+    def test_unverified_registration_raises(self, tmp_path):
+        gguf = tmp_path / "m.gguf"
+        gguf.touch()
+        with pytest.raises(RuntimeError, match="not listed by the Ollama API"):
+            self._register(gguf, "m", verified=False)
 
 
 # ---------------------------------------------------------------------------

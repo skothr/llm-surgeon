@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 def _resolve_llama_cpp_path(llama_cpp_path: str | None) -> str:
@@ -165,22 +166,61 @@ def _generate_modelfile(gguf_path: str) -> str:
     return f"FROM {abs_path}\n"
 
 
-def _verify_ollama_registration(name: str) -> bool:
-    """Check that a model named `name` appears in Ollama's model list.
+def _ollama_base_url() -> str:
+    """Base URL of the Ollama daemon, read from OLLAMA_HOST as `ollama` does.
 
-    Returns False on connection errors (Ollama not running). Other failures
-    (malformed JSON, unexpected schema) are surfaced — they indicate a real
-    problem rather than a missing daemon.
+    Accepts "host", "host:port" or "scheme://host[:port]"; the default port
+    is 11434 without a scheme, and the scheme's own port (80/443) with one.
+    """
+    raw = os.environ.get("OLLAMA_HOST", "").strip()
+    scheme, sep, hostport = raw.partition("://")
+    default_port = "11434"
+    if not sep:
+        scheme, hostport = "http", raw
+    elif scheme == "http":
+        default_port = "80"
+    elif scheme == "https":
+        default_port = "443"
+    hostport, _, path = hostport.partition("/")
+    parsed = urlsplit(f"//{hostport}")
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    host = parsed.hostname or "127.0.0.1"
+    if ":" in host:  # IPv6 literal
+        host = f"[{host}]"
+    base = f"{scheme}://{host}:{port or default_port}"
+    return f"{base}/{path}".rstrip("/") if path else base
+
+
+def _ollama_model_ref(name: str) -> str:
+    """Canonical Ollama model reference: `name` with ":latest" if untagged."""
+    return name if ":" in name.rsplit("/", 1)[-1] else f"{name}:latest"
+
+
+def _verify_ollama_registration(name: str) -> bool:
+    """Check that the model `name` is in the Ollama daemon's model list.
+
+    Names are compared exactly after tag normalization ("foo" == "foo:latest"),
+    so an existing "foo-old" or "myfoo" does not count as "foo". Returns False
+    on connection errors (Ollama not running). Other failures (malformed JSON,
+    unexpected schema) are surfaced; they indicate a real problem rather than
+    a missing daemon.
     """
     import requests
     try:
-        r = requests.get("http://localhost:11434/api/tags", timeout=5)
+        r = requests.get(f"{_ollama_base_url()}/api/tags", timeout=5)
     except requests.RequestException:
         return False
     if r.status_code != 200:
         return False
     models = r.json().get("models", [])
-    return any(name in m.get("name", "") for m in models)
+    want = _ollama_model_ref(name)
+    return any(
+        want in (_ollama_model_ref(m.get("name", "")), _ollama_model_ref(m.get("model", "")))
+        for m in models
+    )
 
 
 def register_ollama(gguf_path: str, name: str) -> None:
@@ -213,8 +253,9 @@ def register_ollama(gguf_path: str, name: str) -> None:
 
     if not _verify_ollama_registration(name):
         raise RuntimeError(
-            f"ollama create exited 0 but model '{name}' is not listed by "
-            f"`ollama list` — registration did not take effect."
+            f"ollama create exited 0 but model '{name}' is not listed by the "
+            f"Ollama API at {_ollama_base_url()}/api/tags — registration did "
+            f"not take effect."
         )
 
 

@@ -194,6 +194,12 @@ class TestKeepLayers:
         with pytest.raises(IndexError):
             keep_layers(tiny_llama, [0, 99])
 
+    def test_duplicate_index_raises(self, tiny_llama):
+        """A repeated index would alias one module (and one KV slot) at two positions."""
+        with pytest.raises(ValueError, match="Duplicate"):
+            keep_layers(tiny_llama, [0, 0, 1])
+        assert len(tiny_llama.model.layers) == 8
+
     def test_model_still_runs(self, tiny_llama):
         keep_layers(tiny_llama, [0, 3, 7])
         input_ids = torch.randint(0, 64, (1, 10))

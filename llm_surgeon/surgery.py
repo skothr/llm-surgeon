@@ -149,9 +149,20 @@ def remove_layers(model, layer_indices: list[int]) -> SurgeryLog:
 
 
 def keep_layers(model, layer_indices: list[int]) -> SurgeryLog:
-    """Keep only the layers at the specified indices, remove all others."""
+    """Keep only the layers at the specified indices, remove all others.
+
+    Indices may be reordered but not repeated: a repeated index would put one
+    module object at two positions sharing one KV-cache slot and one set of
+    weights. Use :func:`duplicate_layer` to repeat a layer.
+    """
     layers = model.model.layers
     num_before = len(layers)
+
+    if len(set(layer_indices)) != len(layer_indices):
+        dupes = sorted({i for i in layer_indices if layer_indices.count(i) > 1})
+        raise ValueError(
+            f"Duplicate layer indices in keep_layers: {dupes} (use duplicate_layer to repeat a layer)"
+        )
 
     for idx in layer_indices:
         if idx < 0 or idx >= num_before:

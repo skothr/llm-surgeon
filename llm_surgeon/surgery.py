@@ -637,14 +637,27 @@ def _is_ollama_id(model_id: str) -> bool:
     return "/" not in model_id and not os.path.isdir(model_id)
 
 
+def _require_bitsandbytes(mode: str):
+    """Import bitsandbytes for the nf4/int8 modes, or raise an actionable error."""
+    try:
+        import bitsandbytes
+    except ImportError as e:
+        raise ImportError(
+            f"load_model(mode={mode!r}) needs bitsandbytes, which is an optional "
+            "dependency. Install it with `pip install 'llm-surgeon[quant]'`, or use "
+            "a non-quantized mode (bf16, fp16, fp32, fp32-cpu)."
+        ) from e
+    return bitsandbytes
+
+
 def _quantize_in_place(model, bnb_config):
     """Quantize an in-memory model's Linear layers with BitsAndBytes.
 
     Wraps each nn.Linear weight as a BnB Params4bit/Int8Params, then moves
     to GPU (which triggers quantization). No disk round-trip needed.
     """
-    import bitsandbytes as bnb
     is_4bit = getattr(bnb_config, "load_in_4bit", False)
+    bnb = _require_bitsandbytes("nf4" if is_4bit else "int8")
     quant_type = getattr(bnb_config, "bnb_4bit_quant_type", "nf4")
     compute_dtype = getattr(bnb_config, "bnb_4bit_compute_dtype", torch.float16)
 
@@ -726,6 +739,8 @@ def load_model(
     mode = _MODE_ALIASES.get(mode, mode)
     if mode not in VALID_MODES:
         raise ValueError(f"Unknown mode: '{mode}'. Must be one of {sorted(VALID_MODES)}.")
+    if mode in ("nf4", "int8"):
+        _require_bitsandbytes(mode)
 
     # Try Ollama resolution for non-HF, non-local model IDs
     if _is_ollama_id(model_id):

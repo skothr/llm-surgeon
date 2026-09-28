@@ -164,8 +164,16 @@ def export_hf_to_gguf(model, tokenizer, output_path: Path) -> Path:
     Writes metadata, tokenizer, and all weights as F16 tensors using
     gguf.GGUFWriter. Q and K matrices are forward-permuted to match
     the layout llama.cpp expects.
+
+    Requires the optional ``gguf`` package (``pip install 'llm-surgeon[gguf]'``).
     """
-    import gguf
+    try:
+        import gguf
+    except ImportError as e:
+        raise ImportError(
+            "export_hf_to_gguf needs the `gguf` package, which is an optional "
+            "dependency. Install it with `pip install 'llm-surgeon[gguf]'`."
+        ) from e
 
     output_path = Path(output_path)
     config = model.config

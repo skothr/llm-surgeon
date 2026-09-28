@@ -43,7 +43,7 @@ jobs:
           --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 
       - name: pytest
-        run: .venv/bin/python -m pytest -q
+        run: .venv/bin/python -m pytest -q -rs
 
       - name: pyright
         run: .venv/bin/python -m pyright llm_surgeon tests

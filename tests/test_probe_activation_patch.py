@@ -1,5 +1,7 @@
 """Tests for probe.activation_patch — causal attribution via clean/corrupted counterfactual."""
 
+import itertools
+
 import pytest
 import torch
 
@@ -43,7 +45,7 @@ class TestMakePositionPatch:
 # ---------------------------------------------------------------------------
 
 class TestValidation:
-    """activation_patch input validation — fails fast, no model needed."""
+    """activation_patch input validation — fails fast, before any forward pass."""
 
     @pytest.fixture
     def tokenizer(self):
@@ -173,11 +175,11 @@ class TestActivationPatchLoop:
             corrupted_prompt="word20 word21 word22",
             on_cell=lambda L, sub, pos, cell: calls.append((L, sub, pos)),
         )
-        # First layer is 0. First sublayer is 'attn'. Positions increment.
-        assert calls[0][0] == 0
-        # Same-(L,sub) cells stream consecutively before advancing.
-        same_block = [c for c in calls[:3]]
-        assert all(c[0] == same_block[0][0] and c[1] == same_block[0][1] for c in same_block)
+        # Layer-major, attn before ffn within a layer, positions innermost.
+        expected = list(itertools.product(
+            range(len(tiny_llama.model.layers)), ("attn", "ffn"), range(3),
+        ))
+        assert calls == expected
 
     def test_direction_denoise_base_is_corrupted(self, tiny_llama, tokenizer, monkeypatch):
         # Spy on intervene() to confirm it was called with corrupted_prompt.
@@ -276,7 +278,7 @@ class TestActivationPatchLoop:
 
     def test_quantized_model_emits_warning(self, tiny_llama, tokenizer):
         from llm_surgeon.probe import activation_patch
-        tiny_llama.hf_quantizer = object()  # type: ignore[attr-defined]
+        setattr(tiny_llama, "hf_quantizer", object())
         try:
             with pytest.warns(RuntimeWarning, match="quantized"):
                 activation_patch(
@@ -285,7 +287,7 @@ class TestActivationPatchLoop:
                     corrupted_prompt="word20 word21",
                 )
         finally:
-            del tiny_llama.hf_quantizer  # type: ignore[attr-defined]
+            delattr(tiny_llama, "hf_quantizer")
 
 
 # ---------------------------------------------------------------------------
@@ -328,8 +330,10 @@ class TestActivationPatchIntegration:
             direction="denoise",
         )
 
+        seq_len = len(tokenizer("The capital of France is")["input_ids"])
         positions = {c["position"] for c in result.cells}
-        assert len(result.cells) == num_layers * 2 * len(positions)
+        assert positions == set(range(seq_len))
+        assert len(result.cells) == num_layers * 2 * seq_len
 
         clean_id = int(result.clean_baseline_logits.argmax().item())
         corr_id = int(result.corrupted_baseline_logits.argmax().item())

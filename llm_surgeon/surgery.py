@@ -322,6 +322,7 @@ def _require_dense_weight(module: nn.Module, op: str) -> torch.Tensor:
     columns there corrupts the weights instead of editing them, so raise.
     """
     weight = module.weight
+    assert isinstance(weight, torch.Tensor)
     if hasattr(weight, "quant_state") or hasattr(weight, "SCB") or not weight.is_floating_point():
         raise TypeError(
             f"{op}: {type(module).__name__} holds a quantized weight "

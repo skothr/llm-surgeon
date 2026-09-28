@@ -1,5 +1,6 @@
 """Quantitative evaluation: perplexity and downstream task benchmarks."""
 
+import itertools
 import json
 import math
 import os
@@ -66,6 +67,22 @@ def _group_by_fewshot(fewshot_map: dict[str, int]) -> list[tuple[int, list[str]]
 
 # Perplexity
 
+DEFAULT_PPL_WINDOW: int = 2048
+"""Default sliding-window length for :func:`perplexity`, in tokens.
+
+The window is ``min(max_position_embeddings, DEFAULT_PPL_WINDOW)`` unless the
+caller passes ``max_length``. Long-context configs (e.g. 131072 positions)
+would otherwise put the whole corpus in one forward pass.
+"""
+
+C4_DEFAULT_MAX_SAMPLES: int = 256
+"""Number of C4 validation documents read when ``max_samples`` is None.
+
+C4 is streamed; without a bound the whole validation split would be read
+into memory.
+"""
+
+
 def perplexity(
     model,
     tokenizer,
@@ -74,17 +91,28 @@ def perplexity(
     max_samples: int | None = None,
     stride: int | None = None,
     verbose: bool = False,
+    max_length: int | None = None,
 ) -> float:
     """Compute perplexity of *model* on the given text or dataset.
+
+    Every token after the first is scored exactly once. Each window of
+    *max_length* tokens scores only the tokens the previous window did not
+    reach, conditioned on up to ``max_length - 1`` tokens of context.
 
     Args:
         model: A HuggingFace ``CausalLM`` model (already loaded, in eval mode).
         tokenizer: Matching tokenizer.
         text: Raw text string to evaluate on.  Mutually exclusive with *dataset*.
         dataset: Dataset shorthand — ``"wikitext2"`` or ``"c4"``.
-        max_samples: Maximum number of dataset examples to concatenate.
-        stride: Sliding-window stride (tokens).  Defaults to
-            ``max_position_embeddings // 2``.
+        max_samples: Number of dataset rows to concatenate: raw wikitext-2
+            rows (blank rows included), or C4 documents (default
+            ``C4_DEFAULT_MAX_SAMPLES``).  None reads all of wikitext-2.
+        stride: Sliding-window stride (tokens), ``0 < stride < max_length``
+            (consecutive windows overlap so each window's first scored
+            token has context).
+            Defaults to ``max_length // 2``.
+        max_length: Window length (tokens).  Defaults to
+            ``min(max_position_embeddings, DEFAULT_PPL_WINDOW)``.
 
     Returns:
         Perplexity as a ``float``.
@@ -108,6 +136,20 @@ def perplexity(
                 stacklevel=2,
             )
 
+    # ---- Sliding window parameters -----------------------------------------
+    if max_length is None:
+        max_pos = int(getattr(model.config, "max_position_embeddings", 512))
+        max_length = min(max_pos, DEFAULT_PPL_WINDOW)
+    if max_length < 2:
+        raise ValueError(f"max_length must be >= 2, got {max_length}.")
+    if stride is None:
+        stride = max_length // 2
+    if not 0 < stride < max_length:
+        raise ValueError(
+            f"stride must satisfy 0 < stride < max_length ({max_length}), "
+            f"got {stride}."
+        )
+
     # ---- Resolve text -------------------------------------------------------
     if dataset is not None:
         text = _load_dataset_text(dataset, max_samples=max_samples)
@@ -119,14 +161,11 @@ def perplexity(
     # doesn't warn about sequence length exceeding max_position_embeddings.
     _saved_max = tokenizer.model_max_length
     tokenizer.model_max_length = int(1e12)
-    encodings = tokenizer(text, return_tensors="pt")
-    tokenizer.model_max_length = _saved_max
+    try:
+        encodings = tokenizer(text, return_tensors="pt")
+    finally:
+        tokenizer.model_max_length = _saved_max
     input_ids = encodings.input_ids  # shape (1, seq_len)
-
-    # ---- Sliding window parameters -----------------------------------------
-    max_length: int = int(getattr(model.config, "max_position_embeddings", 512))
-    if stride is None:
-        stride = max_length // 2
 
     seq_len = input_ids.size(1)
     # Use get_input_embeddings() for portability across HF architectures
@@ -137,40 +176,35 @@ def perplexity(
     nlls = []
     n_scored = 0
     prev_end = 0
-    total_windows = (seq_len - 1) // stride + 1
+    if seq_len <= max_length:
+        total_windows = 1
+    else:
+        total_windows = math.ceil((seq_len - max_length) / stride) + 1
     window_idx = 0
+    loss_fct = nn.CrossEntropyLoss(reduction="sum")
 
     for begin in range(0, seq_len, stride):
         end = min(begin + max_length, seq_len)
-        target_begin = max(begin, prev_end)
-
+        # Score tokens [target_begin, end). Token 0 has no context, and
+        # tokens before prev_end were scored by an earlier window.
+        target_begin = max(begin + 1, prev_end)
         chunk = input_ids[:, begin:end].to(device)
-        target_len = end - target_begin
-
-        if target_len <= 0:
-            prev_end = end
-            continue
 
         with torch.no_grad():
-            outputs = model(chunk, labels=chunk)
+            outputs = model(chunk)
 
-        # NLL only over the non-overlapping suffix. Re-compute from logits
-        # because outputs.loss is averaged across the full chunk.
-        logits = outputs.logits  # (1, chunk_len, vocab)
-        shift_logits = logits[:, :-1, :].contiguous()
-        shift_labels = chunk[:, 1:].contiguous()
-
-        rel_start = target_begin - begin
-        sl = shift_logits[:, rel_start:, :]
-        lb = shift_labels[:, rel_start:]
+        # The output at chunk position j predicts token begin + j + 1, so
+        # the first scored token (target_begin) is predicted at j = rel_start.
+        rel_start = target_begin - begin - 1
+        sl = outputs.logits[:, rel_start:-1, :]  # (1, n_target, vocab)
+        lb = chunk[:, rel_start + 1:]
 
         scored = lb.numel()
+        prev_end = end
         if scored == 0:
-            prev_end = end
             continue
 
-        loss_fct = nn.CrossEntropyLoss(reduction="sum")
-        nll = loss_fct(sl.view(-1, sl.size(-1)), lb.view(-1))
+        nll = loss_fct(sl.reshape(-1, sl.size(-1)).float(), lb.reshape(-1))
         nlls.append(nll.item())
         n_scored += scored
         window_idx += 1
@@ -180,7 +214,6 @@ def perplexity(
             print(f"  [perplexity] window {window_idx}/{total_windows} "
                   f"({end}/{seq_len} tokens, running ppl: {running_ppl:.2f})")
 
-        prev_end = end
         if end == seq_len:
             break
 
@@ -192,27 +225,28 @@ def perplexity(
 
 
 def _load_dataset_text(name: str, max_samples: int | None = None) -> str:
-    """Load and concatenate text from a HuggingFace dataset."""
+    """Load and concatenate text from a HuggingFace dataset.
+
+    wikitext2 follows the reference recipe, ``"\\n\\n".join(test["text"])``
+    over the raw rows (blank rows included), so the result is comparable
+    with published wikitext-2 perplexities; *max_samples* keeps the first N
+    raw rows.  c4 reads the first *max_samples* validation documents
+    (``C4_DEFAULT_MAX_SAMPLES`` when None).
+    """
     from datasets import load_dataset
 
     if name == "wikitext2":
         ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
-        texts = ds["text"]
-    elif name == "c4":
+        rows = list(ds["text"])
+        if max_samples is not None:
+            rows = rows[:max_samples]
+        return "\n\n".join(rows)
+    if name == "c4":
         ds = load_dataset("allenai/c4", "en", split="validation", streaming=True)
-        texts = (ex["text"] for ex in ds)
-    else:
-        raise ValueError(f"Unknown dataset: '{name}'. Supported: 'wikitext2', 'c4'.")
-
-    if max_samples is not None:
-        collected = []
-        for i, t in enumerate(texts):
-            if i >= max_samples:
-                break
-            collected.append(t)
-        texts = collected
-
-    return "\n\n".join(t for t in texts if t and t.strip())
+        n = C4_DEFAULT_MAX_SAMPLES if max_samples is None else max_samples
+        docs = (ex["text"] for ex in itertools.islice(ds, n))
+        return "\n\n".join(t for t in docs if t and t.strip())
+    raise ValueError(f"Unknown dataset: '{name}'. Supported: 'wikitext2', 'c4'.")
 
 
 # Downstream evaluation via lm-evaluation-harness

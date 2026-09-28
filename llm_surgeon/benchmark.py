@@ -9,10 +9,13 @@ import subprocess
 import sys
 import tempfile
 import warnings
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn as nn
+
+if TYPE_CHECKING:
+    from llm_surgeon.tracking import Experiment
 
 
 # Downstream-eval defaults and helpers
@@ -26,6 +29,19 @@ PAPER_STANDARD_FEWSHOT: dict[str, int] = {
     "mmlu": 5,
 }
 
+PRIMARY_METRIC: dict[str, str] = {
+    "hellaswag": "acc_norm",
+    "arc_easy": "acc_norm",
+    "arc_challenge": "acc_norm",
+    "mmlu": "acc",
+}
+"""Metric reported per task by eval_downstream / eval_and_log.
+
+Length-normalised accuracy for the multiple-choice completion tasks, as in
+the Open LLM Leaderboard settings that PAPER_STANDARD_FEWSHOT follows.
+Tasks not listed report ``acc``.
+"""
+
 
 def _resolve_fewshot(
     tasks: list[str],
@@ -38,6 +54,8 @@ def _resolve_fewshot(
     dict -> specified tasks use the dict value; unspecified fall back to
             PAPER_STANDARD_FEWSHOT (then 0).
     """
+    if isinstance(num_fewshot, bool):
+        raise TypeError("num_fewshot must be an int, a dict or None, not bool.")
     if num_fewshot is None:
         return {t: PAPER_STANDARD_FEWSHOT.get(t, 0) for t in tasks}
     if isinstance(num_fewshot, int):
@@ -57,7 +75,7 @@ def _group_by_fewshot(fewshot_map: dict[str, int]) -> list[tuple[int, list[str]]
 
     Returns a sorted list of (count, [task, ...]) pairs. Ordering is
     deterministic: ascending by count, then by task name inside each group.
-    This lets _in_process_eval call simple_evaluate once per unique count.
+    Both harness paths run one lm_eval call per unique count.
     """
     buckets: dict[int, list[str]] = {}
     for task, n in fewshot_map.items():
@@ -266,8 +284,39 @@ def eval_downstream(
 
     - ``model_path=...`` -> shells out to ``lm_eval`` CLI (legacy path).
     - ``model=..., tokenizer=...`` -> runs in-process via ``HFLM`` (new).
+
+    Both paths resolve *num_fewshot* the same way (see ``_resolve_fewshot``):
+    None uses ``PAPER_STANDARD_FEWSHOT`` per task, an int applies to every
+    task, and a dict overrides per task.  Tasks with different counts run
+    as separate harness calls.
+
+    Returns:
+        ``{task: score}`` using each task's primary metric from
+        ``PRIMARY_METRIC`` (``acc`` for tasks not listed there).
     """
-    # Validate model-source arguments.
+    if tasks is None:
+        tasks = list(FAST_TRIPLET)
+    full = _run_harness(
+        model_path=model_path, model=model, tokenizer=tokenizer,
+        tasks=tasks, num_fewshot=num_fewshot, limit=limit,
+    )
+    return _extract_accuracies(full, tasks)
+
+
+def _run_harness(
+    *,
+    model_path: str | None,
+    model: Any,
+    tokenizer: Any,
+    tasks: list[str],
+    num_fewshot: int | dict[str, int] | None,
+    limit: int | None,
+) -> dict[str, Any]:
+    """Validate the model source and run lm_eval on the chosen path.
+
+    Returns the merged harness output; ``full["effective_num_fewshot"]`` is
+    the per-task few-shot count that actually ran.
+    """
     if (model_path is None) == (model is None):
         raise ValueError(
             "Exactly one of model_path or model must be provided."
@@ -275,30 +324,33 @@ def eval_downstream(
     if model is not None and tokenizer is None:
         raise ValueError("tokenizer is required when model is provided.")
 
-    if tasks is None:
-        tasks = list(FAST_TRIPLET)
-
     if model is not None:
-        full_result = _in_process_eval(
+        return _in_process_eval(
             model=model, tokenizer=tokenizer,
             tasks=tasks, num_fewshot=num_fewshot, limit=limit,
         )
-        return _extract_accuracies(full_result, tasks)
-
-    # Subprocess path (legacy).
-    if isinstance(num_fewshot, dict):
-        raise ValueError(
-            "Dict num_fewshot is only supported with in-memory model; "
-            "pass an int or None for the model_path subprocess path."
-        )
-    effective_nf = num_fewshot if num_fewshot is not None else 0
     assert model_path is not None
-    return _subprocess_eval(
-        model_path=model_path,
-        tasks=tasks,
-        num_fewshot=effective_nf,
-        limit=limit,
+    return _subprocess_eval_grouped(
+        model_path=model_path, tasks=tasks,
+        num_fewshot=num_fewshot, limit=limit,
     )
+
+
+def _merge_harness_outputs(partials: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge the outputs of several harness calls (one per few-shot group).
+
+    Dict-valued top-level keys (``results``, ``versions``, ``n-shot``,
+    ``configs``, ``higher_is_better``, ...) are merged across groups.  The
+    run-level ``config`` and other non-dict values come from the first group.
+    """
+    merged: dict[str, Any] = {"results": {}}
+    for partial in partials:
+        for key, value in partial.items():
+            if key == "config" or not isinstance(value, dict):
+                merged.setdefault(key, value)
+            else:
+                merged.setdefault(key, {}).update(value)
+    return merged
 
 
 def _subprocess_eval_full(
@@ -308,11 +360,7 @@ def _subprocess_eval_full(
     num_fewshot: int,
     limit: int | None,
 ) -> dict[str, Any]:
-    """Shell out to ``lm_eval`` CLI and return the full output dict.
-
-    Core subprocess path; both `_subprocess_eval` (narrowed) and
-    `eval_and_log`'s subprocess branch build on this.
-    """
+    """Shell out to ``lm_eval`` CLI once and return the full output dict."""
     tasks_str = ",".join(tasks)
     with tempfile.TemporaryDirectory() as tmpdir:
         cmd = [
@@ -342,19 +390,25 @@ def _subprocess_eval_full(
         return _find_and_parse_results(tmpdir)
 
 
-def _subprocess_eval(
+def _subprocess_eval_grouped(
     *,
     model_path: str,
     tasks: list[str],
-    num_fewshot: int,
+    num_fewshot: int | dict[str, int] | None,
     limit: int | None,
-) -> dict[str, float]:
-    """Narrowed-output subprocess path — delegates to `_subprocess_eval_full`."""
-    results_data = _subprocess_eval_full(
-        model_path=model_path, tasks=tasks,
-        num_fewshot=num_fewshot, limit=limit,
-    )
-    return _extract_accuracies(results_data, tasks)
+) -> dict[str, Any]:
+    """Run the ``lm_eval`` CLI once per few-shot group and merge the outputs."""
+    fewshot_map = _resolve_fewshot(tasks, num_fewshot)
+    partials = [
+        _subprocess_eval_full(
+            model_path=model_path, tasks=group,
+            num_fewshot=n, limit=limit,
+        )
+        for n, group in _group_by_fewshot(fewshot_map)
+    ]
+    merged = _merge_harness_outputs(partials)
+    merged["effective_num_fewshot"] = fewshot_map
+    return merged
 
 
 def _in_process_eval(
@@ -381,31 +435,33 @@ def _in_process_eval(
     lm = HFLM(pretrained=model, tokenizer=tokenizer)  # pyright: ignore[reportCallIssue]
     fewshot_map = _resolve_fewshot(tasks, num_fewshot)
 
-    merged: dict[str, Any] = {"results": {}, "config": None}
+    partials: list[dict[str, Any]] = []
     for n, group in _group_by_fewshot(fewshot_map):
         # pyright resolves simple_evaluate through lm_eval's lazy __getattr__
         # and can't see the real signature — runtime call is correct.
         partial: Any = simple_evaluate(model=lm, tasks=group, num_fewshot=n, limit=limit)  # pyright: ignore[reportCallIssue, reportArgumentType]
-        merged["results"].update(partial["results"])
-        if merged["config"] is None:
-            merged["config"] = partial.get("config", {})
+        partials.append(partial)
+    merged = _merge_harness_outputs(partials)
     merged["effective_num_fewshot"] = fewshot_map
     return merged
 
 
 def _serialize_harness_metrics(task_result: dict[str, Any]) -> dict[str, float]:
-    """Flatten a single task's harness result into float-valued metrics."""
+    """Flatten a single task's harness result into float-valued metrics.
+
+    Keeps finite int/float values; drops strings, bools and NaN/inf.
+    """
     out: dict[str, float] = {}
     for k, v in task_result.items():
-        if isinstance(v, (int, float)) and not (
-            isinstance(v, float) and math.isnan(v)
-        ):
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            continue
+        if math.isfinite(v):
             out[k] = float(v)
     return out
 
 
 def eval_and_log(
-    experiment: Any,
+    experiment: "Experiment",
     *,
     model_path: str | None = None,
     model: Any = None,
@@ -414,33 +470,17 @@ def eval_and_log(
     num_fewshot: int | dict[str, int] | None = None,
     limit: int | None = None,
 ) -> dict[str, float]:
-    """Run eval_downstream and persist results to experiment tracking."""
-    if (model_path is None) == (model is None):
-        raise ValueError(
-            "Exactly one of model_path or model must be provided."
-        )
-    if model is not None and tokenizer is None:
-        raise ValueError("tokenizer is required when model is provided.")
+    """Run eval_downstream and persist results to experiment tracking.
 
+    The stored ``num_fewshot`` is the per-task count that actually ran.
+    """
     if tasks is None:
         tasks = list(FAST_TRIPLET)
 
-    if model is not None:
-        full = _in_process_eval(
-            model=model, tokenizer=tokenizer,
-            tasks=tasks, num_fewshot=num_fewshot, limit=limit,
-        )
-    else:
-        if isinstance(num_fewshot, dict):
-            raise ValueError(
-                "Dict num_fewshot is only supported with in-memory model."
-            )
-        effective_nf = num_fewshot if num_fewshot is not None else 0
-        assert model_path is not None
-        full = _subprocess_eval_full(
-            model_path=model_path, tasks=tasks,
-            num_fewshot=effective_nf, limit=limit,
-        )
+    full = _run_harness(
+        model_path=model_path, model=model, tokenizer=tokenizer,
+        tasks=tasks, num_fewshot=num_fewshot, limit=limit,
+    )
 
     for task in tasks:
         task_result = full.get("results", {}).get(task, {})
@@ -449,15 +489,11 @@ def eval_and_log(
             experiment.log_metric(f"harness.{task}.{metric_key}", value)
 
     from llm_surgeon.tracking import log_harness_result
-    if isinstance(num_fewshot, int):
-        nf_to_store: Any = num_fewshot
-    else:
-        nf_to_store = _resolve_fewshot(tasks, num_fewshot)
     log_harness_result(
         db_path=experiment.db_path,
         experiment_name=experiment.name,
         tasks=tasks,
-        num_fewshot=nf_to_store,
+        num_fewshot=full["effective_num_fewshot"],
         limit=limit,
         result=full,
     )
@@ -480,21 +516,27 @@ def _find_and_parse_results(output_dir: str) -> dict:
 
 
 def _extract_accuracies(data: dict, tasks: list[str]) -> dict[str, float]:
-    """Extract per-task accuracy from lm_eval JSON output."""
+    """Extract per-task primary-metric scores from lm_eval JSON output.
+
+    The metric for each task is ``PRIMARY_METRIC[task]`` (default ``acc``);
+    if the harness did not report it, the other of ``acc`` / ``acc_norm``
+    is used.
+    """
     results = data.get("results", {})
     out: dict[str, float] = {}
 
     for task in tasks:
         if task not in results:
-            # Try with comma-separated group fallback
             raise RuntimeError(
                 f"Task '{task}' not found in lm_eval results. "
                 f"Available keys: {list(results.keys())}"
             )
         task_data = results[task]
-        # lm_eval stores accuracy under different keys depending on the task
-        for key in ("acc,none", "acc_norm,none", "acc", "acc_norm"):
-            if key in task_data:
+        primary = PRIMARY_METRIC.get(task, "acc")
+        metrics = [primary] + [m for m in ("acc", "acc_norm") if m != primary]
+        for metric in metrics:
+            key = next((k for k in (f"{metric},none", metric) if k in task_data), None)
+            if key is not None:
                 out[task] = float(task_data[key])
                 break
         else:

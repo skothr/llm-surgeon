@@ -212,3 +212,177 @@ class TestLoadDatasetText:
         assert benchmark._load_dataset_text("wikitext2", max_samples=2) == (
             "\n\n".join(rows[:2])
         )
+
+
+# ---------------------------------------------------------------------------
+# Downstream eval: few-shot provenance and subprocess grouping
+# ---------------------------------------------------------------------------
+
+
+def _fake_subprocess(calls: list[dict[str, Any]]):
+    def fake(*, model_path, tasks, num_fewshot, limit):
+        calls.append({"tasks": list(tasks), "num_fewshot": num_fewshot})
+        return {
+            "results": {t: {"acc,none": 0.4, "acc_norm,none": 0.6} for t in tasks},
+            "versions": {t: 1.0 for t in tasks},
+            "n-shot": {t: num_fewshot for t in tasks},
+            "config": {"model": "hf", "call": len(calls)},
+        }
+
+    return fake
+
+
+class TestSubprocessFewshot:
+    def test_none_uses_paper_standard_like_in_process(self, monkeypatch):
+        calls: list[dict[str, Any]] = []
+        monkeypatch.setattr(benchmark, "_subprocess_eval_full", _fake_subprocess(calls))
+        benchmark.eval_downstream(
+            tasks=["hellaswag", "arc_challenge"],
+            model_path="/ckpt",
+        )
+        ran = {t: c["num_fewshot"] for c in calls for t in c["tasks"]}
+        assert ran == benchmark._resolve_fewshot(["hellaswag", "arc_challenge"], None)
+
+    def test_dict_fewshot_accepted(self, monkeypatch):
+        calls: list[dict[str, Any]] = []
+        monkeypatch.setattr(benchmark, "_subprocess_eval_full", _fake_subprocess(calls))
+        benchmark.eval_downstream(
+            tasks=["hellaswag", "arc_easy"],
+            model_path="/ckpt",
+            num_fewshot={"hellaswag": 3},
+        )
+        ran = {t: c["num_fewshot"] for c in calls for t in c["tasks"]}
+        assert ran == {"hellaswag": 3, "arc_easy": 0}
+
+    def test_eval_and_log_stores_counts_that_ran(self, monkeypatch, tmp_path):
+        from llm_surgeon.tracking import start
+
+        calls: list[dict[str, Any]] = []
+        monkeypatch.setattr(benchmark, "_subprocess_eval_full", _fake_subprocess(calls))
+        db = str(tmp_path / "t.db")
+        exp = start("sp", db_path=db)
+        benchmark.eval_and_log(
+            exp,
+            model_path="/ckpt",
+            tasks=["hellaswag", "arc_challenge"],
+        )
+        ran = {t: c["num_fewshot"] for c in calls for t in c["tasks"]}
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT num_fewshot, result_json FROM harness_results "
+            "WHERE experiment_name = 'sp'"
+        ).fetchone()
+        conn.close()
+        assert json.loads(row[0]) == ran
+        blob = json.loads(row[1])
+        # Every group's per-task metadata survives the merge.
+        assert set(blob["versions"]) == {"hellaswag", "arc_challenge"}
+        assert blob["n-shot"] == ran
+
+    def test_bool_fewshot_rejected(self):
+        with pytest.raises(TypeError):
+            benchmark._resolve_fewshot(["hellaswag"], True)
+
+
+class TestMergeGroups:
+    def test_in_process_merge_keeps_all_group_metadata(self, monkeypatch):
+        class _FakeHFLM:
+            def __init__(self, pretrained, tokenizer):
+                pass
+
+        def fake_simple_evaluate(**kwargs):
+            tasks = kwargs["tasks"]
+            return {
+                "results": {t: {"acc,none": 0.5} for t in tasks},
+                "versions": {t: 2 for t in tasks},
+                "configs": {t: {"num_fewshot": kwargs["num_fewshot"]} for t in tasks},
+                "n-shot": {t: kwargs["num_fewshot"] for t in tasks},
+                "config": {"model": "mock"},
+            }
+
+        monkeypatch.setattr("lm_eval.models.huggingface.HFLM", _FakeHFLM)
+        monkeypatch.setattr("lm_eval.simple_evaluate", fake_simple_evaluate)
+
+        class _M:
+            config = None
+
+        full = benchmark._in_process_eval(
+            model=_M(),
+            tokenizer=object(),
+            tasks=["hellaswag", "arc_challenge"],
+            num_fewshot=None,
+            limit=None,
+        )
+        assert set(full["versions"]) == {"hellaswag", "arc_challenge"}
+        assert set(full["configs"]) == {"hellaswag", "arc_challenge"}
+        assert full["n-shot"] == {"hellaswag": 0, "arc_challenge": 25}
+        assert full["config"] == {"model": "mock"}
+
+
+# ---------------------------------------------------------------------------
+# Result extraction and serialisation
+# ---------------------------------------------------------------------------
+
+
+class TestExtractAccuracies:
+    def test_acc_norm_for_hellaswag_and_arc(self):
+        data = {
+            "results": {
+                t: {"acc,none": 0.3, "acc_norm,none": 0.7}
+                for t in ("hellaswag", "arc_easy", "arc_challenge")
+            }
+        }
+        out = benchmark._extract_accuracies(
+            data, ["hellaswag", "arc_easy", "arc_challenge"]
+        )
+        assert out == {"hellaswag": 0.7, "arc_easy": 0.7, "arc_challenge": 0.7}
+
+    def test_acc_for_mmlu_and_unknown(self):
+        data = {
+            "results": {
+                "mmlu": {"acc,none": 0.3, "acc_norm,none": 0.7},
+                "piqa": {"acc,none": 0.4, "acc_norm,none": 0.8},
+            }
+        }
+        assert benchmark._extract_accuracies(data, ["mmlu", "piqa"]) == {
+            "mmlu": 0.3,
+            "piqa": 0.4,
+        }
+
+    def test_falls_back_when_primary_missing(self):
+        data = {"results": {"hellaswag": {"acc,none": 0.3}}}
+        assert benchmark._extract_accuracies(data, ["hellaswag"]) == {"hellaswag": 0.3}
+
+    def test_missing_task_raises(self):
+        with pytest.raises(RuntimeError, match="not found"):
+            benchmark._extract_accuracies({"results": {}}, ["hellaswag"])
+
+    def test_serialize_drops_bool_and_non_finite(self):
+        out = benchmark._serialize_harness_metrics(
+            {
+                "acc,none": 0.5,
+                "flag": True,
+                "n": 3,
+                "x": float("inf"),
+                "y": float("nan"),
+                "alias": "a",
+            }
+        )
+        assert out == {"acc,none": 0.5, "n": 3.0}
+
+
+class TestFindAndParseResults:
+    def test_finds_nested_results_json(self, tmp_path):
+        nested = tmp_path / "model__name"
+        nested.mkdir()
+        (nested / "results_2026-01-01T00-00-00.json").write_text(
+            json.dumps({"results": {"a": {"acc,none": 1.0}}})
+        )
+        (nested / "samples_a.jsonl").write_text("{}")
+        assert benchmark._find_and_parse_results(str(tmp_path))["results"]["a"] == {
+            "acc,none": 1.0,
+        }
+
+    def test_raises_when_absent(self, tmp_path):
+        with pytest.raises(RuntimeError, match="No results JSON"):
+            benchmark._find_and_parse_results(str(tmp_path))

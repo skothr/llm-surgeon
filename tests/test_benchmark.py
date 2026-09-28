@@ -156,7 +156,9 @@ class TestEvalDownstream:
 
     def test_invalid_task_raises_runtime_error(self, tiny_eval_checkpoint):
         """eval_downstream() raises RuntimeError for an unknown task name."""
-        with pytest.raises(RuntimeError):
+        # The task name must appear in lm_eval's error output, so a crash or
+        # network failure unrelated to task lookup does not satisfy the test.
+        with pytest.raises(RuntimeError, match="this_task_does_not_exist_xyz"):
             eval_downstream(
                 tasks=["this_task_does_not_exist_xyz"],
                 model_path=tiny_eval_checkpoint,

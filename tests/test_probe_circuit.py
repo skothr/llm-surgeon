@@ -359,86 +359,104 @@ class TestReverseBFSCorrectness:
     so we can prove the algorithm keeps/drops the right nodes without
     sensitivity to model internals."""
 
-    def test_disconnected_component_excluded(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Synthetic graph:
-        #   embed -> attn_in@1  (0.5)   <- path to logits
-        #   attn@1 -> logits    (0.5)   <- path to logits
-        #   ffn@0 -> ffn_in@1   (0.5)   <- NOT reachable from logits
-        # With tau=0.3, all clear tau. Circuit should include only the top two.
-        fake_edges = [
-            {"writer_layer": 0, "writer_unit": "embed",
-             "reader_layer": 1, "reader_unit": "attn_in", "position": 0, "ap_recovery": 0.5},
-            {"writer_layer": 1, "writer_unit": "attn.h0",
-             "reader_layer": 2, "reader_unit": "logits", "position": 0, "ap_recovery": 0.5},
-            {"writer_layer": 0, "writer_unit": "ffn",
-             "reader_layer": 1, "reader_unit": "ffn_in", "position": 0, "ap_recovery": 0.5},
-        ]
-        clean_logits = torch.zeros(2, 16)
-        corr_logits = torch.zeros(2, 16)
+    @staticmethod
+    def _edge(w_layer: int, w_unit: str, r_layer: int, r_unit: str, pos: int, eff: float) -> Dict[str, Any]:
+        return {"writer_layer": w_layer, "writer_unit": w_unit,
+                "reader_layer": r_layer, "reader_unit": r_unit, "position": pos,
+                "ap_recovery": eff, "ap_effect": eff}
 
+    def _run_fake(
+        self, monkeypatch: pytest.MonkeyPatch, edges: List[Dict[str, Any]], seq: int, tau: float,
+    ) -> PatchingResult:
         def fake_compute(*_args: Any, **_kwargs: Any) -> Tuple[Any, ...]:
             return (
-                list(fake_edges),
-                clean_logits, corr_logits,
-                ["a", "b"], ["c", "d"],
-                1,
+                [dict(e) for e in edges],
+                torch.zeros(seq, 16), torch.zeros(seq, 16),
+                ["a"] * seq, ["b"] * seq,
+                seq - 1,
                 2,
             )
-
         monkeypatch.setattr("llm_surgeon.probe._attribution._compute_all_edges", fake_compute)
-
         model, tok = _make_mock()
-        result = extract_circuit(
+        return extract_circuit(
             model, tok, "x y", "u v",
             correct_token_id=CORRECT_ID, incorrect_token_id=INCORRECT_ID,
-            tau=0.3, top_k_candidates=10,
+            tau=tau, top_k_candidates=100,
         )
+
+    def test_disconnected_component_excluded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # attn.h0@1 -> logits, and head 0 at layer 1 reads attn_in@1, which
+        # embed feeds: both edges are in-circuit. ffn_in@1 is read only by
+        # ffn@1, which reaches nothing, so ffn@0 -> ffn_in@1 is excluded.
+        e = self._edge
+        result = self._run_fake(monkeypatch, [
+            e(0, "embed", 1, "attn_in", 0, 0.5),
+            e(1, "attn.h0", 2, "logits", 0, 0.5),
+            e(0, "ffn", 1, "ffn_in", 0, 0.5),
+        ], seq=2, tau=0.3)
         by_key = {(c["writer_unit"], c["reader_unit"]): c for c in result.cells}
-        assert by_key[("embed", "attn_in")]["in_circuit"] is False  # attn_in@1 never reads into anything leading to logits
+        assert by_key[("embed", "attn_in")]["in_circuit"] is True
         assert by_key[("attn.h0", "logits")]["in_circuit"] is True
         assert by_key[("ffn", "ffn_in")]["in_circuit"] is False
-        # Nodes in circuit: (2, "logits", 0) + (1, "attn.h0", 0) = 2
-        assert result.n_nodes_in_circuit == 2
-        assert result.n_edges_in_circuit == 1
+        # logits@0, attn.h0@1, attn_in@1, embed
+        assert result.n_nodes_in_circuit == 4
+        assert result.n_edges_in_circuit == 2
 
-    def test_chain_reverse_reachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # embed -> attn_in@1 -> (attn.h0@1 -> ffn_in@1) -> (ffn@1 -> logits)
-        # Readers we care about connecting: attn_in@1, ffn_in@1, logits.
-        # But edges only go writer->reader; chain:
-        #   (embed -> attn_in@1): reader=attn_in@1, writer=embed
-        #   (attn.h0@1 -> ffn_in@1): reader=ffn_in@1, writer=(1,attn.h0)
-        #   (ffn@1 -> logits): reader=logits, writer=(1,ffn)
-        # With the reverse-BFS rules (only readers become queue nodes), the
-        # reader attn_in@1 is reachable only if SOME edge has attn_in@1 as its
-        # writer node — which never happens (readers and writers are disjoint
-        # in the Phase 3.7 edge shape). So embed->attn_in is NOT in-circuit.
-        # Keep the test honest: only assert on edges whose readers are
-        # directly logits or attainable via reader-writer node identity.
-        fake_edges = [
-            {"writer_layer": 1, "writer_unit": "attn.h0",
-             "reader_layer": 2, "reader_unit": "logits", "position": 0, "ap_recovery": 0.5},
-            {"writer_layer": 1, "writer_unit": "ffn",
-             "reader_layer": 2, "reader_unit": "logits", "position": 0, "ap_recovery": 0.5},
-        ]
-        def fake_compute(*_args: Any, **_kwargs: Any) -> Tuple[Any, ...]:
-            return (
-                list(fake_edges),
-                torch.zeros(1, 16), torch.zeros(1, 16),
-                ["a"], ["b"],
-                0,
-                2,
-            )
-        monkeypatch.setattr("llm_surgeon.probe._attribution._compute_all_edges", fake_compute)
+    def test_multi_hop_chain(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # embed -> attn_in@1 -> [attn.h0@1] -> ffn_in@1 -> [ffn@1] -> logits:
+        # three hops, each edge reached only through the one after it.
+        e = self._edge
+        result = self._run_fake(monkeypatch, [
+            e(0, "embed", 1, "attn_in", 0, 0.5),
+            e(1, "attn.h0", 1, "ffn_in", 0, 0.5),
+            e(1, "ffn", 2, "logits", 0, 0.5),
+        ], seq=1, tau=0.1)
+        assert all(c["in_circuit"] for c in result.cells)
+        # logits, ffn@1, ffn_in@1, attn.h0@1, attn_in@1, embed
+        assert result.n_nodes_in_circuit == 6
+        assert result.n_edges_in_circuit == 3
+
+    def test_chain_broken_by_tau(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Same chain with the middle edge under tau: only the last hop survives.
+        e = self._edge
+        result = self._run_fake(monkeypatch, [
+            e(0, "embed", 1, "attn_in", 0, 0.5),
+            e(1, "attn.h0", 1, "ffn_in", 0, 0.05),
+            e(1, "ffn", 2, "logits", 0, 0.5),
+        ], seq=1, tau=0.1)
+        by_key = {(c["writer_unit"], c["reader_unit"]): c["in_circuit"] for c in result.cells}
+        assert by_key == {("embed", "attn_in"): False, ("attn.h0", "ffn_in"): False, ("ffn", "logits"): True}
+
+    def test_attention_reads_earlier_positions_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # attn.h0@1 at position 1 reads attn_in@1 at positions 0 and 1; the
+        # same head at position 0 cannot read position 1.
+        e = self._edge
+        result = self._run_fake(monkeypatch, [
+            e(1, "attn.h0", 2, "logits", 1, 0.5),
+            e(0, "embed", 1, "attn_in", 0, 0.5),
+            e(1, "attn.h1", 2, "logits", 0, 0.5),
+            e(0, "ffn", 1, "attn_in", 1, 0.5),
+        ], seq=2, tau=0.1)
+        assert all(c["in_circuit"] for c in result.cells)
+
+        result = self._run_fake(monkeypatch, [
+            e(1, "attn.h1", 2, "logits", 0, 0.5),
+            e(0, "ffn", 1, "attn_in", 1, 0.5),
+        ], seq=2, tau=0.1)
+        by_key = {(c["writer_unit"], c["reader_unit"]): c["in_circuit"] for c in result.cells}
+        assert by_key == {("attn.h1", "logits"): True, ("ffn", "attn_in"): False}
+
+    def test_mock_circuit_reaches_past_logits(self) -> None:
+        """On a real edge graph with tau=0 the circuit includes edges into
+        attn_in / ffn_in readers, not only edges into logits."""
         model, tok = _make_mock()
         result = extract_circuit(
-            model, tok, "x", "y",
+            model, tok, CLEAN_PROMPT, CORR_PROMPT,
             correct_token_id=CORRECT_ID, incorrect_token_id=INCORRECT_ID,
-            tau=0.1, top_k_candidates=10,
+            tau=0.0, top_k_candidates=10_000,
         )
-        assert all(c["in_circuit"] for c in result.cells)
-        # Visited: logits@0, (1,attn.h0,0), (1,ffn,0) => 3 nodes
-        assert result.n_nodes_in_circuit == 3
-        assert result.n_edges_in_circuit == 2
+        assert result.n_edges_in_circuit == len(result.cells)
+        assert {c["reader_unit"] for c in result.cells if c["in_circuit"]} == {"attn_in", "ffn_in", "logits"}
 
 
 # -------------------------------------------------------------------------

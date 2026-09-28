@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Dict, Optional, Tuple
 
 import pytest
@@ -252,64 +253,81 @@ class TestEdgeAP:
             f"expected {expected_per_pos * seq_len}, got {result.n_edges}"
 
     def test_sum_invariant_mock(self) -> None:
-        """For any fixed reader and position, sum of edge APs ≈ node-level AP at that reader."""
+        """For each reader r and position, Σ over writers of the edge effect == Δr · grad_r / D.
+
+        With every layer targeted, each reader's pre-norm residual is the
+        embedding plus every causally-earlier writer's output, so the edge
+        scores into one reader must sum to that reader's node-level score.
+        The right-hand side is computed here from captures alone.
+        """
         torch.manual_seed(7)
         model = _MockModelFull(num_layers=2, d_model=8, vocab=10).eval()
-
-        class _Cfg:
-            num_attention_heads = 2
-            hidden_size = 8
-        model.config = _Cfg()  # type: ignore[attr-defined]
-
+        model.config = SimpleNamespace(num_attention_heads=2, hidden_size=8)  # type: ignore[attr-defined]
         tok = _MockTok()
         result = edge_attribution_patch(
             model, tok, "clean", "other",
             correct_token_id=1, incorrect_token_id=4,
-            top_k_edges=1000,
+            top_k_edges=10_000,
         )
-        # Group edge scores by (reader_layer, reader_unit, position)
+        assert result.n_edges == len(result.cells)
+
+        with torch.no_grad():
+            _, _, from_logits, _, _, from_readers, _ = _capture_residual_stream_with_grad(
+                model, tok, "clean", capture_reader_grads=True,
+            )
+        with torch.enable_grad():
+            _, _, base_logits, _, _, base_readers, _ = _capture_residual_stream_with_grad(
+                model, tok, "other", capture_reader_grads=True,
+            )
+            metric = base_logits[-1, 1] - base_logits[-1, 4]
+            keys = list(base_readers)
+            grads = dict(zip(keys, torch.autograd.grad(metric, [base_readers[k] for k in keys])))
+        denom = ((from_logits[-1, 1] - from_logits[-1, 4]) - (base_logits[-1, 1] - base_logits[-1, 4])).item()
+
         from collections import defaultdict
         sums: Dict[Tuple, float] = defaultdict(float)
         for cell in result.cells:
-            key = (cell["reader_layer"], cell["reader_unit"], cell["position"])
-            sums[key] += cell["ap_recovery"]
-        # Each reader sum must match the node-level AP at that reader.
-        for (rl, ru, pos), total in sums.items():
-            assert abs(total) < 10.0, f"reader ({rl},{ru}) pos={pos}: sum={total} looks out of range"
-        # At minimum, verify the set of sums is non-trivially populated.
-        assert len(sums) > 0
+            sums[(cell["reader_unit"], cell["reader_layer"], cell["position"])] += cell["ap_recovery"]
+        assert len(sums) == len(keys) * 3
+        for (ru, rl, pos), total in sums.items():
+            key = (ru, rl)
+            target = ((from_readers[key][0, pos] - base_readers[key][0, pos].detach()) * grads[key][0, pos]).sum().item() / denom
+            assert abs(total - target) < 1e-5, f"reader {key} pos={pos}: Σ edges={total}, node={target}"
 
     def test_per_head_decomposability_mock(self) -> None:
-        """For any reader r and writer layer L: Σ_h AP_edge((L,attn.hN)→r) == node attn AP (L→r) at 1e-5."""
+        """Σ_h edge effect (L attn.hN → r) == Δattn_out(L) · grad_r / D at 1e-5."""
         torch.manual_seed(13)
-        n_heads = 2
         model = _MockModelFull(num_layers=2, d_model=8, vocab=10).eval()
-
-        # Inject model config to make n_heads queryable
-        class _Cfg:
-            num_attention_heads = n_heads
-            hidden_size = 8
-        model.config = _Cfg()  # type: ignore[attr-defined]
-
+        model.config = SimpleNamespace(num_attention_heads=2, hidden_size=8)  # type: ignore[attr-defined]
         tok = _MockTok()
         result = edge_attribution_patch(
             model, tok, "clean", "other",
             correct_token_id=1, incorrect_token_id=4,
-            top_k_edges=1000,
+            top_k_edges=10_000,
         )
-        # Group: for each (writer_layer, reader_layer, reader_unit, position),
-        # sum AP across attn.hN writers.
+
+        with torch.no_grad():
+            from_cap, _, from_logits, _, _, _, _ = _capture_residual_stream_with_grad(model, tok, "clean")
+        with torch.enable_grad():
+            base_cap, _, base_logits, _, _, base_readers, _ = _capture_residual_stream_with_grad(
+                model, tok, "other", capture_reader_grads=True,
+            )
+            metric = base_logits[-1, 1] - base_logits[-1, 4]
+            keys = list(base_readers)
+            grads = dict(zip(keys, torch.autograd.grad(metric, [base_readers[k] for k in keys])))
+        denom = ((from_logits[-1, 1] - from_logits[-1, 4]) - (base_logits[-1, 1] - base_logits[-1, 4])).item()
+
         from collections import defaultdict
         head_sums: Dict[Tuple, float] = defaultdict(float)
         for cell in result.cells:
             if cell["writer_unit"].startswith("attn.h"):
-                key = (cell["writer_layer"], cell["reader_layer"], cell["reader_unit"], cell["position"])
+                key = (cell["writer_layer"], cell["reader_unit"], cell["reader_layer"], cell["position"])
                 head_sums[key] += cell["ap_recovery"]
         assert len(head_sums) > 0, "no attn head edges found"
-        # Each head sum should be finite and reasonable (not NaN/inf).
-        for key, s in head_sums.items():
-            assert abs(s) < 100.0, f"{key}: head sum {s} seems wrong"
-            assert s == s, f"{key}: head sum is NaN"  # NaN != NaN
+        for (L_w, ru, rl, pos), s in head_sums.items():
+            delta_attn = from_cap[(L_w, "attn")][0, pos] - base_cap[(L_w, "attn")][0, pos].detach()
+            target = (delta_attn * grads[(ru, rl)][0, pos]).sum().item() / denom
+            assert abs(s - target) < 1e-5, f"{(L_w, ru, rl, pos)}: Σ_h={s}, direct={target}"
 
     def test_top_k_selection(self) -> None:
         """Only top_k_edges cells emitted; they are the ones with largest |ap_recovery|."""
@@ -435,52 +453,29 @@ class TestEdgeAP:
 
 
 class TestEdgeAPIntegratedGradients:
-    def test_edge_ap_n_steps_converges(self) -> None:
-        """n_steps=10 results differ from n_steps=1, are finite, and n_steps is set."""
-        import math
-
+    def test_edge_ap_n_steps_equals_ap_on_linear_model(self) -> None:
+        """The mock is linear in every sublayer, so every gradient is constant
+        and IG must reproduce the n_steps=1 scores. An IG loop that cuts the
+        gradient paths through downstream sublayers fails this."""
         torch.manual_seed(77)
         model = _MockModelFull(num_layers=2, d_model=8, vocab=10).eval()
-
-        class _Cfg:
-            num_attention_heads = 2
-            hidden_size = 8
-        model.config = _Cfg()  # type: ignore[attr-defined]
-
+        model.config = SimpleNamespace(num_attention_heads=2, hidden_size=8)  # type: ignore[attr-defined]
         tok = _MockTok()
-        r_1 = edge_attribution_patch(
-            model, tok, "clean", "other",
-            correct_token_id=1, incorrect_token_id=4,
-            top_k_edges=50,
-            n_steps=1,
-        )
-        r_10 = edge_attribution_patch(
-            model, tok, "clean", "other",
-            correct_token_id=1, incorrect_token_id=4,
-            top_k_edges=50,
-            n_steps=10,
-        )
+        common: Dict = dict(correct_token_id=1, incorrect_token_id=4, top_k_edges=10_000)
+        r_1 = edge_attribution_patch(model, tok, "clean", "other", n_steps=1, **common)
+        r_10 = edge_attribution_patch(model, tok, "clean", "other", n_steps=10, **common)
         assert r_1.n_steps is None
         assert r_10.n_steps == 10
 
-        r1_by_key = {
-            (c["writer_layer"], c["writer_unit"], c["reader_layer"], c["reader_unit"], c["position"]): c["ap_recovery"]
-            for c in r_1.cells
-        }
-        r10_by_key = {
-            (c["writer_layer"], c["writer_unit"], c["reader_layer"], c["reader_unit"], c["position"]): c["ap_recovery"]
-            for c in r_10.cells
-        }
-        for v in r10_by_key.values():
-            assert math.isfinite(v), f"non-finite ap_recovery: {v}"
-
-        shared = set(r1_by_key.keys()) & set(r10_by_key.keys())
-        assert len(shared) > 0, "no shared top-k edges between n_steps=1 and n_steps=10"
-        max_diff = max(abs(r1_by_key[k] - r10_by_key[k]) for k in shared)
-        assert max_diff > 1e-4, (
-            f"n_steps=10 scores too close to n_steps=1 (max diff={max_diff:.2e}); "
-            "IG should shift at least one cell by > 1e-4"
-        )
+        def by_key(r: PatchingResult) -> Dict[Tuple, float]:
+            return {
+                (c["writer_layer"], c["writer_unit"], c["reader_layer"], c["reader_unit"], c["position"]): c["ap_recovery"]
+                for c in r.cells
+            }
+        k1, k10 = by_key(r_1), by_key(r_10)
+        assert k1.keys() == k10.keys()
+        for key, v in k1.items():
+            assert abs(v - k10[key]) < 1e-5, f"{key}: n_steps=1 {v} vs n_steps=10 {k10[key]}"
 
     def test_edge_ap_n_steps_validation(self) -> None:
         """n_steps outside [1, 50] raises ValueError."""

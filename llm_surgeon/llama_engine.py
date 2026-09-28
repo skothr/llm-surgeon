@@ -208,6 +208,25 @@ class LlamaEngine:
             raise RuntimeError("LlamaEngine is closed")
         return self._llm
 
+    def _eval_prompt(self, tokens: list[int]) -> "Llama":
+        """Reset the context and evaluate ``tokens``, validating them first.
+
+        Raises ValueError for an empty list or one longer than n_ctx, which
+        llama.cpp would otherwise reject with an opaque decode error.
+        """
+        llm = self._engine()
+        if not tokens:
+            raise ValueError("tokens is empty; pass at least one token (e.g. BOS)")
+        n_ctx = llm.n_ctx()
+        if len(tokens) > n_ctx:
+            raise ValueError(
+                f"{len(tokens)} tokens exceed the context window (n_ctx={n_ctx}); "
+                f"shorten the input or construct LlamaEngine with a larger n_ctx"
+            )
+        llm.reset()
+        llm.eval(tokens)
+        return llm
+
     def tokenize(self, text: str, add_bos: bool = True) -> list[int]:
         return self._engine().tokenize(text.encode("utf-8"), add_bos=add_bos)
 
@@ -216,16 +235,12 @@ class LlamaEngine:
 
     def logits(self, tokens: list[int]) -> np.ndarray:
         """Full vocab logits for the last token position. Shape: (n_vocab,)"""
-        llm = self._engine()
-        llm.reset()
-        llm.eval(tokens)
+        llm = self._eval_prompt(tokens)
         return np.array(_scores(llm)[-1], dtype=np.float32)
 
     def logits_all(self, tokens: list[int]) -> list[np.ndarray]:
         """Full vocab logits for every position. List of (n_vocab,) arrays."""
-        llm = self._engine()
-        llm.reset()
-        llm.eval(tokens)
+        llm = self._eval_prompt(tokens)
         return list(np.array(_scores(llm), dtype=np.float32))
 
     def generate(
@@ -246,10 +261,13 @@ class LlamaEngine:
         Sampler order mirrors llama.cpp: repetition_penalty → temperature →
         top_k → top_p → min_p → multinomial. Pass ``seed`` for reproducible
         sampling (temperature > 0 only; greedy is already deterministic).
+
+        Generation stops at EOS, at a stop sequence, after ``max_tokens``
+        steps, or when the context window (n_ctx) is full. Raises ValueError
+        when ``tokens`` is empty or longer than n_ctx.
         """
-        llm = self._engine()
-        llm.reset()
-        llm.eval(tokens)
+        llm = self._eval_prompt(tokens)
+        n_ctx = llm.n_ctx()
 
         rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
 
@@ -262,8 +280,7 @@ class LlamaEngine:
         # token carries its leading space — otherwise " Paris" arrives as
         # "Paris" and the panel renders "isParis". Each step re-detokenizes
         # the whole generation, O(len(generated)) per step.
-        boundary_id = tokens[-1] if tokens else None
-        boundary = [boundary_id] if boundary_id is not None else []
+        boundary = [tokens[-1]]
         prev_full = _decode_utf8(llm.detokenize(boundary), final=False)
         eos_id = llm.token_eos()
 
@@ -292,7 +309,8 @@ class LlamaEngine:
             generated_ids.append(next_id)
             # Flush a dangling partial character only when no later token
             # can complete it.
-            last = step == max_tokens - 1 or next_id == eos_id
+            ctx_full = llm.n_tokens >= n_ctx  # no room to evaluate next_id
+            last = step == max_tokens - 1 or next_id == eos_id or ctx_full
             full = _decode_utf8(llm.detokenize([*boundary, *generated_ids]), final=last)
             token_str = full[len(prev_full):]
             prev_full = full
@@ -304,7 +322,7 @@ class LlamaEngine:
                 logits=logits_arr if emit_logits else None,
             )
 
-            if next_id == eos_id:
+            if next_id == eos_id or ctx_full:
                 break
             if stop_sequences and any(s in generated_text for s in stop_sequences):
                 break
@@ -317,9 +335,7 @@ class LlamaEngine:
         if len(tokens) < 2:
             return float("inf")
 
-        llm = self._engine()
-        llm.reset()
-        llm.eval(tokens)
+        llm = self._eval_prompt(tokens)
 
         # Row i predicts token i + 1; the last row predicts past the text.
         rows = _scores(llm)[: len(tokens) - 1]

@@ -198,3 +198,35 @@ class TestUtf8Streaming:
         eng = _engine(monkeypatch, FakeLlama(plan=_greedy_plan(2, [4, EOS])))
         steps = list(eng.generate([BOS, 3], max_tokens=5, temperature=0))
         assert steps[0].token_str == " there"
+
+
+# ---------------------------------------------------------------------------
+# Input validation and context bounds
+# ---------------------------------------------------------------------------
+
+
+class TestBounds:
+    def test_empty_tokens_raise_value_error(self, monkeypatch):
+        eng = _engine(monkeypatch, FakeLlama())
+        with pytest.raises(ValueError, match="empty"):
+            eng.logits([])
+        with pytest.raises(ValueError, match="empty"):
+            eng.logits_all([])
+        with pytest.raises(ValueError, match="empty"):
+            next(eng.generate([], max_tokens=1, temperature=0))
+
+    def test_prompt_longer_than_context_raises(self, monkeypatch):
+        eng = _engine(monkeypatch, FakeLlama(n_ctx=4))
+        with pytest.raises(ValueError, match="n_ctx"):
+            eng.logits([BOS, 3, 4, 5, 6])
+        with pytest.raises(ValueError, match="n_ctx"):
+            next(eng.generate([BOS, 3, 4, 5, 6], max_tokens=1, temperature=0))
+        with pytest.raises(ValueError, match="n_ctx"):
+            eng.perplexity("Hi there x y")
+
+    def test_generation_stops_cleanly_at_context_limit(self, monkeypatch):
+        eng = _engine(monkeypatch, FakeLlama(n_ctx=6))
+        steps = list(eng.generate([BOS, 3, 4], max_tokens=50, temperature=0))
+        # 3 prompt positions + 3 evaluated generated tokens fill n_ctx=6; the
+        # logits of the last position still yield one more token.
+        assert len(steps) == 4

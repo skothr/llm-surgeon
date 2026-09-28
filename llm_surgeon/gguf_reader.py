@@ -31,19 +31,21 @@ GGML_TYPE_Q3_K = 11
 GGML_TYPE_Q4_K = 12
 GGML_TYPE_Q5_K = 13
 GGML_TYPE_Q6_K = 14
-GGML_TYPE_BF16 = 26
+GGML_TYPE_I32 = 26
+GGML_TYPE_BF16 = 30
 
 GGML_TYPE_NAME = {
     0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1",
     6: "Q5_0", 7: "Q5_1", 8: "Q8_0",
     10: "Q2_K", 11: "Q3_K", 12: "Q4_K", 13: "Q5_K", 14: "Q6_K",
-    26: "BF16",
+    26: "I32", 30: "BF16",
 }
 
 # (values_per_block, bytes_per_block)
 GGML_BLOCK_SIZE = {
     GGML_TYPE_F32:  (1, 4),
     GGML_TYPE_F16:  (1, 2),
+    GGML_TYPE_I32:  (1, 4),
     GGML_TYPE_BF16: (1, 2),
     GGML_TYPE_Q4_0: (32, 18),
     GGML_TYPE_Q4_1: (32, 20),
@@ -66,6 +68,10 @@ def _dequant_f32(data: bytes, n: int) -> np.ndarray:
 
 def _dequant_f16(data: bytes, n: int) -> np.ndarray:
     return np.frombuffer(data, dtype=np.float16)[:n].astype(np.float32)
+
+
+def _dequant_i32(data: bytes, n: int) -> np.ndarray:
+    return np.frombuffer(data, dtype=np.int32)[:n].astype(np.float32)
 
 
 def _dequant_bf16(data: bytes, n: int) -> np.ndarray:
@@ -288,6 +294,7 @@ def _dequant_q6_k(data: bytes, n: int) -> np.ndarray:
 _DEQUANT = {
     GGML_TYPE_F32:  _dequant_f32,
     GGML_TYPE_F16:  _dequant_f16,
+    GGML_TYPE_I32:  _dequant_i32,
     GGML_TYPE_BF16: _dequant_bf16,
     GGML_TYPE_Q4_0: _dequant_q4_0,
     GGML_TYPE_Q4_1: _dequant_q4_1,
@@ -300,7 +307,54 @@ _DEQUANT = {
 }
 
 
+def _gguf_py_qtype(ggml_type: int):
+    """Return gguf-py's ``GGMLQuantizationType`` for ``ggml_type``, or None.
+
+    Types without a dequantizer in this module (Q2_K, Q3_K, the IQ family,
+    ...) are decoded with the optional ``gguf`` package when it is installed.
+    """
+    try:
+        import gguf
+    except ImportError:
+        return None
+    try:
+        return gguf.GGMLQuantizationType(ggml_type)
+    except ValueError:
+        return None
+
+
+def _type_name(ggml_type: int) -> str:
+    name = GGML_TYPE_NAME.get(ggml_type)
+    if name is None:
+        qtype = _gguf_py_qtype(ggml_type)
+        name = qtype.name if qtype is not None else f"?{ggml_type}"
+    return name
+
+
+def _block_size(ggml_type: int) -> tuple[int, int] | None:
+    """(values_per_block, bytes_per_block), from gguf-py for types not listed here."""
+    bs = GGML_BLOCK_SIZE.get(ggml_type)
+    if bs is None:
+        qtype = _gguf_py_qtype(ggml_type)
+        if qtype is not None:
+            import gguf
+            bs = gguf.GGML_QUANT_SIZES[qtype]
+    return bs
+
+
 # ── GGUF File Parser ─────────────────────────────────────────────────
+
+# struct format of each fixed-size GGUF metadata value type (7 = bool)
+_GGUF_SCALAR_FMT = {
+    0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i",
+    6: "<f", 7: "<B", 10: "<Q", 11: "<q", 12: "<d",
+}
+
+# numpy dtype of each fixed-size GGUF value type, for bulk array reads
+_GGUF_ARRAY_DTYPE = {
+    0: "<u1", 1: "<i1", 2: "<u2", 3: "<i2", 4: "<u4", 5: "<i4",
+    6: "<f4", 7: "?", 10: "<u8", 11: "<i8", 12: "<f8",
+}
 
 @dataclass
 class TensorInfo:
@@ -311,7 +365,7 @@ class TensorInfo:
 
     @property
     def type_name(self) -> str:
-        return GGML_TYPE_NAME.get(self.ggml_type, f"?{self.ggml_type}")
+        return _type_name(self.ggml_type)
 
     @property
     def n_elements(self) -> int:
@@ -354,6 +408,13 @@ class GGUFFile:
                 raise ValueError(f"Not a GGUF file (magic={magic!r}): {self.path}")
 
             self.version = struct.unpack("<I", f.read(4))[0]
+            if self.version not in (2, 3):
+                # Version 1 used 32-bit lengths; a big-endian file reads as a
+                # huge version number. Neither parses with the layout below.
+                raise ValueError(
+                    f"Unsupported GGUF version {self.version} in {self.path} "
+                    "(supported: little-endian GGUF v2 and v3)"
+                )
             n_tensors = struct.unpack("<Q", f.read(8))[0]
             n_kv = struct.unpack("<Q", f.read(8))[0]
 
@@ -403,27 +464,24 @@ class GGUFFile:
 
     def _read_value(self, vtype: int):
         f = self._get_file()
-        readers = {
-            0: lambda: struct.unpack("<B", f.read(1))[0],
-            1: lambda: struct.unpack("<b", f.read(1))[0],
-            2: lambda: struct.unpack("<H", f.read(2))[0],
-            3: lambda: struct.unpack("<h", f.read(2))[0],
-            4: lambda: struct.unpack("<I", f.read(4))[0],
-            5: lambda: struct.unpack("<i", f.read(4))[0],
-            6: lambda: struct.unpack("<f", f.read(4))[0],
-            7: lambda: bool(struct.unpack("<B", f.read(1))[0]),
-            8: lambda: self._read_string(),
-            10: lambda: struct.unpack("<Q", f.read(8))[0],
-            11: lambda: struct.unpack("<q", f.read(8))[0],
-            12: lambda: struct.unpack("<d", f.read(8))[0],
-        }
+        if vtype == 8:
+            return self._read_string()
         if vtype == 9:  # array
             arr_type = struct.unpack("<I", f.read(4))[0]
             arr_len = struct.unpack("<Q", f.read(8))[0]
+            dtype = _GGUF_ARRAY_DTYPE.get(arr_type)
+            if dtype is not None:
+                # Fixed-size elements: one read instead of one per element
+                # (token_type / scores arrays run to 100k+ entries).
+                dt = np.dtype(dtype)
+                data = f.read(arr_len * dt.itemsize)
+                return np.frombuffer(data, dtype=dt, count=arr_len).tolist()
             return [self._read_value(arr_type) for _ in range(arr_len)]
-        if vtype in readers:
-            return readers[vtype]()
-        raise ValueError(f"Unknown GGUF value type: {vtype}")
+        fmt = _GGUF_SCALAR_FMT.get(vtype)
+        if fmt is None:
+            raise ValueError(f"Unknown GGUF value type: {vtype}")
+        value = struct.unpack(fmt, f.read(struct.calcsize(fmt)))[0]
+        return bool(value) if vtype == 7 else value
 
     # ── public API ───────────────────────────────────────────────
 
@@ -435,20 +493,41 @@ class GGUFFile:
         """Read and dequantize a tensor, returning a float32 numpy array."""
         info = self._tensor_map[name]
         n = info.n_elements
-        block_size, bytes_per_block = GGML_BLOCK_SIZE.get(info.ggml_type, (0, 0))
-        if block_size == 0:
-            raise ValueError(f"Unknown block size for type {info.type_name}")
-        fn = _DEQUANT.get(info.ggml_type)
-        if fn is None:
+        bs = _block_size(info.ggml_type)
+        if bs is None:
+            raise ValueError(f"Unknown block size for type {info.type_name} (tensor '{name}')")
+        block_size, bytes_per_block = bs
+        if n % block_size:
             raise ValueError(
-                f"No dequantizer for {info.type_name} "
-                f"(tensor '{name}'). Supported: {sorted(GGML_TYPE_NAME[k] for k in _DEQUANT)}"
+                f"Tensor '{name}' has {n} elements, not a multiple of the "
+                f"{info.type_name} block size {block_size}"
             )
+        fn = _DEQUANT.get(info.ggml_type)
+        qtype = None
+        if fn is None:
+            qtype = _gguf_py_qtype(info.ggml_type)
+            if qtype is None:
+                raise ValueError(
+                    f"No dequantizer for {info.type_name} "
+                    f"(tensor '{name}'). Supported: {sorted(GGML_TYPE_NAME[k] for k in _DEQUANT)}; "
+                    "install the `gguf` package for the other ggml types."
+                )
         n_bytes = (n // block_size) * bytes_per_block
         f = self._get_file()
         f.seek(self._data_offset + info.offset)
         raw = f.read(n_bytes)
-        flat = fn(raw, n)
+        if len(raw) != n_bytes:
+            raise ValueError(
+                f"Truncated data for tensor '{name}': expected {n_bytes} bytes, "
+                f"read {len(raw)} (file {self.path})"
+            )
+        if fn is not None:
+            flat = fn(raw, n)
+        else:
+            from gguf import quants
+            assert qtype is not None
+            flat = quants.dequantize(np.frombuffer(raw, dtype=np.uint8), qtype)
+            flat = flat.astype(np.float32, copy=False).ravel()
         # GGUF dims are (ne[0], ne[1], ...) where ne[0] is innermost;
         # numpy/PyTorch convention is reversed
         return flat.reshape(info.shape[::-1])
@@ -456,7 +535,9 @@ class GGUFFile:
     def read_tensor(self, name: str, dtype=torch.float16) -> torch.Tensor:
         """Read and dequantize a tensor, returning a PyTorch tensor."""
         arr = self.read_tensor_numpy(name)
-        t = torch.from_numpy(arr.copy())
+        if not arr.flags.writeable:
+            arr = arr.copy()
+        t = torch.from_numpy(arr)
         if dtype in (torch.float16, torch.bfloat16):
             finfo = torch.finfo(dtype)
             t = t.clamp(finfo.min, finfo.max)
@@ -514,43 +595,149 @@ def _map_tensor_name(gguf_name: str) -> str | None:
     return None
 
 
-def _build_config(meta: dict):
-    """Build a HuggingFace LlamaConfig from GGUF metadata."""
+def _rope_scaling_from_meta(meta: dict, prefix: str) -> dict | None:
+    """Map GGUF RoPE scaling metadata to an HF ``rope_scaling`` dict.
+
+    Llama-3.1-style scaling is not metadata but a ``rope_freqs.weight``
+    tensor; ``load_gguf_as_hf`` applies that one to the rotary module.
+    """
+    kind = meta.get(prefix + "rope.scaling.type")
+    factor = meta.get(prefix + "rope.scaling.factor")
+    if kind is None and prefix + "rope.scale_linear" in meta:
+        # Pre-2024 GGUFs stored linear scaling under this key.
+        kind, factor = "linear", meta[prefix + "rope.scale_linear"]
+    if kind is None or kind == "none":
+        return None
+    if kind == "linear" and factor:
+        return None if float(factor) == 1.0 else {"rope_type": "linear", "factor": float(factor)}
+    raise ValueError(
+        f"Unsupported RoPE scaling type '{kind}' (factor={factor}) in GGUF metadata; "
+        "only linear scaling and llama3-style rope_freqs are reproduced."
+    )
+
+
+def _build_config(meta: dict, tensor_infos: "list[TensorInfo] | None" = None):
+    """Build a HuggingFace LlamaConfig from GGUF metadata.
+
+    Raises ValueError when a required hyperparameter is missing, rather than
+    substituting LLaMA-7B defaults that would not match the tensors.
+    ``tensor_infos`` supplies the vocab size from ``token_embd.weight``,
+    which is authoritative over the length of the embedded token list.
+    """
     from transformers import LlamaConfig
 
     arch = meta.get("general.architecture", "llama")
     prefix = arch + "."
 
-    vocab_size = len(meta.get("tokenizer.ggml.tokens", []))
-    hidden = meta.get(prefix + "embedding_length", 4096)
-    n_layers = meta.get(prefix + "block_count", 32)
-    n_heads = meta.get(prefix + "attention.head_count", 32)
+    def required(key: str):
+        if prefix + key not in meta:
+            raise ValueError(f"GGUF metadata is missing required key '{prefix + key}'")
+        return meta[prefix + key]
+
+    hidden = required("embedding_length")
+    n_layers = required("block_count")
+    n_heads = required("attention.head_count")
+    ffn_size = required("feed_forward_length")
     n_kv_heads = meta.get(prefix + "attention.head_count_kv", n_heads)
-    ffn_size = meta.get(prefix + "feed_forward_length", hidden * 4)
     ctx_len = meta.get(prefix + "context_length", 4096)
     rms_eps = meta.get(prefix + "attention.layer_norm_rms_epsilon", 1e-5)
     rope_theta = meta.get(prefix + "rope.freq_base", 10000.0)
+    head_dim = meta.get(prefix + "attention.key_length", hidden // n_heads)
+    value_dim = meta.get(prefix + "attention.value_length", head_dim)
+    rope_dim = meta.get(prefix + "rope.dimension_count", head_dim)
+    if value_dim != head_dim:
+        raise ValueError(
+            f"attention.key_length={head_dim} != attention.value_length={value_dim}; "
+            "LlamaForCausalLM uses one head_dim for both"
+        )
+    if rope_dim != head_dim:
+        raise ValueError(
+            f"Partial rotary embedding (rope.dimension_count={rope_dim}, "
+            f"head_dim={head_dim}) is not supported"
+        )
 
-    # LlamaConfig forwards arbitrary kwargs through PretrainedConfig.__init__,
-    # so the stub can't enumerate every accepted parameter. Splat-form keeps
-    # the single rule-scoped ignore on one line instead of fanning out across
-    # every kwarg.
-    return LlamaConfig(**{
+    embd = next((ti for ti in tensor_infos or [] if ti.name == "token_embd.weight"), None)
+    if embd is not None and len(embd.shape) == 2:
+        vocab_size = embd.shape[1]  # GGUF dims are (ne0=hidden, ne1=vocab)
+    else:
+        vocab_size = len(meta.get("tokenizer.ggml.tokens", []))
+    if not vocab_size:
+        raise ValueError(
+            "Cannot determine vocab size: no token_embd.weight tensor and no "
+            "tokenizer.ggml.tokens metadata"
+        )
+
+    kwargs = {
         "vocab_size": vocab_size,
         "hidden_size": hidden,
         "intermediate_size": ffn_size,
         "num_hidden_layers": n_layers,
         "num_attention_heads": n_heads,
         "num_key_value_heads": n_kv_heads,
+        "head_dim": head_dim,
         "max_position_embeddings": ctx_len,
         "rms_norm_eps": rms_eps,
         "rope_theta": rope_theta,
         "tie_word_embeddings": False,
-    })
+    }
+    rope_scaling = _rope_scaling_from_meta(meta, prefix)
+    if rope_scaling is not None:
+        kwargs["rope_scaling"] = rope_scaling
+
+    # LlamaConfig forwards arbitrary kwargs through PretrainedConfig.__init__,
+    # so the stub can't enumerate every accepted parameter. Splat-form keeps
+    # the single rule-scoped ignore on one line instead of fanning out across
+    # every kwarg.
+    return LlamaConfig(**kwargs)
+
+
+# Llama-3 pre-tokenizer split pattern: llama.cpp's LLAMA3 pre-type, which
+# GGUF files name "llama-bpe", and the Split step of Meta-Llama-3's
+# tokenizer.json. gguf_writer matches on it to write that name.
+LLAMA3_SPLIT_REGEX = (
+    r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}"
+    r"| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+)
+
+# GGUF tokenizer.ggml.token_type codes (llama.cpp LLAMA_TOKEN_TYPE_*)
+_TOKEN_NORMAL, _TOKEN_UNKNOWN, _TOKEN_CONTROL, _TOKEN_USER_DEFINED = 1, 2, 3, 4
+
+
+def _merges_from_scores(
+    tokens: list[str], scores: list[float], token_types: list[int]
+) -> list[tuple[str, str]]:
+    """Derive ordered BPE merges from SentencePiece piece scores.
+
+    SentencePiece BPE repeatedly merges the adjacent pair whose concatenation
+    has the highest score. Ranking every in-vocab split of each normal piece
+    by that piece's score gives the equivalent HF merge list (the derivation
+    transformers' GGUF converter uses). Control, byte and unknown pieces are
+    never merge results.
+    """
+    score_of = dict(zip(tokens, scores))
+    ranked: list[tuple[str, str, float]] = []
+    for i, piece in enumerate(tokens):
+        if token_types and token_types[i] != _TOKEN_NORMAL:
+            continue
+        local = [
+            (piece[:k], piece[k:], score_of[piece])
+            for k in range(1, len(piece))
+            if piece[:k] in score_of and piece[k:] in score_of
+        ]
+        local.sort(key=lambda m: (score_of[m[0]], score_of[m[1]]), reverse=True)
+        ranked.extend(local)
+    ranked.sort(key=lambda m: m[2], reverse=True)
+    return [(left, right) for left, right, _ in ranked]
 
 
 def _build_tokenizer(meta: dict):
     """Build a HuggingFace tokenizer from GGUF metadata.
+
+    ``tokenizer.ggml.model == "llama"`` (SentencePiece) becomes a byte-fallback
+    BPE with the ▁ space normalizer; ``"gpt2"`` becomes a byte-level BPE with
+    the pre-tokenizer named by ``tokenizer.ggml.pre``. Control tokens are
+    registered as special tokens and BOS/EOS are added per
+    ``tokenizer.ggml.add_bos_token`` / ``add_eos_token``.
 
     Returns a PreTrainedTokenizerFast, or None if vocab data is missing.
     """
@@ -558,44 +745,110 @@ def _build_tokenizer(meta: dict):
     if not tokens:
         return None
 
-    merges = meta.get("tokenizer.ggml.merges", [])
-    scores = meta.get("tokenizer.ggml.scores", [])
-    bos_id = meta.get("tokenizer.ggml.bos_token_id", 1)
-    eos_id = meta.get("tokenizer.ggml.eos_token_id", 2)
     model_type = meta.get("tokenizer.ggml.model", "llama")
-
-    bos = tokens[bos_id] if bos_id < len(tokens) else "<s>"
-    eos = tokens[eos_id] if eos_id < len(tokens) else "</s>"
-    unk = "<unk>"
+    if model_type not in ("llama", "gpt2"):
+        log.warning("Unsupported tokenizer.ggml.model %r; returning None for tokenizer", model_type)
+        return None
 
     try:
-        from tokenizers import Tokenizer
-        from tokenizers.models import BPE, Unigram
-        from tokenizers.pre_tokenizers import Metaspace
-        from tokenizers.decoders import Metaspace as MetaspaceDecoder
+        from tokenizers import AddedToken, Regex, Tokenizer, decoders, normalizers, pre_tokenizers
+        from tokenizers.models import BPE
+        from tokenizers.processors import TemplateProcessing
         from transformers import PreTrainedTokenizerFast
     except ImportError:
         log.warning("tokenizers library not available; returning None for tokenizer")
         return None
 
+    scores = meta.get("tokenizer.ggml.scores") or []
+    token_types = meta.get("tokenizer.ggml.token_type") or []
+    merges: list[tuple[str, str]] = []
+    for m in meta.get("tokenizer.ggml.merges") or []:
+        left, sep, right = m.partition(" ")
+        if sep:
+            merges.append((left, right))
+
+    # llama.cpp's SentencePiece defaults when the ids are absent
+    spm = model_type == "llama"
+
+    def token_at(key: str, default: int | None) -> tuple[str | None, int | None]:
+        idx = meta.get(key, default)
+        if isinstance(idx, int) and 0 <= idx < len(tokens):
+            return tokens[idx], idx
+        return None, None
+
+    bos, bos_id = token_at("tokenizer.ggml.bos_token_id", 1 if spm else None)
+    eos, eos_id = token_at("tokenizer.ggml.eos_token_id", 2 if spm else None)
+    unk, _ = token_at("tokenizer.ggml.unknown_token_id", 0 if spm else None)
+    pad, _ = token_at("tokenizer.ggml.padding_token_id", None)
+
     vocab = {tok: i for i, tok in enumerate(tokens)}
 
-    if merges:
-        merge_pairs = []
-        for m in merges:
-            pair = m.split(" ", 1)
-            if len(pair) == 2:
-                merge_pairs.append(tuple(pair))
-        tok = Tokenizer(BPE(vocab=vocab, merges=merge_pairs, unk_token=unk))
-    elif scores:
-        tok = Tokenizer(Unigram([(t, s) for t, s in zip(tokens, scores)]))
+    if spm:
+        if not merges:
+            if not scores:
+                log.warning("No merges or scores in GGUF metadata; returning None for tokenizer")
+                return None
+            merges = _merges_from_scores(tokens, scores, token_types)
+        tok = Tokenizer(BPE(
+            vocab=vocab, merges=merges, unk_token=unk, fuse_unk=True, byte_fallback=True,
+        ))
+        add_space_prefix = meta.get("tokenizer.ggml.add_space_prefix", True)
+        norm_steps = [normalizers.Prepend("\u2581")] if add_space_prefix else []
+        norm_steps.append(normalizers.Replace(" ", "\u2581"))
+        tok.normalizer = normalizers.Sequence(norm_steps)
+        dec_steps = [decoders.Replace("\u2581", " "), decoders.ByteFallback(), decoders.Fuse()]
+        if add_space_prefix:
+            dec_steps.append(decoders.Strip(content=" ", left=1, right=0))
+        tok.decoder = decoders.Sequence(dec_steps)
     else:
-        log.warning("No merges or scores in GGUF metadata; returning None for tokenizer")
-        return None
+        if not merges:
+            log.warning("gpt2-style GGUF vocab has no merges; returning None for tokenizer")
+            return None
+        pre = meta.get("tokenizer.ggml.pre", "default")
+        if pre == "llama-bpe":
+            # llama.cpp sets ignore_merges for this pre-type, as does the
+            # Llama-3 tokenizer.json: whole-word vocab hits skip the merges.
+            tok = Tokenizer(BPE(vocab=vocab, merges=merges, ignore_merges=True))
+            tok.pre_tokenizer = pre_tokenizers.Sequence([
+                pre_tokenizers.Split(Regex(LLAMA3_SPLIT_REGEX), behavior="isolated"),
+                pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False),
+            ])
+        else:
+            if pre != "gpt-2":
+                log.warning(
+                    "GGUF pre-tokenizer %r is not reproduced; using the GPT-2 split "
+                    "pattern, so token ids can differ from llama.cpp", pre,
+                )
+            tok = Tokenizer(BPE(vocab=vocab, merges=merges))
+            tok.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=True)
+        tok.decoder = decoders.ByteLevel()
 
-    if model_type == "llama":
-        tok.pre_tokenizer = Metaspace(replacement="\u2581", prepend_scheme="first")
-        tok.decoder = MetaspaceDecoder(replacement="\u2581", prepend_scheme="first")
+    if token_types:
+        special = [
+            t for t, ty in zip(tokens, token_types)
+            if ty in (_TOKEN_CONTROL, _TOKEN_UNKNOWN)
+        ]
+        user_defined = [t for t, ty in zip(tokens, token_types) if ty == _TOKEN_USER_DEFINED]
+    else:
+        special = [t for t in (unk, bos, eos) if t is not None]
+        user_defined = []
+    tok.add_special_tokens([AddedToken(t, normalized=False, special=True) for t in special])
+    if user_defined:
+        tok.add_tokens([AddedToken(t, normalized=False, special=False) for t in user_defined])
+
+    add_bos = meta.get("tokenizer.ggml.add_bos_token", spm) and bos is not None
+    add_eos = meta.get("tokenizer.ggml.add_eos_token", False) and eos is not None
+    if add_bos or add_eos:
+        head = [bos] if add_bos else []
+        tail = [eos] if add_eos else []
+        template_ids = [(bos, bos_id)] if add_bos else []
+        if add_eos:
+            template_ids.append((eos, eos_id))
+        tok.post_processor = TemplateProcessing(
+            single=[*head, "$A", *tail],
+            pair=[*head, "$A", *tail, *head, "$B:1", *tail],
+            special_tokens=template_ids,
+        )
 
     chat_template = meta.get("tokenizer.chat_template")
 
@@ -604,6 +857,8 @@ def _build_tokenizer(meta: dict):
         bos_token=bos,
         eos_token=eos,
         unk_token=unk,
+        pad_token=pad,
+        clean_up_tokenization_spaces=False,
     )
     if chat_template:
         hf_tok.chat_template = chat_template
@@ -611,19 +866,43 @@ def _build_tokenizer(meta: dict):
     return hf_tok
 
 
-def _reverse_permute(t: torch.Tensor, n_head: int, n_kv_heads: int) -> torch.Tensor:
+def _reverse_permute(t: torch.Tensor, n_groups: int) -> torch.Tensor:
     """Reverse the Q/K head interleaving that convert_hf_to_gguf.py applies.
 
     llama.cpp permutes Q and K weights during HF→GGUF conversion to
     interleave the first and second halves of each head's dimensions.
     This undoes that permutation so the weights match HF's layout.
+    ``n_groups`` is the number of heads in the matrix: the attention head
+    count for Q, the KV head count for K. Inverse of
+    ``gguf_writer._forward_permute``.
     """
-    n = n_kv_heads if n_head != n_kv_heads else n_head
-    dim = t.shape[0] // n // 2
-    return t.reshape(n, dim, 2, *t.shape[1:]).swapaxes(1, 2).reshape(t.shape)
+    dim = t.shape[0] // n_groups // 2
+    return t.reshape(n_groups, dim, 2, *t.shape[1:]).swapaxes(1, 2).reshape(t.shape)
 
 
 # ── Main loader ──────────────────────────────────────────────────────
+
+# Per-frequency divisors that Llama-3.1+ GGUFs carry in place of HF's
+# rope_scaling={"rope_type": "llama3", ...} (llama.cpp "freq_factors").
+_ROPE_FREQS = "rope_freqs.weight"
+
+
+def _apply_rope_freqs(rotary: torch.nn.Module, rope_freqs: torch.Tensor) -> None:
+    """Divide a rotary module's inverse frequencies by llama.cpp freq factors.
+
+    llama.cpp computes theta = pos * inv_freq / rope_freqs[i]; for llama3
+    scaling this equals HF's rescaled inv_freq exactly.
+    """
+    inv_freq = rotary.inv_freq
+    assert isinstance(inv_freq, torch.Tensor)
+    if rope_freqs.shape != inv_freq.shape:
+        raise ValueError(
+            f"{_ROPE_FREQS} has shape {tuple(rope_freqs.shape)}, "
+            f"expected {tuple(inv_freq.shape)} (head_dim / 2)"
+        )
+    scaled = inv_freq / rope_freqs.to(inv_freq.dtype)
+    rotary.inv_freq = scaled
+    rotary.original_inv_freq = scaled.clone()
 
 def load_gguf_as_hf(
     gguf_path,
@@ -654,32 +933,42 @@ def load_gguf_as_hf(
                 f"Currently supported: llama, mistral."
             )
 
-        config = _build_config(g.metadata)
+        config = _build_config(g.metadata, g.tensor_infos)
         log.info(
             "Config: %d layers, %d hidden, %d heads, %d vocab",
             config.num_hidden_layers, config.hidden_size,
             config.num_attention_heads, config.vocab_size,
         )
 
+        # A tensor with no HF counterpart would be dropped and the model
+        # would compute different outputs from llama.cpp; refuse instead.
+        unmapped = [
+            info.name for info in g.tensor_infos
+            if info.name != _ROPE_FREQS and _map_tensor_name(info.name) is None
+        ]
+        if unmapped:
+            raise ValueError(
+                f"GGUF has {len(unmapped)} tensors with no LlamaForCausalLM "
+                f"mapping, e.g. {unmapped[:5]}"
+            )
+
         # Build state dict from GGUF tensors
         n_heads = config.num_attention_heads
         n_kv_heads = config.num_key_value_heads or n_heads
         state_dict = {}
-        skipped = []
+        rope_freqs = None
         for info in g.tensor_infos:
-            hf_name = _map_tensor_name(info.name)
-            if hf_name is None:
-                skipped.append(info.name)
+            if info.name == _ROPE_FREQS:
+                rope_freqs = torch.from_numpy(g.read_tensor_numpy(info.name)).float()
                 continue
+            hf_name = _map_tensor_name(info.name)
+            assert hf_name is not None
             t = g.read_tensor(info.name, dtype=dtype)
             if ".attn_q." in info.name:
-                t = _reverse_permute(t, n_heads, n_heads)
+                t = _reverse_permute(t, n_heads)
             elif ".attn_k." in info.name:
-                t = _reverse_permute(t, n_heads, n_kv_heads)
+                t = _reverse_permute(t, n_kv_heads)
             state_dict[hf_name] = t
-
-        if skipped:
-            log.debug("Skipped %d unmapped tensors: %s", len(skipped), skipped[:5])
 
         # Handle tied embeddings: if output.weight is absent, share embed_tokens
         if "lm_head.weight" not in state_dict and "model.embed_tokens.weight" in state_dict:
@@ -691,28 +980,31 @@ def load_gguf_as_hf(
         with torch.device("meta"):  # type: ignore
             model = LlamaForCausalLM(config)
 
-        model.load_state_dict(state_dict, assign=True, strict=False)  # type: ignore
+        # strict=False so both lists come back for one clear error; any
+        # missing key would otherwise stay a meta tensor and fail in forward.
+        result = model.load_state_dict(state_dict, assign=True, strict=False)  # type: ignore
+        if result.missing_keys or result.unexpected_keys:
+            raise ValueError(
+                f"GGUF tensors do not match LlamaForCausalLM: "
+                f"{len(result.missing_keys)} missing (e.g. {result.missing_keys[:5]}), "
+                f"{len(result.unexpected_keys)} unexpected (e.g. {result.unexpected_keys[:5]})"
+            )
 
-        # Buffers not in the GGUF state dict (e.g. RoPE inv_freq) remain as
-        # meta tensors after assign=True + strict=False. Reinitialize all
-        # RoPE modules so inv_freq is properly computed from config.
+        # Non-persistent buffers (RoPE inv_freq) are not in any state dict and
+        # remain meta tensors. Rebuild each RoPE module on the CPU from config.
         from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
         for name, module in model.named_modules():
             if isinstance(module, LlamaRotaryEmbedding):
                 parent_name = name.rsplit(".", 1)
                 parent = model.get_submodule(parent_name[0]) if len(parent_name) > 1 else model
                 attr = parent_name[1] if len(parent_name) > 1 else name
-                setattr(parent, attr, LlamaRotaryEmbedding(config, device="cpu"))
+                rotary = LlamaRotaryEmbedding(config)
+                if rope_freqs is not None:
+                    _apply_rope_freqs(rotary, rope_freqs)
+                setattr(parent, attr, rotary)
 
         model.eval()
         model.requires_grad_(False)
-
-        loaded = len(state_dict)
-        expected = sum(1 for _ in model.state_dict())
-        if loaded < expected:
-            log.warning(
-                "Loaded %d/%d state_dict keys from GGUF", loaded, expected
-            )
 
         tokenizer = _build_tokenizer(g.metadata)
         if tokenizer is None:
@@ -792,11 +1084,11 @@ def gguf_model_meta(path) -> dict:
         total_elements = 0
         total_bytes = 0
         for ti in g.tensor_infos:
-            tname = GGML_TYPE_NAME.get(ti.ggml_type, f"?{ti.ggml_type}")
+            tname = ti.type_name
             n = ti.n_elements
             type_counts[tname] = type_counts.get(tname, 0) + n
             total_elements += n
-            bs = GGML_BLOCK_SIZE.get(ti.ggml_type)
+            bs = _block_size(ti.ggml_type)
             if bs:
                 vals_per_block, bytes_per_block = bs
                 total_bytes += (n // vals_per_block) * bytes_per_block

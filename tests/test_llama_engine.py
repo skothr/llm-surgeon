@@ -66,10 +66,8 @@ from pathlib import Path
 from llm_surgeon.llama_engine import LlamaEngine
 from llm_surgeon.gguf_reader import resolve_ollama_blob
 
-OLLAMA_DIR = Path("/usr/share/ollama/.ollama/models")
-TINYLLAMA_EXISTS = (
-    OLLAMA_DIR / "manifests/registry.ollama.ai/library/tinyllama/latest"
-).exists()
+# Same lookup (and OLLAMA_MODELS override) that _tinyllama_blob() uses.
+TINYLLAMA_EXISTS = resolve_ollama_blob("tinyllama:latest") is not None
 
 
 import importlib.util
@@ -133,7 +131,8 @@ class TestLlamaEngineCore:
 @pytest.mark.skipif(not TINYLLAMA_EXISTS, reason="tinyllama not in Ollama")
 class TestLlamaEngineLogits:
     @pytest.fixture(scope="class")
-    def engine(self):
+    @classmethod
+    def engine(cls):
         blob = _tinyllama_blob()
         eng = LlamaEngine(blob, n_ctx=128)
         yield eng
@@ -170,7 +169,8 @@ class TestLlamaEngineLogits:
 @pytest.mark.skipif(not TINYLLAMA_EXISTS, reason="tinyllama not in Ollama")
 class TestLlamaEngineGenerate:
     @pytest.fixture(scope="class")
-    def engine(self):
+    @classmethod
+    def engine(cls):
         blob = _tinyllama_blob()
         eng = LlamaEngine(blob, n_ctx=128)
         yield eng
@@ -232,8 +232,8 @@ class TestLlamaEngineGenerate:
 
     def test_generate_stops_at_max_tokens(self, engine):
         tokens = engine.tokenize("Once upon a time")
-        steps = list(engine.generate(tokens, max_tokens=3, temperature=0.8))
-        assert len(steps) <= 3
+        steps = list(engine.generate(tokens, max_tokens=3, temperature=0.8, seed=0))
+        assert 1 <= len(steps) <= 3
 
     def test_generate_greedy_deterministic(self, engine):
         tokens = engine.tokenize("The capital of France is")
@@ -263,18 +263,17 @@ class TestLlamaEngineGenerate:
         assert [s.token_id for s in top1] == [s.token_id for s in greedy]
 
     def test_generate_min_p_filters(self, engine):
-        # With min_p=1.0, only tokens tied with the max prob survive — should
-        # still produce a token every step (falls back to argmax if filter
-        # empties the distribution), and be deterministic given a seed.
+        # With min_p=1.0, only tokens tied with the max prob survive (the max
+        # itself always does), so sampling collapses to greedy.
         tokens = engine.tokenize("Hello")
+        greedy = list(engine.generate(tokens, max_tokens=3, temperature=0))
         s1 = list(engine.generate(tokens, max_tokens=3, temperature=1.0, min_p=1.0, seed=7))
-        s2 = list(engine.generate(tokens, max_tokens=3, temperature=1.0, min_p=1.0, seed=7))
-        assert [s.token_id for s in s1] == [s.token_id for s in s2]
+        assert [s.token_id for s in s1] == [s.token_id for s in greedy]
         assert len(s1) == 3
 
 
 class TestSampleHelper:
-    """Unit tests for the numpy sampler used by both engines.
+    """Unit tests for the numpy sampler used by LlamaEngine.generate.
 
     Doesn't need a model — operates on synthetic logits."""
 
@@ -316,7 +315,8 @@ class TestSampleHelper:
 @pytest.mark.skipif(not TINYLLAMA_EXISTS, reason="tinyllama not in Ollama")
 class TestLlamaEnginePerplexity:
     @pytest.fixture(scope="class")
-    def engine(self):
+    @classmethod
+    def engine(cls):
         blob = _tinyllama_blob()
         eng = LlamaEngine(blob, n_ctx=512)
         yield eng

@@ -4,9 +4,9 @@
 >
 > **Tool rules (for subagents):**
 > - Use Read (not cat/head/tail), Grep (not grep/rg/awk), Glob (not find/ls), Edit (not sed/awk) for all file operations
-> - You are already in the project root (/home/ai/ai-projects/llm) — never cd
-> - Python venv: `/home/ai/ai-projects/llm/testing/.venv/bin/python`
-> - Run tests: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/ -v`
+> - You are already in the project root (the repo root) — never cd
+> - Python venv: `python`
+> - Run tests: `python -m pytest tests/ -v`
 
 **Goal:** Add ollama-based generation comparison and automated generation quality metrics to `benchmark.py`, plus a default prompt set.
 
@@ -14,14 +14,14 @@
 
 **Tech Stack:** requests (ollama API), json
 
-**Reference:** `docs/superpowers/specs/2026-04-08-llm-surgeon-design.md` (v2), Phase 5 section of phase plan.
+**Reference:** `docs/design-history/specs/2026-04-08-llm-surgeon-design.md` (v2), Phase 5 section of phase plan.
 
 ---
 
 ## File Map
 
 ```
-testing/
+
   llm_surgeon/
     benchmark.py         — MODIFY — add compare, generation_metrics
   tests/
@@ -35,13 +35,13 @@ testing/
 ### Task 1: Default prompt set + compare()
 
 **Files:**
-- Create: `testing/prompts/default.json`
-- Modify: `testing/llm_surgeon/benchmark.py`
-- Modify: `testing/tests/test_benchmark.py`
+- Create: `prompts/default.json`
+- Modify: `llm_surgeon/benchmark.py`
+- Modify: `tests/test_benchmark.py`
 
 - [ ] **Step 1: Create default prompt set**
 
-Create `testing/prompts/default.json`:
+Create `prompts/default.json`:
 
 ```json
 [
@@ -55,7 +55,7 @@ Create `testing/prompts/default.json`:
 
 - [ ] **Step 2: Write tests for compare()**
 
-Add to `testing/tests/test_benchmark.py`:
+Add to `tests/test_benchmark.py`:
 
 ```python
 import json
@@ -136,7 +136,7 @@ Expected: FAIL — ImportError for `compare`
 
 - [ ] **Step 4: Implement compare()**
 
-Add to `testing/llm_surgeon/benchmark.py`:
+Add to `llm_surgeon/benchmark.py`:
 
 ```python
 import json as json_module
@@ -250,7 +250,7 @@ Expected: TestCompare.test_loads_prompt_file PASSES. Ollama tests pass if ollama
 - [ ] **Step 6: Commit**
 
 ```bash
-git add testing/llm_surgeon/benchmark.py testing/tests/test_benchmark.py testing/prompts/default.json
+git add llm_surgeon/benchmark.py tests/test_benchmark.py prompts/default.json
 git commit -m "feat: add compare() for ollama generation comparison + default prompt set"
 ```
 
@@ -259,12 +259,12 @@ git commit -m "feat: add compare() for ollama generation comparison + default pr
 ### Task 2: generation_metrics()
 
 **Files:**
-- Modify: `testing/llm_surgeon/benchmark.py`
-- Modify: `testing/tests/test_benchmark.py`
+- Modify: `llm_surgeon/benchmark.py`
+- Modify: `tests/test_benchmark.py`
 
 - [ ] **Step 1: Write tests for generation_metrics()**
 
-Add to `testing/tests/test_benchmark.py`:
+Add to `tests/test_benchmark.py`:
 
 ```python
 class TestGenerationMetrics:
@@ -336,7 +336,7 @@ Expected: FAIL — ImportError for `generation_metrics`
 
 - [ ] **Step 3: Implement generation_metrics()**
 
-Add to `testing/llm_surgeon/benchmark.py`:
+Add to `llm_surgeon/benchmark.py`:
 
 ```python
 def generation_metrics(results: list) -> dict:
@@ -415,13 +415,13 @@ Expected: All generation_metrics tests PASS.
 
 - [ ] **Step 5: Run full test suite**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/ -v`
+Run: `python -m pytest tests/ -v`
 Expected: All 137+ tests PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add testing/llm_surgeon/benchmark.py testing/tests/test_benchmark.py
+git add llm_surgeon/benchmark.py tests/test_benchmark.py
 git commit -m "feat: add generation_metrics for automated failure detection"
 ```
 
@@ -430,7 +430,7 @@ git commit -m "feat: add generation_metrics for automated failure detection"
 ## Final State
 
 ```
-testing/
+
   llm_surgeon/
     benchmark.py         — perplexity, eval_downstream, compare, generation_metrics
   tests/

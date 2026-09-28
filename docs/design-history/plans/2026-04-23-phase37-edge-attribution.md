@@ -8,22 +8,22 @@
 
 **Tech stack:** Python 3.11, PyTorch (autograd), transformers (HF LLaMA), FastAPI WebSockets, React + TypeScript + Zustand, D3, pytest (Python), Playwright (frontend E2E).
 
-**Spec:** `testing/docs/superpowers/specs/2026-04-23-phase37-edge-attribution.md`.
+**Spec:** `docs/design-history/specs/2026-04-23-phase37-edge-attribution.md`.
 
-**Cwd for tool invocations:** `/home/ai/ai-projects/llm`. Pyright runs from `testing/`. tsc and Playwright run from `testing/gui/frontend/`.
+**Cwd for tool invocations:** `.`. Pyright runs from the repo root. tsc and Playwright run from `gui/frontend/`.
 
 ---
 
 ## Tool rules (apply to every task + every subagent prompt)
 
 - Use `Read` (not `cat`), `Edit` (not `sed`/`awk`/`cat`), `Grep` (not shell grep), `Glob` (not find). All file ops go through dedicated tools.
-- For git ops, use `git -C /home/ai/ai-projects/llm` — never `cd && git`.
+- For git ops, use `git` — never `cd && git`.
 - Avoid unnecessary compound commands. Avoid chaining that would trigger a permission prompt.
 - **GPU tests:** any Bash call that runs pytest touching CUDA must use `dangerouslyDisableSandbox: true`.
 - **Playwright / Vite:** invoke with `dangerouslyDisableSandbox: true` (they touch `/dev/urandom`).
-- Pyright CLI: run from `testing/` cwd. Command: `.venv/bin/python -m pyright <paths>`.
-- Frontend tsc: run from `testing/gui/frontend/`. Command: `./node_modules/.bin/tsc --noEmit`.
-- Playwright: run from `testing/gui/frontend/`. Command: `npm run e2e`.
+- Pyright CLI: run from the repo root cwd. Command: `.venv/bin/python -m pyright <paths>`.
+- Frontend tsc: run from `gui/frontend/`. Command: `./node_modules/.bin/tsc --noEmit`.
+- Playwright: run from `gui/frontend/`. Command: `npm run e2e`.
 - Zero-diagnostics discipline: every commit must land with pyright 0/0/0 and tsc clean.
 - **Model selection for subagent dispatch:** sonnet or opus only. Never haiku.
 
@@ -32,17 +32,17 @@
 ## File structure
 
 ### New files
-- `testing/tests/test_probe_edge_ap.py` — unit + TinyLlama integration tests.
-- `testing/gui/frontend/src/components/visualizations/EdgeAttributionPanel.tsx` — new viz component.
-- `testing/gui/frontend/tests/e2e/fixtures/activation-patching-edge.json` — Playwright fixture.
+- `tests/test_probe_edge_ap.py` — unit + TinyLlama integration tests.
+- `gui/frontend/src/components/visualizations/EdgeAttributionPanel.tsx` — new viz component.
+- `gui/frontend/tests/e2e/fixtures/activation-patching-edge.json` — Playwright fixture.
 
 ### Modified files
-- `testing/llm_surgeon/probe.py` — extend `_capture_residual_stream_with_grad` (6-tuple return + `capture_reader_grads` flag); add `n_edges` field to `PatchingResult`; update `attribution_patch` and `attribution_patch_per_head` callers to unpack 6-tuple; add `edge_attribution_patch()`.
-- `testing/gui/backend/routes/probes.py` — `"edge"` mode branch; `top_k_edges` config read; edge-mode `on_cell` closure; `n_edges` in complete frame; extend mode validation set.
-- `testing/gui/frontend/src/types/api.ts` — `EdgeCellData` interface; extend `PatchingCompleteData.summary` with `n_edges?`; extend mode literal.
-- `testing/gui/frontend/src/components/PatchingControls.tsx` — fourth mode radio + `top_k_edges` input + `PatchingMode` type extension.
-- `testing/gui/frontend/src/components/ProbePanel.tsx` — route `mode === "edge"` to `<EdgeAttributionPanel>`.
-- `testing/gui/frontend/tests/e2e/smoke.spec.ts` — one new edge-mode smoke test.
+- `llm_surgeon/probe.py` — extend `_capture_residual_stream_with_grad` (6-tuple return + `capture_reader_grads` flag); add `n_edges` field to `PatchingResult`; update `attribution_patch` and `attribution_patch_per_head` callers to unpack 6-tuple; add `edge_attribution_patch()`.
+- `gui/backend/routes/probes.py` — `"edge"` mode branch; `top_k_edges` config read; edge-mode `on_cell` closure; `n_edges` in complete frame; extend mode validation set.
+- `gui/frontend/src/types/api.ts` — `EdgeCellData` interface; extend `PatchingCompleteData.summary` with `n_edges?`; extend mode literal.
+- `gui/frontend/src/components/PatchingControls.tsx` — fourth mode radio + `top_k_edges` input + `PatchingMode` type extension.
+- `gui/frontend/src/components/ProbePanel.tsx` — route `mode === "edge"` to `<EdgeAttributionPanel>`.
+- `gui/frontend/tests/e2e/smoke.spec.ts` — one new edge-mode smoke test.
 
 ---
 
@@ -51,11 +51,11 @@
 **Why first:** `edge_attribution_patch` needs both the new `n_edges` field and the 6-tuple return from the capture helper. Extending the return before writing the new function avoids a mid-function refactor. Existing callers must be updated atomically to avoid breaking existing tests.
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py`
+- Modify: `llm_surgeon/probe.py`
 
 - [ ] **Step 1: Write failing tests**
 
-Create `testing/tests/test_probe_edge_ap.py`:
+Create `tests/test_probe_edge_ap.py`:
 
 ```python
 """Tests for probe.edge_attribution_patch — edge-level gradient AP (Phase 3.7)."""
@@ -106,14 +106,14 @@ class TestPatchingResultNEdges:
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestPatchingResultNEdges -v
+cd . && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestPatchingResultNEdges -v
 ```
 
 Expected: FAIL with `TypeError` (no `n_edges` parameter).
 
 - [ ] **Step 3: Add `n_edges` field to `PatchingResult`**
 
-Edit `testing/llm_surgeon/probe.py` — locate the `PatchingResult` dataclass (around line 825). Add `n_edges` after `n_heads`:
+Edit `llm_surgeon/probe.py` — locate the `PatchingResult` dataclass (around line 825). Add `n_edges` after `n_heads`:
 
 ```python
     n_heads: Optional[int] = None    # set by attribution_patch_per_head / edge_attribution_patch
@@ -122,7 +122,7 @@ Edit `testing/llm_surgeon/probe.py` — locate the `PatchingResult` dataclass (a
 
 - [ ] **Step 4: Extend `_capture_residual_stream_with_grad` to 6-tuple with `capture_reader_grads` flag**
 
-Edit `testing/llm_surgeon/probe.py` — update the function signature:
+Edit `llm_surgeon/probe.py` — update the function signature:
 
 ```python
 def _capture_residual_stream_with_grad(
@@ -207,7 +207,7 @@ Update the return statement:
 
 - [ ] **Step 5: Update existing callers to unpack 6-tuple**
 
-Edit `testing/llm_surgeon/probe.py` — inside `attribution_patch()`, update both calls:
+Edit `llm_surgeon/probe.py` — inside `attribution_patch()`, update both calls:
 
 ```python
 # from-prompt call:
@@ -234,7 +234,7 @@ base_captured, base_h_ins, base_logits, base_tokens, base_concat_z, _ = \
 - [ ] **Step 6: Run all existing tests to verify no regression**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestPatchingResultNEdges tests/test_probe_attribution_patch.py tests/test_probe_activation_patch.py tests/test_probe_per_head_ap.py -v
+cd . && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestPatchingResultNEdges tests/test_probe_attribution_patch.py tests/test_probe_activation_patch.py tests/test_probe_per_head_ap.py -v
 ```
 
 Expected: all tests PASS.
@@ -242,7 +242,7 @@ Expected: all tests PASS.
 - [ ] **Step 7: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_edge_ap.py
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_edge_ap.py
 ```
 
 Expected: `0 errors, 0 warnings, 0 informations`.
@@ -250,8 +250,8 @@ Expected: `0 errors, 0 warnings, 0 informations`.
 - [ ] **Step 8: Commit**
 
 ```
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py testing/tests/test_probe_edge_ap.py
-git -C /home/ai/ai-projects/llm commit -m "feat(probe): PatchingResult.n_edges + capture_reader_grads flag on _capture_residual_stream_with_grad"
+git add llm_surgeon/probe.py tests/test_probe_edge_ap.py
+git commit -m "feat(probe): PatchingResult.n_edges + capture_reader_grads flag on _capture_residual_stream_with_grad"
 ```
 
 **Acceptance criteria:** `TestPatchingResultNEdges` passes; existing AP test suites unchanged; pyright 0/0/0.
@@ -263,11 +263,11 @@ git -C /home/ai/ai-projects/llm commit -m "feat(probe): PatchingResult.n_edges +
 **Why:** before implementing `edge_attribution_patch`, lock in that `capture_reader_grads=True` delivers correctly shaped, graph-attached tensors at each reader (attn_in, ffn_in, logits) whose `.grad` is populated after backward. This is the foundational correctness claim for edge decomposition.
 
 **Files:**
-- Modify: `testing/tests/test_probe_edge_ap.py`
+- Modify: `tests/test_probe_edge_ap.py`
 
 - [ ] **Step 1: Add mock model (reuse Phase 3.6 mock pattern, extend with LN modules)**
 
-Append to `testing/tests/test_probe_edge_ap.py`:
+Append to `tests/test_probe_edge_ap.py`:
 
 ```python
 import torch.nn as nn
@@ -424,7 +424,7 @@ class TestReaderGradCapture:
 - [ ] **Step 2: Run tests to verify they fail (function doesn't yet return 6-tuple)**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestReaderGradCapture -v
+cd . && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestReaderGradCapture -v
 ```
 
 Expected: FAIL (5 errors — unpacking 6 values from 5, or `reader_inputs` not in return).
@@ -432,7 +432,7 @@ Expected: FAIL (5 errors — unpacking 6 values from 5, or `reader_inputs` not i
 - [ ] **Step 3: Implementation was done in Task 1; re-run to confirm passing**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestReaderGradCapture -v
+cd . && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestReaderGradCapture -v
 ```
 
 Expected: all 5 tests PASS.
@@ -440,7 +440,7 @@ Expected: all 5 tests PASS.
 - [ ] **Step 4: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_edge_ap.py
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_edge_ap.py
 ```
 
 Expected: `0 errors, 0 warnings, 0 informations`.
@@ -448,8 +448,8 @@ Expected: `0 errors, 0 warnings, 0 informations`.
 - [ ] **Step 5: Commit**
 
 ```
-git -C /home/ai/ai-projects/llm add testing/tests/test_probe_edge_ap.py
-git -C /home/ai/ai-projects/llm commit -m "test(probe): TestReaderGradCapture — verify capture_reader_grads flag"
+git add tests/test_probe_edge_ap.py
+git commit -m "test(probe): TestReaderGradCapture — verify capture_reader_grads flag"
 ```
 
 **Acceptance criteria:** `TestReaderGradCapture` (5 tests) all pass; pyright 0/0/0.
@@ -461,12 +461,12 @@ git -C /home/ai/ai-projects/llm commit -m "test(probe): TestReaderGradCapture �
 **Why:** before touching TinyLlama or the backend, lock in the core math: edge count formula, validation errors, sum invariant, per-head decomposability, top-k selection, `on_cell` signature, embed writer presence, and absence of invalid edges.
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py` — add `edge_attribution_patch()`
-- Modify: `testing/tests/test_probe_edge_ap.py`
+- Modify: `llm_surgeon/probe.py` — add `edge_attribution_patch()`
+- Modify: `tests/test_probe_edge_ap.py`
 
 - [ ] **Step 1: Write failing tests**
 
-Append to `testing/tests/test_probe_edge_ap.py`:
+Append to `tests/test_probe_edge_ap.py`:
 
 ```python
 from llm_surgeon.probe import edge_attribution_patch
@@ -707,7 +707,7 @@ class TestEdgeAP:
 - [ ] **Step 2: Run tests to verify they fail (function not yet implemented)**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestEdgeAP -v
+cd . && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestEdgeAP -v
 ```
 
 Expected: FAIL with `ImportError` or `AttributeError` on `edge_attribution_patch`.
@@ -731,7 +731,7 @@ Add the function after `attribution_patch_per_head`. Follow the spec (Section 2.
 - [ ] **Step 4: Run all TestEdgeAP tests**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestEdgeAP -v
+cd . && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestEdgeAP -v
 ```
 
 Expected: all 9 tests PASS.
@@ -739,7 +739,7 @@ Expected: all 9 tests PASS.
 - [ ] **Step 5: Run full test suite for regression**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/ -v
+cd . && .venv/bin/python -m pytest tests/ -v
 ```
 
 Expected: all previously-passing tests still PASS.
@@ -747,7 +747,7 @@ Expected: all previously-passing tests still PASS.
 - [ ] **Step 6: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_edge_ap.py
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py tests/test_probe_edge_ap.py
 ```
 
 Expected: `0 errors, 0 warnings, 0 informations`.
@@ -755,8 +755,8 @@ Expected: `0 errors, 0 warnings, 0 informations`.
 - [ ] **Step 7: Commit**
 
 ```
-git -C /home/ai/ai-projects/llm add testing/llm_surgeon/probe.py testing/tests/test_probe_edge_ap.py
-git -C /home/ai/ai-projects/llm commit -m "feat(probe): edge_attribution_patch — per-edge gradient AP (EAP)"
+git add llm_surgeon/probe.py tests/test_probe_edge_ap.py
+git commit -m "feat(probe): edge_attribution_patch — per-edge gradient AP (EAP)"
 ```
 
 **Acceptance criteria:** all 9 `TestEdgeAP` tests pass; full test suite green; pyright 0/0/0.
@@ -768,11 +768,11 @@ git -C /home/ai/ai-projects/llm commit -m "feat(probe): edge_attribution_patch �
 **Why:** the mock model is too small to exercise the real cross-layer structure. TinyLlama (22 layers, 32 heads, seq≈6) exercises the actual edge count (~90k) and verifies that the backend's top-100 selection is an exact subset match of the independently-computed dense top-100 (Spearman ρ == 1.0 by construction — they must be identical).
 
 **Files:**
-- Modify: `testing/tests/test_probe_edge_ap.py`
+- Modify: `tests/test_probe_edge_ap.py`
 
 - [ ] **Step 1: Write failing test**
 
-Append to `testing/tests/test_probe_edge_ap.py`:
+Append to `tests/test_probe_edge_ap.py`:
 
 ```python
 @pytest.mark.skipif(
@@ -842,7 +842,7 @@ class TestTinyLlamaEAP:
 - [ ] **Step 2: Run test to verify it is skipped without TinyLlama (non-GPU CI path)**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestTinyLlamaEAP -v
+cd . && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestTinyLlamaEAP -v
 ```
 
 Expected on non-GPU or without model: `SKIPPED`.
@@ -850,7 +850,7 @@ Expected on non-GPU or without model: `SKIPPED`.
 - [ ] **Step 3: Run with GPU (dangerouslyDisableSandbox)**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestTinyLlamaEAP -v -s
+cd . && .venv/bin/python -m pytest tests/test_probe_edge_ap.py::TestTinyLlamaEAP -v -s
 ```
 
 Expected: PASS (top-100 keys match exactly).
@@ -858,14 +858,14 @@ Expected: PASS (top-100 keys match exactly).
 - [ ] **Step 4: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright tests/test_probe_edge_ap.py
+cd . && .venv/bin/python -m pyright tests/test_probe_edge_ap.py
 ```
 
 - [ ] **Step 5: Commit**
 
 ```
-git -C /home/ai/ai-projects/llm add testing/tests/test_probe_edge_ap.py
-git -C /home/ai/ai-projects/llm commit -m "test(probe): TinyLlama EAP top-k consistency check"
+git add tests/test_probe_edge_ap.py
+git commit -m "test(probe): TinyLlama EAP top-k consistency check"
 ```
 
 **Acceptance criteria:** test SKIPS cleanly without TinyLlama/CUDA; PASSES with GPU + model; pyright 0/0/0.
@@ -877,7 +877,7 @@ git -C /home/ai/ai-projects/llm commit -m "test(probe): TinyLlama EAP top-k cons
 **Why:** wire `edge_attribution_patch` into the WS route so the GUI can trigger it. This is backend-only; no frontend changes yet.
 
 **Files:**
-- Modify: `testing/gui/backend/routes/probes.py`
+- Modify: `gui/backend/routes/probes.py`
 
 - [ ] **Step 1: Write failing test (manual verification via pyright — no pytest for WS)**
 
@@ -885,7 +885,7 @@ Verify current mode validation rejects `"edge"` by reading the existing check. T
 
 - [ ] **Step 2: Extend mode validation set**
 
-Edit `testing/gui/backend/routes/probes.py`:
+Edit `gui/backend/routes/probes.py`:
 
 ```python
 if mode not in ("exact", "approx", "approx_head", "edge"):
@@ -979,7 +979,7 @@ if result.n_edges is not None:
 - [ ] **Step 7: Pyright clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright gui/backend/routes/probes.py
+cd . && .venv/bin/python -m pyright gui/backend/routes/probes.py
 ```
 
 Expected: `0 errors, 0 warnings, 0 informations`.
@@ -987,8 +987,8 @@ Expected: `0 errors, 0 warnings, 0 informations`.
 - [ ] **Step 8: Commit**
 
 ```
-git -C /home/ai/ai-projects/llm add testing/gui/backend/routes/probes.py
-git -C /home/ai/ai-projects/llm commit -m "feat(backend): edge AP mode branch — top_k_edges config + n_edges in complete frame"
+git add gui/backend/routes/probes.py
+git commit -m "feat(backend): edge AP mode branch — top_k_edges config + n_edges in complete frame"
 ```
 
 **Acceptance criteria:** pyright 0/0/0 on `probes.py`; `"edge"` is a valid mode; complete frame includes `n_edges`.
@@ -1000,11 +1000,11 @@ git -C /home/ai/ai-projects/llm commit -m "feat(backend): edge AP mode branch �
 **Why:** add `EdgeCellData` interface and extend `PatchingCompleteData` before writing the component, so `tsc` catches prop-shape bugs during component development.
 
 **Files:**
-- Modify: `testing/gui/frontend/src/types/api.ts`
+- Modify: `gui/frontend/src/types/api.ts`
 
 - [ ] **Step 1: Read current `api.ts`**
 
-Read `testing/gui/frontend/src/types/api.ts` to locate `PatchingCellData`, `PatchingCompleteData`, and the mode literal.
+Read `gui/frontend/src/types/api.ts` to locate `PatchingCellData`, `PatchingCompleteData`, and the mode literal.
 
 - [ ] **Step 2: Add `EdgeCellData` interface**
 
@@ -1037,7 +1037,7 @@ If `ProbeResult.data` is typed as `Array<PatchingCellData | PatchingBaselinesDat
 - [ ] **Step 6: tsc clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 Expected: 0 errors.
@@ -1045,8 +1045,8 @@ Expected: 0 errors.
 - [ ] **Step 7: Commit**
 
 ```
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/types/api.ts
-git -C /home/ai/ai-projects/llm commit -m "feat(frontend/types): EdgeCellData + PatchingMode edge + n_edges in summary"
+git add gui/frontend/src/types/api.ts
+git commit -m "feat(frontend/types): EdgeCellData + PatchingMode edge + n_edges in summary"
 ```
 
 **Acceptance criteria:** `tsc --noEmit` clean; `EdgeCellData` exported from `api.ts`.
@@ -1058,7 +1058,7 @@ git -C /home/ai/ai-projects/llm commit -m "feat(frontend/types): EdgeCellData + 
 **Why:** users must be able to select `"edge"` mode and configure `top_k_edges` before dispatching.
 
 **Files:**
-- Modify: `testing/gui/frontend/src/components/PatchingControls.tsx`
+- Modify: `gui/frontend/src/components/PatchingControls.tsx`
 
 - [ ] **Step 1: Read current `PatchingControls.tsx`**
 
@@ -1120,14 +1120,14 @@ With default value `200`.
 - [ ] **Step 6: tsc clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 - [ ] **Step 7: Commit**
 
 ```
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/components/PatchingControls.tsx
-git -C /home/ai/ai-projects/llm commit -m "feat(frontend): edge AP mode radio + top_k_edges input in PatchingControls"
+git add gui/frontend/src/components/PatchingControls.tsx
+git commit -m "feat(frontend): edge AP mode radio + top_k_edges input in PatchingControls"
 ```
 
 **Acceptance criteria:** `tsc --noEmit` clean; `"edge"` radio visible; `top_k_edges` input shown conditionally.
@@ -1139,8 +1139,8 @@ git -C /home/ai/ai-projects/llm commit -m "feat(frontend): edge AP mode radio + 
 **Why:** the core deliverable of Phase 3.7's frontend. Three sub-views in a tabbed panel, all sharing a position selector.
 
 **Files:**
-- Create: `testing/gui/frontend/src/components/visualizations/EdgeAttributionPanel.tsx`
-- Modify: `testing/gui/frontend/src/components/ProbePanel.tsx`
+- Create: `gui/frontend/src/components/visualizations/EdgeAttributionPanel.tsx`
+- Modify: `gui/frontend/src/components/ProbePanel.tsx`
 
 - [ ] **Step 1: Create `EdgeAttributionPanel.tsx`**
 
@@ -1167,7 +1167,7 @@ Key implementation notes:
 
 - [ ] **Step 2: Wire into `ProbePanel.tsx`**
 
-Read `testing/gui/frontend/src/components/ProbePanel.tsx`. Locate the mode routing section that dispatches `mode === "approx_head"` to `<PerHeadPatchingHeatmap>`. Add:
+Read `gui/frontend/src/components/ProbePanel.tsx`. Locate the mode routing section that dispatches `mode === "approx_head"` to `<PerHeadPatchingHeatmap>`. Add:
 
 ```tsx
 import { EdgeAttributionPanel } from "./visualizations/EdgeAttributionPanel";
@@ -1181,7 +1181,7 @@ import { EdgeAttributionPanel } from "./visualizations/EdgeAttributionPanel";
 - [ ] **Step 3: tsc clean**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 Expected: 0 errors, 0 warnings.
@@ -1189,7 +1189,7 @@ Expected: 0 errors, 0 warnings.
 - [ ] **Step 4: Production build (Tier 2)**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/vite build
+cd ./gui/frontend && ./node_modules/.bin/vite build
 ```
 
 Expected: build succeeds with no errors.
@@ -1197,10 +1197,10 @@ Expected: build succeeds with no errors.
 - [ ] **Step 5: Commit**
 
 ```
-git -C /home/ai/ai-projects/llm add \
-  testing/gui/frontend/src/components/visualizations/EdgeAttributionPanel.tsx \
-  testing/gui/frontend/src/components/ProbePanel.tsx
-git -C /home/ai/ai-projects/llm commit -m "feat(frontend): EdgeAttributionPanel — Sankey, Matrix, Top-list views for edge AP"
+git add \
+  gui/frontend/src/components/visualizations/EdgeAttributionPanel.tsx \
+  gui/frontend/src/components/ProbePanel.tsx
+git commit -m "feat(frontend): EdgeAttributionPanel — Sankey, Matrix, Top-list views for edge AP"
 ```
 
 **Acceptance criteria:** `tsc --noEmit` clean; `vite build` clean; `EdgeAttributionPanel` renders without crash when seeded with edge-mode fixture data.
@@ -1212,12 +1212,12 @@ git -C /home/ai/ai-projects/llm commit -m "feat(frontend): EdgeAttributionPanel 
 **Why:** locks in that the full mount-to-render path for edge mode does not crash. The smoke suite is the fastest end-to-end regression check for frontend React issues.
 
 **Files:**
-- Create: `testing/gui/frontend/tests/e2e/fixtures/activation-patching-edge.json`
-- Modify: `testing/gui/frontend/tests/e2e/smoke.spec.ts`
+- Create: `gui/frontend/tests/e2e/fixtures/activation-patching-edge.json`
+- Modify: `gui/frontend/tests/e2e/smoke.spec.ts`
 
 - [ ] **Step 1: Create the fixture**
 
-Create `testing/gui/frontend/tests/e2e/fixtures/activation-patching-edge.json` with minimal valid structure:
+Create `gui/frontend/tests/e2e/fixtures/activation-patching-edge.json` with minimal valid structure:
 
 ```json
 {
@@ -1294,7 +1294,7 @@ Create `testing/gui/frontend/tests/e2e/fixtures/activation-patching-edge.json` w
 
 - [ ] **Step 2: Write the smoke test**
 
-Append to `testing/gui/frontend/tests/e2e/smoke.spec.ts`:
+Append to `gui/frontend/tests/e2e/smoke.spec.ts`:
 
 ```typescript
 test("edge AP — panel mounts without crash, tabs visible", async ({ page }) => {
@@ -1329,7 +1329,7 @@ Adjust selector strings to match the actual `EdgeAttributionPanel` rendered text
 - [ ] **Step 3: Run the full smoke suite**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npm run e2e
+cd ./gui/frontend && npm run e2e
 ```
 
 Expected: 13 tests PASS (12 existing + 1 new edge smoke test).
@@ -1337,10 +1337,10 @@ Expected: 13 tests PASS (12 existing + 1 new edge smoke test).
 - [ ] **Step 4: Commit**
 
 ```
-git -C /home/ai/ai-projects/llm add \
-  testing/gui/frontend/tests/e2e/fixtures/activation-patching-edge.json \
-  testing/gui/frontend/tests/e2e/smoke.spec.ts
-git -C /home/ai/ai-projects/llm commit -m "test(e2e): edge AP smoke — panel mount, position selector, tab bar"
+git add \
+  gui/frontend/tests/e2e/fixtures/activation-patching-edge.json \
+  gui/frontend/tests/e2e/smoke.spec.ts
+git commit -m "test(e2e): edge AP smoke — panel mount, position selector, tab bar"
 ```
 
 **Acceptance criteria:** all 13 smoke tests PASS; no console errors beyond `isBackendlessNoise`.
@@ -1354,7 +1354,7 @@ git -C /home/ai/ai-projects/llm commit -m "test(e2e): edge AP smoke — panel mo
 - [ ] **Step 1: Full Python test suite**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/ -v
+cd . && .venv/bin/python -m pytest tests/ -v
 ```
 
 Expected: all tests pass (including new `TestReaderGradCapture`, `TestEdgeAP`; TinyLlama test either PASSES or SKIPS — not FAILS).
@@ -1362,7 +1362,7 @@ Expected: all tests pass (including new `TestReaderGradCapture`, `TestEdgeAP`; T
 - [ ] **Step 2: Pyright on all modified Python files**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright llm_surgeon/probe.py gui/backend/routes/probes.py tests/test_probe_edge_ap.py
+cd . && .venv/bin/python -m pyright llm_surgeon/probe.py gui/backend/routes/probes.py tests/test_probe_edge_ap.py
 ```
 
 Expected: `0 errors, 0 warnings, 0 informations`.
@@ -1370,7 +1370,7 @@ Expected: `0 errors, 0 warnings, 0 informations`.
 - [ ] **Step 3: Frontend tsc**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 Expected: 0 errors, 0 warnings.
@@ -1378,7 +1378,7 @@ Expected: 0 errors, 0 warnings.
 - [ ] **Step 4: Frontend production build**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/vite build
+cd ./gui/frontend && ./node_modules/.bin/vite build
 ```
 
 Expected: success.
@@ -1386,7 +1386,7 @@ Expected: success.
 - [ ] **Step 5: Playwright smoke suite**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npm run e2e
+cd ./gui/frontend && npm run e2e
 ```
 
 Expected: 13/13 pass.
@@ -1394,7 +1394,7 @@ Expected: 13/13 pass.
 - [ ] **Step 6: Verify git status is clean**
 
 ```bash
-git -C /home/ai/ai-projects/llm status
+git status
 ```
 
 Expected: `nothing to commit, working tree clean`.

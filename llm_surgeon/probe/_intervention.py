@@ -271,7 +271,7 @@ def activation_patch(
     Given two same-length prompts (clean, corrupted), computes how much each
     (layer, sublayer, position) residual-stream point causally drives the
     output delta between clean and corrupted behavior. See
-    docs/superpowers/specs/2026-04-17-phase3-activation-patching-design.md.
+    docs/design-history/specs/2026-04-17-phase3-activation-patching-design.md.
 
     Args:
         direction: "denoise" (base=corrupted, patches from clean — bright cells

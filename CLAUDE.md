@@ -1,43 +1,11 @@
-# HARD RULE: every session MUST work in a git worktree
+# Working in this repo — worktree discipline (hard rule)
 
-**Not a guideline. Not a preference. A hard rule.** When two sessions
-share the main checkout, uncommitted work from one session gets
-accidentally swept into the other's `git add` and commit. Worktrees
-are the fix.
-
-## Pre-flight check — BEFORE your first edit/write/bash-write
-
-Run this as the very first thing in any session at this project:
-
-```bash
-GIT_DIR=$(cd "$(git rev-parse --git-dir)" && pwd -P)
-GIT_COMMON=$(cd "$(git rev-parse --git-common-dir)" && pwd -P)
-[ "$GIT_DIR" = "$GIT_COMMON" ] && echo "MAIN CHECKOUT — MUST CREATE WORKTREE" || echo "in worktree — proceed"
-```
-
-If the check says "MAIN CHECKOUT": **STOP. Do not edit any file.**
-Create a worktree at `.claude/worktrees/<scope>/` on its own branch
-(via `EnterWorktree`) before doing anything else. `.claude/` is
-gitignored — no .gitignore changes needed.
-
-The only commits permitted directly on the default branch (`main`)
-in the main checkout are **integration commits**: merge commits
-(`gh pr merge`), or convention-establishing changes to CLAUDE.md and
-`.gitignore` itself. Everything else — even one-line typo fixes —
-goes through a worktree.
-
-## Session lifecycle
-
-1. **`EnterWorktree name=<scope>`** — creates `.claude/worktrees/<scope>/`
-   and switches the session into it. Conventional branch prefixes:
-   `feat/`, `fix/`, `refactor/`, `docs/`, `session/`.
-2. All edits and commits land on that branch in its worktree. Never edit
-   files in another session's sibling worktree (inspect read-only with
-   `git -C .claude/worktrees/other log` if needed).
-3. Push (`git push -u origin <branch>`) and open a PR (`gh pr create`).
-   Merge to `main` via PR — never edit the main checkout directly.
-4. After merge, remove the worktree: `git worktree remove
-   .claude/worktrees/<scope>` (or `ExitWorktree`).
+This repo may run concurrent Claude Code sessions; to keep them from
+clobbering each other's uncommitted work, **each session works in its own git
+worktree** (`.claude/worktrees/<scope>/`, gitignored) on its own branch, never
+on the main checkout. Branch → push → PR (`gh pr create`) → merge via PR →
+`git worktree remove`. Only integration commits (merges, or edits to
+`CLAUDE.md`/`.gitignore`) land directly on `main`.
 
 ---
 

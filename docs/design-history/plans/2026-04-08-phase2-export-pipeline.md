@@ -4,9 +4,9 @@
 >
 > **Tool rules (for subagents):**
 > - Use Read (not cat/head/tail), Grep (not grep/rg/awk), Glob (not find/ls), Edit (not sed/awk) for all file operations
-> - You are already in the project root (/home/ai/ai-projects/llm) — never cd
-> - Python venv: `/home/ai/ai-projects/llm/testing/.venv/bin/python`
-> - Run tests: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/ -v`
+> - You are already in the project root (the repo root) — never cd
+> - Python venv: `python`
+> - Run tests: `python -m pytest tests/ -v`
 > - System python does NOT have torch/pytest — always use the full venv path
 
 **Goal:** Build `export.py` — save modified models as HuggingFace checkpoints, convert to GGUF via llama.cpp, quantize, and register with ollama.
@@ -16,19 +16,19 @@
 **Tech Stack:** Python, subprocess (for llama.cpp tools), requests (for ollama API verification)
 
 **Key paths:**
-- llama.cpp: `/home/ai/ai-projects/llm/llama.cpp/`
-- convert script: `/home/ai/ai-projects/llm/llama.cpp/convert_hf_to_gguf.py`
-- quantize binary: `/home/ai/ai-projects/llm/llama.cpp/build/bin/llama-quantize`
+- llama.cpp: `llama.cpp/`
+- convert script: `llama.cpp/convert_hf_to_gguf.py`
+- quantize binary: `llama.cpp/build/bin/llama-quantize`
 - ollama API: `http://localhost:11434`
 
-**Reference:** `docs/superpowers/specs/2026-04-08-llm-surgeon-design.md` (v2), Phase 2 section of phase plan.
+**Reference:** `docs/design-history/specs/2026-04-08-llm-surgeon-design.md` (v2), Phase 2 section of phase plan.
 
 ---
 
 ## File Map
 
 ```
-testing/
+
   llm_surgeon/
     export.py            — CREATE — save_checkpoint, to_gguf, register_ollama, full_pipeline
   tests/
@@ -40,12 +40,12 @@ testing/
 ### Task 1: Configuration + save_checkpoint
 
 **Files:**
-- Create: `testing/llm_surgeon/export.py`
-- Create: `testing/tests/test_export.py`
+- Create: `llm_surgeon/export.py`
+- Create: `tests/test_export.py`
 
 - [ ] **Step 1: Write tests for save_checkpoint**
 
-Create `testing/tests/test_export.py`:
+Create `tests/test_export.py`:
 
 ```python
 """Tests for export module."""
@@ -110,12 +110,12 @@ class TestSaveCheckpoint:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/test_export.py -v`
+Run: `python -m pytest tests/test_export.py -v`
 Expected: FAIL — `ImportError: cannot import name 'save_checkpoint'`
 
 - [ ] **Step 3: Implement save_checkpoint**
 
-Create `testing/llm_surgeon/export.py`:
+Create `llm_surgeon/export.py`:
 
 ```python
 """Export modified models: HF checkpoint -> GGUF -> ollama."""
@@ -185,12 +185,12 @@ def save_checkpoint(model, output_dir: str, tokenizer=None) -> str:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/test_export.py -v`
+Run: `python -m pytest tests/test_export.py -v`
 Expected: All tests PASS.
 
 - [ ] **Step 5: Update __init__.py**
 
-Add `export` to `testing/llm_surgeon/__init__.py`:
+Add `export` to `llm_surgeon/__init__.py`:
 
 ```python
 """LLM Surgeon — surgical layer-level manipulation of LLaMA models."""
@@ -201,7 +201,7 @@ from llm_surgeon import surgery, verify, export
 - [ ] **Step 6: Commit**
 
 ```bash
-git add testing/llm_surgeon/export.py testing/tests/test_export.py testing/llm_surgeon/__init__.py
+git add llm_surgeon/export.py tests/test_export.py llm_surgeon/__init__.py
 git commit -m "feat: add save_checkpoint for HF checkpoint export"
 ```
 
@@ -210,12 +210,12 @@ git commit -m "feat: add save_checkpoint for HF checkpoint export"
 ### Task 2: to_gguf
 
 **Files:**
-- Modify: `testing/llm_surgeon/export.py`
-- Modify: `testing/tests/test_export.py`
+- Modify: `llm_surgeon/export.py`
+- Modify: `tests/test_export.py`
 
 - [ ] **Step 1: Write tests for to_gguf**
 
-Add to `testing/tests/test_export.py`:
+Add to `tests/test_export.py`:
 
 ```python
 from llm_surgeon.export import to_gguf, LLAMA_CPP_PATH
@@ -271,12 +271,12 @@ class TestToGguf:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/test_export.py::TestToGguf -v`
+Run: `python -m pytest tests/test_export.py::TestToGguf -v`
 Expected: FAIL — `ImportError: cannot import name 'to_gguf'`
 
 - [ ] **Step 3: Implement to_gguf**
 
-Add to `testing/llm_surgeon/export.py`:
+Add to `llm_surgeon/export.py`:
 
 ```python
 def to_gguf(
@@ -355,13 +355,13 @@ Note: The `convert_hf_to_gguf.py` script should be run with the venv's python so
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/test_export.py::TestToGguf -v`
+Run: `python -m pytest tests/test_export.py::TestToGguf -v`
 Expected: All tests PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add testing/llm_surgeon/export.py testing/tests/test_export.py
+git add llm_surgeon/export.py tests/test_export.py
 git commit -m "feat: add to_gguf conversion with optional quantization"
 ```
 
@@ -370,14 +370,14 @@ git commit -m "feat: add to_gguf conversion with optional quantization"
 ### Task 3: register_ollama
 
 **Files:**
-- Modify: `testing/llm_surgeon/export.py`
-- Modify: `testing/tests/test_export.py`
+- Modify: `llm_surgeon/export.py`
+- Modify: `tests/test_export.py`
 
 - [ ] **Step 1: Write tests for register_ollama**
 
 Note: These tests interact with the live ollama service. We test the Modelfile generation logic in isolation, and only test the actual ollama registration if ollama is running.
 
-Add to `testing/tests/test_export.py`:
+Add to `tests/test_export.py`:
 
 ```python
 import requests
@@ -441,12 +441,12 @@ class TestRegisterOllama:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/test_export.py::TestGenerateModelfile -v`
+Run: `python -m pytest tests/test_export.py::TestGenerateModelfile -v`
 Expected: FAIL — `ImportError: cannot import name '_generate_modelfile'`
 
 - [ ] **Step 3: Implement register_ollama and _generate_modelfile**
 
-Add to `testing/llm_surgeon/export.py`:
+Add to `llm_surgeon/export.py`:
 
 ```python
 def _generate_modelfile(gguf_path: str) -> str:
@@ -494,13 +494,13 @@ def register_ollama(gguf_path: str, name: str) -> None:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/test_export.py -v`
+Run: `python -m pytest tests/test_export.py -v`
 Expected: TestGenerateModelfile tests PASS. TestRegisterOllama tests PASS if ollama is running, SKIP otherwise.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add testing/llm_surgeon/export.py testing/tests/test_export.py
+git add llm_surgeon/export.py tests/test_export.py
 git commit -m "feat: add register_ollama with Modelfile generation"
 ```
 
@@ -509,12 +509,12 @@ git commit -m "feat: add register_ollama with Modelfile generation"
 ### Task 4: full_pipeline convenience wrapper
 
 **Files:**
-- Modify: `testing/llm_surgeon/export.py`
-- Modify: `testing/tests/test_export.py`
+- Modify: `llm_surgeon/export.py`
+- Modify: `tests/test_export.py`
 
 - [ ] **Step 1: Write tests for full_pipeline**
 
-Add to `testing/tests/test_export.py`:
+Add to `tests/test_export.py`:
 
 ```python
 from llm_surgeon.export import full_pipeline
@@ -574,12 +574,12 @@ class TestFullPipeline:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/test_export.py::TestFullPipeline -v`
+Run: `python -m pytest tests/test_export.py::TestFullPipeline -v`
 Expected: FAIL — `ImportError: cannot import name 'full_pipeline'`
 
 - [ ] **Step 3: Implement full_pipeline**
 
-Add to `testing/llm_surgeon/export.py`:
+Add to `llm_surgeon/export.py`:
 
 ```python
 def full_pipeline(
@@ -621,18 +621,18 @@ def full_pipeline(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/test_export.py -v`
+Run: `python -m pytest tests/test_export.py -v`
 Expected: All tests PASS (ollama tests skip if not running).
 
 - [ ] **Step 5: Run full test suite**
 
-Run: `/home/ai/ai-projects/llm/testing/.venv/bin/python -m pytest /home/ai/ai-projects/llm/testing/tests/ -v`
+Run: `python -m pytest tests/ -v`
 Expected: All 72 Phase 1 tests + new export tests PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add testing/llm_surgeon/export.py testing/tests/test_export.py
+git add llm_surgeon/export.py tests/test_export.py
 git commit -m "feat: add full_pipeline export convenience wrapper"
 ```
 
@@ -643,7 +643,7 @@ git commit -m "feat: add full_pipeline export convenience wrapper"
 After all tasks are complete:
 
 ```
-testing/
+
   llm_surgeon/
     __init__.py          — imports surgery, verify, export
     surgery.py           — (from Phase 1)

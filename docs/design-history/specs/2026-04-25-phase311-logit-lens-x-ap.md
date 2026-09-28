@@ -212,7 +212,7 @@ Each panel imports and renders this component when it has the required props, or
 
 ## 6. Testing
 
-### 6.1 Backend (in `testing/tests/test_decode_residual.py`)
+### 6.1 Backend (in `tests/test_decode_residual.py`)
 
 Six unit tests with mock model + tokenizer (mirroring the existing `test_decode_neuron.py` / `test_decode_head.py` pattern):
 
@@ -241,7 +241,7 @@ Plus one TinyLlama integration test:
 
 ## 8. Verification matrix
 
-| Lane | Command (from `testing/`) | Expected |
+| Lane | Command (from ``) | Expected |
 |------|---------------------------|----------|
 | pyright (backend) | `.venv/bin/pyright gui/backend/routes/sessions.py tests/test_decode_residual.py` | 0/0/0 |
 | pyright (probe) | `.venv/bin/pyright llm_surgeon/probe.py` | preserved |

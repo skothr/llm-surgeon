@@ -13,14 +13,14 @@
 
 **Tech Stack:** Python 3.10+, PyTorch, HuggingFace transformers, accelerate, bitsandbytes, pytest
 
-**Reference:** `docs/superpowers/specs/2026-04-08-llm-surgeon-design.md` (v2), Phase 1 section of `docs/superpowers/specs/2026-04-08-llm-surgeon-phase-plan.md`
+**Reference:** `docs/design-history/specs/2026-04-08-llm-surgeon-design.md` (v2), Phase 1 section of `docs/design-history/specs/2026-04-08-llm-surgeon-phase-plan.md`
 
 ---
 
 ## File Map
 
 ```
-testing/
+
   llm_surgeon/
     __init__.py          — CREATE — package init, imports surgery + verify modules
     surgery.py           — CREATE — SurgeryOp, SurgeryLog, load_model, 6 operations
@@ -41,17 +41,17 @@ testing/
 Before starting, verify:
 - Python 3.10+ available
 - `pip install torch transformers accelerate bitsandbytes pytest` succeeds
-- Git initialized in `/home/ai/ai-projects/llm` (run `git init` if needed — commit steps assume git is available)
+- Git initialized in `.` (run `git init` if needed — commit steps assume git is available)
 
 ---
 
 ### Task 1: Project Scaffolding
 
 **Files:**
-- Create: `testing/pyproject.toml`
-- Create: `testing/requirements.txt`
-- Create: `testing/llm_surgeon/__init__.py`
-- Create: `testing/tests/__init__.py`
+- Create: `pyproject.toml`
+- Create: `requirements.txt`
+- Create: `llm_surgeon/__init__.py`
+- Create: `tests/__init__.py`
 
 - [ ] **Step 1: Create pyproject.toml**
 
@@ -112,33 +112,33 @@ Empty file:
 
 - [ ] **Step 5: Install package in editable mode and verify**
 
-Run: `cd /home/ai/ai-projects/llm/testing && pip install -e ".[dev]"`
+Run: `cd . && pip install -e ".[dev]"`
 Expected: Successful install, no errors.
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -c "import llm_surgeon; print('OK')"`
+Run: `cd . && python -c "import llm_surgeon; print('OK')"`
 Expected: Will fail (surgery and verify modules don't exist yet). This is expected — we'll create them in the next tasks.
 
 - [ ] **Step 6: Create empty module files so import works**
 
-Create `testing/llm_surgeon/surgery.py`:
+Create `llm_surgeon/surgery.py`:
 ```python
 """Model loading and layer surgery operations."""
 ```
 
-Create `testing/llm_surgeon/verify.py`:
+Create `llm_surgeon/verify.py`:
 ```python
 """Structural verification of modified models."""
 ```
 
 - [ ] **Step 7: Verify package imports**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -c "from llm_surgeon import surgery, verify; print('OK')"`
+Run: `cd . && python -c "from llm_surgeon import surgery, verify; print('OK')"`
 Expected: `OK`
 
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && git add pyproject.toml requirements.txt llm_surgeon/__init__.py llm_surgeon/surgery.py llm_surgeon/verify.py tests/__init__.py && git commit -m "feat: scaffold llm-surgeon package with empty modules"
+cd . && git add pyproject.toml requirements.txt llm_surgeon/__init__.py llm_surgeon/surgery.py llm_surgeon/verify.py tests/__init__.py && git commit -m "feat: scaffold llm-surgeon package with empty modules"
 ```
 
 ---
@@ -146,12 +146,12 @@ cd /home/ai/ai-projects/llm/testing && git add pyproject.toml requirements.txt l
 ### Task 2: Data Classes (SurgeryOp, SurgeryLog)
 
 **Files:**
-- Modify: `testing/llm_surgeon/surgery.py`
-- Create: `testing/tests/test_surgery.py`
+- Modify: `llm_surgeon/surgery.py`
+- Create: `tests/test_surgery.py`
 
 - [ ] **Step 1: Write tests for data classes**
 
-Create `testing/tests/test_surgery.py`:
+Create `tests/test_surgery.py`:
 
 ```python
 """Tests for surgery module."""
@@ -206,12 +206,12 @@ class TestSurgeryLog:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py -v`
+Run: `cd . && python -m pytest tests/test_surgery.py -v`
 Expected: FAIL — `ImportError: cannot import name 'SurgeryOp' from 'llm_surgeon.surgery'`
 
 - [ ] **Step 3: Implement data classes**
 
-Replace contents of `testing/llm_surgeon/surgery.py`:
+Replace contents of `llm_surgeon/surgery.py`:
 
 ```python
 """Model loading and layer surgery operations."""
@@ -254,13 +254,13 @@ class SurgeryLog:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py -v`
+Run: `cd . && python -m pytest tests/test_surgery.py -v`
 Expected: All 5 tests PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add SurgeryOp and SurgeryLog data classes"
+cd . && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add SurgeryOp and SurgeryLog data classes"
 ```
 
 ---
@@ -268,11 +268,11 @@ cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test
 ### Task 3: Test Fixtures (Tiny LLaMA Model)
 
 **Files:**
-- Create: `testing/tests/conftest.py`
+- Create: `tests/conftest.py`
 
 - [ ] **Step 1: Create conftest.py with tiny_llama fixture**
 
-Create `testing/tests/conftest.py`:
+Create `tests/conftest.py`:
 
 ```python
 """Shared test fixtures."""
@@ -306,7 +306,7 @@ def tiny_llama(tiny_llama_config):
 
 - [ ] **Step 2: Write a test that uses the fixture to verify it works**
 
-Add to the top of `testing/tests/test_surgery.py`, after existing imports:
+Add to the top of `tests/test_surgery.py`, after existing imports:
 
 ```python
 class TestTinyLlamaFixture:
@@ -328,13 +328,13 @@ class TestTinyLlamaFixture:
 
 - [ ] **Step 3: Run tests to verify fixture works**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestTinyLlamaFixture -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestTinyLlamaFixture -v`
 Expected: All 3 tests PASS.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && git add tests/conftest.py tests/test_surgery.py && git commit -m "feat: add tiny_llama test fixture for fast model testing"
+cd . && git add tests/conftest.py tests/test_surgery.py && git commit -m "feat: add tiny_llama test fixture for fast model testing"
 ```
 
 ---
@@ -342,12 +342,12 @@ cd /home/ai/ai-projects/llm/testing && git add tests/conftest.py tests/test_surg
 ### Task 4: get_layer_info
 
 **Files:**
-- Modify: `testing/llm_surgeon/surgery.py`
-- Modify: `testing/tests/test_surgery.py`
+- Modify: `llm_surgeon/surgery.py`
+- Modify: `tests/test_surgery.py`
 
 - [ ] **Step 1: Write tests for get_layer_info**
 
-Add to `testing/tests/test_surgery.py`:
+Add to `tests/test_surgery.py`:
 
 ```python
 from llm_surgeon.surgery import get_layer_info
@@ -381,12 +381,12 @@ class TestGetLayerInfo:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestGetLayerInfo -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestGetLayerInfo -v`
 Expected: FAIL — `ImportError: cannot import name 'get_layer_info'`
 
 - [ ] **Step 3: Implement get_layer_info**
 
-Add to `testing/llm_surgeon/surgery.py`:
+Add to `llm_surgeon/surgery.py`:
 
 ```python
 from typing import Dict, Any
@@ -421,13 +421,13 @@ def get_layer_info(model) -> Dict[str, Any]:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestGetLayerInfo -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestGetLayerInfo -v`
 Expected: All 6 tests PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add get_layer_info function"
+cd . && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add get_layer_info function"
 ```
 
 ---
@@ -435,12 +435,12 @@ cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test
 ### Task 5: remove_layers
 
 **Files:**
-- Modify: `testing/llm_surgeon/surgery.py`
-- Modify: `testing/tests/test_surgery.py`
+- Modify: `llm_surgeon/surgery.py`
+- Modify: `tests/test_surgery.py`
 
 - [ ] **Step 1: Write tests for remove_layers**
 
-Add to `testing/tests/test_surgery.py`:
+Add to `tests/test_surgery.py`:
 
 ```python
 from llm_surgeon.surgery import remove_layers
@@ -491,12 +491,12 @@ Add `import torch` and `import pytest` at the top of the file if not already pre
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestRemoveLayers -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestRemoveLayers -v`
 Expected: FAIL — `ImportError: cannot import name 'remove_layers'`
 
 - [ ] **Step 3: Implement remove_layers**
 
-Add to `testing/llm_surgeon/surgery.py`:
+Add to `llm_surgeon/surgery.py`:
 
 ```python
 def remove_layers(model, layer_indices: List[int]) -> SurgeryLog:
@@ -523,13 +523,13 @@ def remove_layers(model, layer_indices: List[int]) -> SurgeryLog:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestRemoveLayers -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestRemoveLayers -v`
 Expected: All 7 tests PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add remove_layers operation"
+cd . && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add remove_layers operation"
 ```
 
 ---
@@ -537,12 +537,12 @@ cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test
 ### Task 6: keep_layers
 
 **Files:**
-- Modify: `testing/llm_surgeon/surgery.py`
-- Modify: `testing/tests/test_surgery.py`
+- Modify: `llm_surgeon/surgery.py`
+- Modify: `tests/test_surgery.py`
 
 - [ ] **Step 1: Write tests for keep_layers**
 
-Add to `testing/tests/test_surgery.py`:
+Add to `tests/test_surgery.py`:
 
 ```python
 from llm_surgeon.surgery import keep_layers
@@ -582,12 +582,12 @@ class TestKeepLayers:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestKeepLayers -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestKeepLayers -v`
 Expected: FAIL — `ImportError: cannot import name 'keep_layers'`
 
 - [ ] **Step 3: Implement keep_layers**
 
-Add to `testing/llm_surgeon/surgery.py`:
+Add to `llm_surgeon/surgery.py`:
 
 ```python
 import torch.nn as nn
@@ -615,13 +615,13 @@ def keep_layers(model, layer_indices: List[int]) -> SurgeryLog:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestKeepLayers -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestKeepLayers -v`
 Expected: All 5 tests PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add keep_layers operation"
+cd . && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add keep_layers operation"
 ```
 
 ---
@@ -629,12 +629,12 @@ cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test
 ### Task 7: reorder_layers
 
 **Files:**
-- Modify: `testing/llm_surgeon/surgery.py`
-- Modify: `testing/tests/test_surgery.py`
+- Modify: `llm_surgeon/surgery.py`
+- Modify: `tests/test_surgery.py`
 
 - [ ] **Step 1: Write tests for reorder_layers**
 
-Add to `testing/tests/test_surgery.py`:
+Add to `tests/test_surgery.py`:
 
 ```python
 from llm_surgeon.surgery import reorder_layers
@@ -678,12 +678,12 @@ class TestReorderLayers:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestReorderLayers -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestReorderLayers -v`
 Expected: FAIL — `ImportError: cannot import name 'reorder_layers'`
 
 - [ ] **Step 3: Implement reorder_layers**
 
-Add to `testing/llm_surgeon/surgery.py`:
+Add to `llm_surgeon/surgery.py`:
 
 ```python
 def reorder_layers(model, new_order: List[int]) -> SurgeryLog:
@@ -711,13 +711,13 @@ def reorder_layers(model, new_order: List[int]) -> SurgeryLog:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestReorderLayers -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestReorderLayers -v`
 Expected: All 6 tests PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add reorder_layers operation"
+cd . && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add reorder_layers operation"
 ```
 
 ---
@@ -725,12 +725,12 @@ cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test
 ### Task 8: swap_layers
 
 **Files:**
-- Modify: `testing/llm_surgeon/surgery.py`
-- Modify: `testing/tests/test_surgery.py`
+- Modify: `llm_surgeon/surgery.py`
+- Modify: `tests/test_surgery.py`
 
 - [ ] **Step 1: Write tests for swap_layers**
 
-Add to `testing/tests/test_surgery.py`:
+Add to `tests/test_surgery.py`:
 
 ```python
 from llm_surgeon.surgery import swap_layers
@@ -774,12 +774,12 @@ class TestSwapLayers:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestSwapLayers -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestSwapLayers -v`
 Expected: FAIL — `ImportError: cannot import name 'swap_layers'`
 
 - [ ] **Step 3: Implement swap_layers**
 
-Add to `testing/llm_surgeon/surgery.py`:
+Add to `llm_surgeon/surgery.py`:
 
 ```python
 def swap_layers(model, i: int, j: int) -> SurgeryLog:
@@ -802,13 +802,13 @@ def swap_layers(model, i: int, j: int) -> SurgeryLog:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestSwapLayers -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestSwapLayers -v`
 Expected: All 6 tests PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add swap_layers operation"
+cd . && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add swap_layers operation"
 ```
 
 ---
@@ -816,12 +816,12 @@ cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test
 ### Task 9: duplicate_layer
 
 **Files:**
-- Modify: `testing/llm_surgeon/surgery.py`
-- Modify: `testing/tests/test_surgery.py`
+- Modify: `llm_surgeon/surgery.py`
+- Modify: `tests/test_surgery.py`
 
 - [ ] **Step 1: Write tests for duplicate_layer**
 
-Add to `testing/tests/test_surgery.py`:
+Add to `tests/test_surgery.py`:
 
 ```python
 from llm_surgeon.surgery import duplicate_layer
@@ -876,12 +876,12 @@ class TestDuplicateLayer:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestDuplicateLayer -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestDuplicateLayer -v`
 Expected: FAIL — `ImportError: cannot import name 'duplicate_layer'`
 
 - [ ] **Step 3: Implement duplicate_layer**
 
-Add to `testing/llm_surgeon/surgery.py`, with `import copy` and `import warnings` at the top of the file:
+Add to `llm_surgeon/surgery.py`, with `import copy` and `import warnings` at the top of the file:
 
 ```python
 import copy
@@ -928,13 +928,13 @@ def duplicate_layer(model, src: int, dst: int) -> SurgeryLog:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestDuplicateLayer -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestDuplicateLayer -v`
 Expected: All 8 tests PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add duplicate_layer operation with memory warning"
+cd . && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add duplicate_layer operation with memory warning"
 ```
 
 ---
@@ -942,12 +942,12 @@ cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test
 ### Task 10: check_structure (verify.py)
 
 **Files:**
-- Modify: `testing/llm_surgeon/verify.py`
-- Create: `testing/tests/test_verify.py`
+- Modify: `llm_surgeon/verify.py`
+- Create: `tests/test_verify.py`
 
 - [ ] **Step 1: Write tests for VerifyReport and check_structure**
 
-Create `testing/tests/test_verify.py`:
+Create `tests/test_verify.py`:
 
 ```python
 """Tests for verify module."""
@@ -1048,12 +1048,12 @@ class TestCheckStructure:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_verify.py -v`
+Run: `cd . && python -m pytest tests/test_verify.py -v`
 Expected: FAIL — `ImportError: cannot import name 'VerifyReport'`
 
 - [ ] **Step 3: Implement VerifyReport and check_structure**
 
-Replace contents of `testing/llm_surgeon/verify.py`:
+Replace contents of `llm_surgeon/verify.py`:
 
 ```python
 """Structural verification of modified models."""
@@ -1142,18 +1142,18 @@ def check_structure(model, surgery_log=None) -> VerifyReport:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_verify.py -v`
+Run: `cd . && python -m pytest tests/test_verify.py -v`
 Expected: All 12 tests PASS.
 
 - [ ] **Step 5: Run full test suite**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/ -v`
+Run: `cd . && python -m pytest tests/ -v`
 Expected: All tests PASS (surgery + verify).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/verify.py tests/test_verify.py && git commit -m "feat: add check_structure with VerifyReport"
+cd . && git add llm_surgeon/verify.py tests/test_verify.py && git commit -m "feat: add check_structure with VerifyReport"
 ```
 
 ---
@@ -1161,12 +1161,12 @@ cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/verify.py tests/test_
 ### Task 11: load_model
 
 **Files:**
-- Modify: `testing/llm_surgeon/surgery.py`
-- Modify: `testing/tests/test_surgery.py`
+- Modify: `llm_surgeon/surgery.py`
+- Modify: `tests/test_surgery.py`
 
 - [ ] **Step 1: Write tests for load_model**
 
-Add to `testing/tests/test_surgery.py`:
+Add to `tests/test_surgery.py`:
 
 ```python
 import os
@@ -1224,12 +1224,12 @@ class TestLoadModel:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestLoadModel -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestLoadModel -v`
 Expected: FAIL — `ImportError: cannot import name 'load_model'`
 
 - [ ] **Step 3: Implement load_model**
 
-Add to `testing/llm_surgeon/surgery.py`:
+Add to `llm_surgeon/surgery.py`:
 
 ```python
 import torch
@@ -1279,18 +1279,18 @@ def load_model(model_id: str, mode: str = "inspect") -> Tuple:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestLoadModel -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestLoadModel -v`
 Expected: All 3 tests PASS.
 
 - [ ] **Step 5: Run full test suite**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/ -v`
+Run: `cd . && python -m pytest tests/ -v`
 Expected: All tests PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add load_model with inspect/eval/export modes"
+cd . && git add llm_surgeon/surgery.py tests/test_surgery.py && git commit -m "feat: add load_model with inspect/eval/export modes"
 ```
 
 ---
@@ -1298,12 +1298,12 @@ cd /home/ai/ai-projects/llm/testing && git add llm_surgeon/surgery.py tests/test
 ### Task 12: Chained Operations Test
 
 **Files:**
-- Modify: `testing/tests/test_surgery.py`
-- Modify: `testing/tests/test_verify.py`
+- Modify: `tests/test_surgery.py`
+- Modify: `tests/test_verify.py`
 
 - [ ] **Step 1: Write integration tests for chaining multiple operations**
 
-Add to `testing/tests/test_surgery.py`:
+Add to `tests/test_surgery.py`:
 
 ```python
 class TestChainedOperations:
@@ -1331,7 +1331,7 @@ class TestChainedOperations:
         assert len(tiny_llama.model.layers) == 8
 ```
 
-Add to `testing/tests/test_verify.py`:
+Add to `tests/test_verify.py`:
 
 ```python
 from llm_surgeon.surgery import reorder_layers
@@ -1355,13 +1355,13 @@ class TestCheckStructureChained:
 
 - [ ] **Step 2: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/ -v`
+Run: `cd . && python -m pytest tests/ -v`
 Expected: All tests PASS.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && git add tests/test_surgery.py tests/test_verify.py && git commit -m "test: add chained operation and verification integration tests"
+cd . && git add tests/test_surgery.py tests/test_verify.py && git commit -m "test: add chained operation and verification integration tests"
 ```
 
 ---
@@ -1369,11 +1369,11 @@ cd /home/ai/ai-projects/llm/testing && git add tests/test_surgery.py tests/test_
 ### Task 13: Save and Reload Checkpoint Test
 
 **Files:**
-- Modify: `testing/tests/test_surgery.py`
+- Modify: `tests/test_surgery.py`
 
 - [ ] **Step 1: Write test for save/reload roundtrip**
 
-Add to `testing/tests/test_surgery.py`:
+Add to `tests/test_surgery.py`:
 
 ```python
 from transformers import AutoModelForCausalLM
@@ -1418,18 +1418,18 @@ class TestSaveReload:
 
 - [ ] **Step 2: Run tests to verify they pass**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/test_surgery.py::TestSaveReload -v`
+Run: `cd . && python -m pytest tests/test_surgery.py::TestSaveReload -v`
 Expected: All 3 tests PASS.
 
 - [ ] **Step 3: Run full test suite — final check**
 
-Run: `cd /home/ai/ai-projects/llm/testing && python -m pytest tests/ -v`
+Run: `cd . && python -m pytest tests/ -v`
 Expected: ALL tests PASS. This is the Phase 1 completion gate.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && git add tests/test_surgery.py && git commit -m "test: add save/reload roundtrip tests for modified models"
+cd . && git add tests/test_surgery.py && git commit -m "test: add save/reload roundtrip tests for modified models"
 ```
 
 ---
@@ -1439,7 +1439,7 @@ cd /home/ai/ai-projects/llm/testing && git add tests/test_surgery.py && git comm
 After all tasks are complete, the project should have:
 
 ```
-testing/
+
   llm_surgeon/
     __init__.py          — imports surgery, verify
     surgery.py           — SurgeryOp, SurgeryLog, load_model, get_layer_info,

@@ -24,7 +24,7 @@ Implications: 4-bit quantization (bitsandbytes) for GPU inspection, fp16 on CPU 
 ## Project Structure
 
 ```
-testing/
+
   llm_surgeon/
     __init__.py
     surgery.py        — model loading, layer manipulation, calibration

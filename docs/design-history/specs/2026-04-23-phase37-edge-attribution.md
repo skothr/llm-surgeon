@@ -750,7 +750,7 @@ Add `top_k_edges` numeric input (shown only when `mode === "edge"`, default 200)
 
 ## 6. Verification Plan
 
-### 6.1 Python unit tests (`testing/tests/test_probe_edge_ap.py`)
+### 6.1 Python unit tests (`tests/test_probe_edge_ap.py`)
 
 | Test class | Test | What it checks |
 |---|---|---|
@@ -829,15 +829,15 @@ Frontend: PatchingCompleteData.summary.mode === "edge"
 
 | File | Change |
 |---|---|
-| `testing/llm_surgeon/probe.py` | **~** extend `_capture_residual_stream_with_grad` with `capture_reader_grads` flag (6-tuple return); update `attribution_patch` + `attribution_patch_per_head` to unpack 6-tuple; add `n_edges` field to `PatchingResult`; add `edge_attribution_patch()` |
-| `testing/tests/test_probe_edge_ap.py` | **new** — unit tests: reader grad capture, edge count, sum invariant, per-head decomposability, top-k, TinyLlama consistency |
-| `testing/gui/backend/routes/probes.py` | **~** `"edge"` mode branch; `top_k_edges` config read; new `on_cell` signature for edge mode; `n_edges` in complete frame; extend mode validation |
-| `testing/gui/frontend/src/types/api.ts` | **~** add `EdgeCellData` interface; extend `PatchingCompleteData.summary` with `n_edges?`; extend mode literal to `"edge"` |
-| `testing/gui/frontend/src/components/PatchingControls.tsx` | **~** fourth mode radio (`"edge"`), `top_k_edges` input, extend `PatchingMode` type |
-| `testing/gui/frontend/src/components/ProbePanel.tsx` | **~** route `mode === "edge"` to `<EdgeAttributionPanel>` |
-| `testing/gui/frontend/src/components/visualizations/EdgeAttributionPanel.tsx` | **new** — Sankey, Matrix, Top-list sub-views; position selector; tab bar |
-| `testing/gui/frontend/tests/e2e/smoke.spec.ts` | **+** one edge-mode smoke test |
-| `testing/gui/frontend/tests/e2e/fixtures/activation-patching-edge.json` | **new** — fixture with `mode: "edge"` + edge-keyed data frames |
+| `llm_surgeon/probe.py` | **~** extend `_capture_residual_stream_with_grad` with `capture_reader_grads` flag (6-tuple return); update `attribution_patch` + `attribution_patch_per_head` to unpack 6-tuple; add `n_edges` field to `PatchingResult`; add `edge_attribution_patch()` |
+| `tests/test_probe_edge_ap.py` | **new** — unit tests: reader grad capture, edge count, sum invariant, per-head decomposability, top-k, TinyLlama consistency |
+| `gui/backend/routes/probes.py` | **~** `"edge"` mode branch; `top_k_edges` config read; new `on_cell` signature for edge mode; `n_edges` in complete frame; extend mode validation |
+| `gui/frontend/src/types/api.ts` | **~** add `EdgeCellData` interface; extend `PatchingCompleteData.summary` with `n_edges?`; extend mode literal to `"edge"` |
+| `gui/frontend/src/components/PatchingControls.tsx` | **~** fourth mode radio (`"edge"`), `top_k_edges` input, extend `PatchingMode` type |
+| `gui/frontend/src/components/ProbePanel.tsx` | **~** route `mode === "edge"` to `<EdgeAttributionPanel>` |
+| `gui/frontend/src/components/visualizations/EdgeAttributionPanel.tsx` | **new** — Sankey, Matrix, Top-list sub-views; position selector; tab bar |
+| `gui/frontend/tests/e2e/smoke.spec.ts` | **+** one edge-mode smoke test |
+| `gui/frontend/tests/e2e/fixtures/activation-patching-edge.json` | **new** — fixture with `mode: "edge"` + edge-keyed data frames |
 
 ---
 

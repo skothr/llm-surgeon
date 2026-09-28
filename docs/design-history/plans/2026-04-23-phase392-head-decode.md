@@ -8,11 +8,11 @@
 
 **Tech Stack:** Python 3.11 + PyTorch + FastAPI + React 18 + TypeScript. No new deps.
 
-**Spec:** `testing/docs/superpowers/specs/2026-04-23-phase392-head-decode.md` (commit `c8ccee4`).
+**Spec:** `docs/design-history/specs/2026-04-23-phase392-head-decode.md` (commit `c8ccee4`).
 
 **Tool rules (for every subagent prompt):**
 - Use Read (not cat), Edit (not Bash sed/awk/cat), Grep (not Bash grep/rg/awk), Glob (not find)
-- Git: `git -C /home/ai/ai-projects/llm <cmd>`
+- Git: `git <cmd>`
 - For tsc/pyright/pytest/vitest/playwright/git commit: pass `dangerouslyDisableSandbox: true`
 - If Bash is denied TWICE on same command, STOP and report BLOCKED
 - Pyright/tsc must be 0/0/0 after every task
@@ -22,30 +22,30 @@
 ## File Structure
 
 **Backend**
-- **Modify** `testing/gui/backend/routes/sessions.py`
+- **Modify** `gui/backend/routes/sessions.py`
   - Add `DecodeHeadRequest` pydantic model near `DecodeNeuronRequest`
   - Add `POST /sessions/{name}/decode-head` endpoint after `decode_neuron`
 
 **Tests**
-- **Create** `testing/tests/test_decode_head.py` — 6 unit tests + 1 TinyLlama integration
+- **Create** `tests/test_decode_head.py` — 6 unit tests + 1 TinyLlama integration
 
 **Frontend**
-- **Modify** `testing/gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx`
+- **Modify** `gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx`
   - Add decode fetch state + `useEffect` tied to `pinned.cell.unit` parsing
   - Extend pin card render with conditional top/bottom token block
-- **Modify** `testing/gui/frontend/tests/e2e/smoke.spec.ts` — 17th test
+- **Modify** `gui/frontend/tests/e2e/smoke.spec.ts` — 17th test
 
 ---
 
 ## Task 1: Backend endpoint + unit tests + TinyLlama integration
 
 **Files:**
-- Modify: `testing/gui/backend/routes/sessions.py`
-- Create: `testing/tests/test_decode_head.py`
+- Modify: `gui/backend/routes/sessions.py`
+- Create: `tests/test_decode_head.py`
 
 - [ ] **Step 1: Add pydantic model + endpoint**
 
-In `testing/gui/backend/routes/sessions.py`, find the `decode_neuron` handler (added in Phase 3.9.1, near line ~525+). Immediately AFTER its closing `return result` + blank line, insert:
+In `gui/backend/routes/sessions.py`, find the `decode_neuron` handler (added in Phase 3.9.1, near line ~525+). Immediately AFTER its closing `return result` + blank line, insert:
 
 ```python
 class DecodeHeadRequest(BaseModel):
@@ -151,7 +151,7 @@ async def decode_head(name: str, req: DecodeHeadRequest):
 
 - [ ] **Step 2: Write the test file**
 
-Create `testing/tests/test_decode_head.py`. Start with shared fixture (similar to `test_decode_neuron.py` but adjusted for the head-shaped mock):
+Create `tests/test_decode_head.py`. Start with shared fixture (similar to `test_decode_neuron.py` but adjusted for the head-shaped mock):
 
 ```python
 """Unit + integration tests for POST /api/sessions/{name}/decode-head (Phase 3.9.2)."""
@@ -307,7 +307,7 @@ def _tinyllama_cached() -> bool:
     env_cache = os.environ.get("TINYLLAMA_CACHE")
     if env_cache:
         return Path(env_cache).exists()
-    default = Path("testing/.cache/models/models--TinyLlama--TinyLlama-1.1B-Chat-v1.0")
+    default = Path(".cache/models/models--TinyLlama--TinyLlama-1.1B-Chat-v1.0")
     return default.exists()
 
 
@@ -369,7 +369,7 @@ class TestDecodeHeadTinyLlama:
 
 Run:
 ```bash
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pytest testing/tests/test_decode_head.py -v -k "Unit"
+cd . && python -m pytest tests/test_decode_head.py -v -k "Unit"
 ```
 Expected: 7 tests pass (TestDecodeHeadUnit × 7).
 
@@ -377,7 +377,7 @@ Expected: 7 tests pass (TestDecodeHeadUnit × 7).
 
 Run:
 ```bash
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pytest testing/tests/test_decode_head.py::TestDecodeHeadTinyLlama -v -s
+cd . && python -m pytest tests/test_decode_head.py::TestDecodeHeadTinyLlama -v -s
 ```
 Expected: passes in ~1 min.
 
@@ -385,15 +385,15 @@ Expected: passes in ~1 min.
 
 Run:
 ```bash
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pyright testing/gui/backend/routes/sessions.py testing/tests/test_decode_head.py
+cd . && python -m pyright gui/backend/routes/sessions.py tests/test_decode_head.py
 ```
 Expected: 0/0/0.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/backend/routes/sessions.py testing/tests/test_decode_head.py
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add gui/backend/routes/sessions.py tests/test_decode_head.py
+git commit -m "$(cat <<'EOF'
 feat(backend): POST /sessions/{name}/decode-head endpoint + tests
 
 SVD-decomposes W_O[L][:, h*head_dim:(h+1)*head_dim], takes dominant
@@ -419,8 +419,8 @@ EOF
 ## Task 2: Frontend pin-card extension + Playwright smoke
 
 **Files:**
-- Modify: `testing/gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx`
-- Modify: `testing/gui/frontend/tests/e2e/smoke.spec.ts`
+- Modify: `gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx`
+- Modify: `gui/frontend/tests/e2e/smoke.spec.ts`
 
 - [ ] **Step 1: Add fetch state + effect to PerHeadPatchingHeatmap**
 
@@ -566,7 +566,7 @@ with a conditional that renders the decode data:
 
 Run:
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 Expected: no errors.
 
@@ -574,13 +574,13 @@ Expected: no errors.
 
 Run:
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npx vitest run
+cd ./gui/frontend && npx vitest run
 ```
 Expected: 19/19 tests pass (no new Vitest).
 
 - [ ] **Step 5: Add 17th Playwright smoke test**
 
-Append to `testing/gui/frontend/tests/e2e/smoke.spec.ts`:
+Append to `gui/frontend/tests/e2e/smoke.spec.ts`:
 
 ```ts
 test("per-head pin card shows decoded tokens for attn head", async ({ page }) => {
@@ -644,7 +644,7 @@ test("per-head pin card shows decoded tokens for attn head", async ({ page }) =>
 Note: if clicking the first `svg rect` pins an FFN row instead of an attn head, the assertions will fail because the FFN caption doesn't show decoded tokens. Check the per-head fixture's data: if the first cell (by heatmap layout) is `unit: "ffn"`, target a different cell (e.g., `page.locator("svg rect").nth(1)` or filter by selector). You may need to inspect the fixture first:
 
 ```bash
-grep -o '"unit":"[^"]*"' testing/gui/frontend/tests/e2e/fixtures/activation-patching-per-head.json | head -5
+grep -o '"unit":"[^"]*"' gui/frontend/tests/e2e/fixtures/activation-patching-per-head.json | head -5
 ```
 
 Pick a cell selector that lands on an `attn.h*` row. If all fixture cells are `attn.h*`, any `svg rect` click works.
@@ -653,7 +653,7 @@ Pick a cell selector that lands on an `attn.h*` row. If all fixture cells are `a
 
 Run:
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npm run e2e
+cd ./gui/frontend && npm run e2e
 ```
 Expected: 17/17 tests pass.
 
@@ -661,19 +661,19 @@ Expected: 17/17 tests pass.
 
 Run:
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npx vitest run
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pyright testing/gui/backend/routes/sessions.py testing/tests/test_decode_head.py
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pytest testing/tests/test_decode_head.py -v -k "Unit"
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npm run e2e
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && npx vitest run
+cd . && python -m pyright gui/backend/routes/sessions.py tests/test_decode_head.py
+cd . && python -m pytest tests/test_decode_head.py -v -k "Unit"
+cd ./gui/frontend && npm run e2e
 ```
 Expected: all green, 0/0/0 pyright, 7 unit decode-head tests pass, Vitest 19/19, Playwright 17/17.
 
 - [ ] **Step 8: Commit + update roadmap memory**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx testing/gui/frontend/tests/e2e/smoke.spec.ts
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx gui/frontend/tests/e2e/smoke.spec.ts
+git commit -m "$(cat <<'EOF'
 feat(gui/frontend): per-head pin card decodes attn head OV output
 
 Clicking an attn.h* cell in the per-head heatmap now fetches the
@@ -699,13 +699,13 @@ Update roadmap memory at `~/.claude/projects/-home-ai-ai-projects-llm/memory/pro
 
 | Check | Command | Expected |
 |-------|---------|----------|
-| Pyright | `.venv/bin/python -m pyright testing/gui/backend/routes/sessions.py testing/tests/test_decode_head.py` | 0/0/0 |
-| Tsc | `cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit` | clean |
-| Python unit | `.venv/bin/python -m pytest testing/tests/test_decode_head.py -v -k "Unit"` | 7 pass |
-| TinyLlama | `.venv/bin/python -m pytest testing/tests/test_decode_head.py::TestDecodeHeadTinyLlama -v` | pass ~1 min |
-| Regression (no GPU) | `.venv/bin/python -m pytest testing/tests/ -k "not TinyLlama"` | 451+ pass |
-| Vitest | `cd testing/gui/frontend && npx vitest run` | 19/19 |
-| Playwright | `cd testing/gui/frontend && npm run e2e` | 17/17 |
+| Pyright | `.venv/bin/python -m pyright gui/backend/routes/sessions.py tests/test_decode_head.py` | 0/0/0 |
+| Tsc | `cd gui/frontend && ./node_modules/.bin/tsc --noEmit` | clean |
+| Python unit | `.venv/bin/python -m pytest tests/test_decode_head.py -v -k "Unit"` | 7 pass |
+| TinyLlama | `.venv/bin/python -m pytest tests/test_decode_head.py::TestDecodeHeadTinyLlama -v` | pass ~1 min |
+| Regression (no GPU) | `.venv/bin/python -m pytest tests/ -k "not TinyLlama"` | 451+ pass |
+| Vitest | `cd gui/frontend && npx vitest run` | 19/19 |
+| Playwright | `cd gui/frontend && npm run e2e` | 17/17 |
 
 ---
 

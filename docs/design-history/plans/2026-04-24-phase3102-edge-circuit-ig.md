@@ -13,14 +13,14 @@
 ## Task 1: Spec
 
 **Files:**
-- Create: `testing/docs/superpowers/specs/2026-04-24-phase3102-edge-circuit-ig.md`
+- Create: `docs/design-history/specs/2026-04-24-phase3102-edge-circuit-ig.md`
 
 - [ ] **Step 1: Write spec (already done by controller).**
 
 - [ ] **Step 2: Commit.**
 
 ```bash
-git add testing/docs/superpowers/specs/2026-04-24-phase3102-edge-circuit-ig.md
+git add docs/design-history/specs/2026-04-24-phase3102-edge-circuit-ig.md
 git commit -m "docs(phase3102): spec — IG for edge AP and circuit"
 ```
 
@@ -29,14 +29,14 @@ git commit -m "docs(phase3102): spec — IG for edge AP and circuit"
 ## Task 2: Plan
 
 **Files:**
-- Create: `testing/docs/superpowers/plans/2026-04-24-phase3102-edge-circuit-ig.md`
+- Create: `docs/design-history/plans/2026-04-24-phase3102-edge-circuit-ig.md`
 
 - [ ] **Step 1: Write plan (this file).**
 
 - [ ] **Step 2: Commit.**
 
 ```bash
-git add testing/docs/superpowers/plans/2026-04-24-phase3102-edge-circuit-ig.md
+git add docs/design-history/plans/2026-04-24-phase3102-edge-circuit-ig.md
 git commit -m "docs(phase3102): plan — IG for edge AP and circuit"
 ```
 
@@ -45,9 +45,9 @@ git commit -m "docs(phase3102): plan — IG for edge AP and circuit"
 ## Task 3: Python core + unit tests + TinyLlama integrations
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py`
-- Modify: `testing/tests/test_probe_edge_ap.py`
-- Modify: `testing/tests/test_probe_circuit.py`
+- Modify: `llm_surgeon/probe.py`
+- Modify: `tests/test_probe_edge_ap.py`
+- Modify: `tests/test_probe_circuit.py`
 
 ### 3A. Extend `_integrated_gradients_loop`
 
@@ -180,9 +180,9 @@ git commit -m "docs(phase3102): plan — IG for edge AP and circuit"
 - [ ] **Step 23: Commit.**
 
 ```bash
-git add testing/llm_surgeon/probe.py \
-        testing/tests/test_probe_edge_ap.py \
-        testing/tests/test_probe_circuit.py
+git add llm_surgeon/probe.py \
+        tests/test_probe_edge_ap.py \
+        tests/test_probe_circuit.py
 git commit -m "feat(probe): IG for edge AP and circuit — Phase 3.10.2"
 ```
 
@@ -191,9 +191,9 @@ git commit -m "feat(probe): IG for edge AP and circuit — Phase 3.10.2"
 ## Task 4: Backend WS route + frontend visibility
 
 **Files:**
-- Modify: `testing/gui/backend/routes/probes.py`
-- Modify: `testing/gui/frontend/src/components/PatchingControls.tsx`
-- Modify: `testing/gui/frontend/src/components/ProbePanel.tsx`
+- Modify: `gui/backend/routes/probes.py`
+- Modify: `gui/frontend/src/components/PatchingControls.tsx`
+- Modify: `gui/frontend/src/components/ProbePanel.tsx`
 
 ### 4A. Backend
 
@@ -219,7 +219,7 @@ git commit -m "feat(probe): IG for edge AP and circuit — Phase 3.10.2"
 
 ### 4C. Verify + commit
 
-- [ ] **Step 6: Run tsc** from testing/gui/frontend.
+- [ ] **Step 6: Run tsc** from gui/frontend.
 
 - [ ] **Step 7: Run pyright** on routes/probes.py.
 
@@ -230,9 +230,9 @@ git commit -m "feat(probe): IG for edge AP and circuit — Phase 3.10.2"
 - [ ] **Step 10: Commit.**
 
 ```bash
-git add testing/gui/backend/routes/probes.py \
-        testing/gui/frontend/src/components/PatchingControls.tsx \
-        testing/gui/frontend/src/components/ProbePanel.tsx
+git add gui/backend/routes/probes.py \
+        gui/frontend/src/components/PatchingControls.tsx \
+        gui/frontend/src/components/ProbePanel.tsx
 git commit -m "feat(gui): Phase 3.10.2 — n_steps for edge and circuit modes"
 ```
 

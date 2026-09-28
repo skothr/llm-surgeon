@@ -12,23 +12,23 @@
 
 ## Files
 
-- **Modify:** `testing/llm_surgeon/probe.py:911-925` — add `n_steps: Optional[int] = None` to `PatchingResult`.
-- **Modify:** `testing/llm_surgeon/probe.py:1079-1246` — extend `attribution_patch` with `n_steps` parameter + IG branch.
-- **Modify:** `testing/tests/test_probe_attribution_patch.py` — add 5 unit tests + 1 TinyLlama integration test.
-- **Modify:** `testing/gui/backend/routes/probes.py:~1162-1181` — pass `n_steps` from cfg dict to `attribution_patch`; add to `complete.summary`.
-- **Modify:** `testing/gui/frontend/src/api/types.ts` (or wherever `PatchingCompleteData.summary` is declared) — add optional `n_steps?: number`.
-- **Modify:** `testing/gui/frontend/src/components/PatchingControls.tsx:18-46` — add `n_steps: number` to `PatchingState` (default 1); add numeric input visible when `mode === "approx"`.
-- **Modify:** `testing/gui/frontend/src/components/ProbePanel.tsx` — forward `n_steps` into WS cfg when mode is approx.
-- **Modify:** `testing/gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx:257-259` — extend header to show "IG N steps" when `result.n_steps > 1`.
-- **Modify:** `testing/gui/frontend/tests/e2e/fixtures/activation-patching-approx.json` — add `n_steps: 5` to the embedded `result.summary` (or however fixture represents result summary).
-- **Modify:** `testing/gui/frontend/tests/e2e/smoke.spec.ts` — add one new test asserting the IG header renders when fixture carries `n_steps > 1`.
+- **Modify:** `llm_surgeon/probe.py:911-925` — add `n_steps: Optional[int] = None` to `PatchingResult`.
+- **Modify:** `llm_surgeon/probe.py:1079-1246` — extend `attribution_patch` with `n_steps` parameter + IG branch.
+- **Modify:** `tests/test_probe_attribution_patch.py` — add 5 unit tests + 1 TinyLlama integration test.
+- **Modify:** `gui/backend/routes/probes.py:~1162-1181` — pass `n_steps` from cfg dict to `attribution_patch`; add to `complete.summary`.
+- **Modify:** `gui/frontend/src/api/types.ts` (or wherever `PatchingCompleteData.summary` is declared) — add optional `n_steps?: number`.
+- **Modify:** `gui/frontend/src/components/PatchingControls.tsx:18-46` — add `n_steps: number` to `PatchingState` (default 1); add numeric input visible when `mode === "approx"`.
+- **Modify:** `gui/frontend/src/components/ProbePanel.tsx` — forward `n_steps` into WS cfg when mode is approx.
+- **Modify:** `gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx:257-259` — extend header to show "IG N steps" when `result.n_steps > 1`.
+- **Modify:** `gui/frontend/tests/e2e/fixtures/activation-patching-approx.json` — add `n_steps: 5` to the embedded `result.summary` (or however fixture represents result summary).
+- **Modify:** `gui/frontend/tests/e2e/smoke.spec.ts` — add one new test asserting the IG header renders when fixture carries `n_steps > 1`.
 
 ---
 
 ## Task 1: Add `n_steps` field to `PatchingResult`
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py:925` (just after `n_neurons`).
+- Modify: `llm_surgeon/probe.py:925` (just after `n_neurons`).
 
 - [ ] **Step 1: Edit dataclass**
 
@@ -47,12 +47,12 @@ Replace with:
 
 - [ ] **Step 2: Pyright check**
 
-Run: `.venv/bin/python -m pyright testing/llm_surgeon/probe.py`
+Run: `.venv/bin/python -m pyright llm_surgeon/probe.py`
 Expected: 0 errors, 0 warnings, 0 infos.
 
 - [ ] **Step 3: Run existing AP tests as regression gate**
 
-Run: `.venv/bin/python -m pytest testing/tests/test_probe_attribution_patch.py -v`
+Run: `.venv/bin/python -m pytest tests/test_probe_attribution_patch.py -v`
 Expected: all existing tests still pass (the new field is optional with None default, no call site change required).
 
 - [ ] **Step 4: No commit yet — combine with Task 2.**
@@ -62,7 +62,7 @@ Expected: all existing tests still pass (the new field is optional with None def
 ## Task 2: Add `n_steps` parameter + validation to `attribution_patch` (no IG behavior yet)
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py:1079-1093` (signature) and `:1113-1116` (validation block).
+- Modify: `llm_surgeon/probe.py:1079-1093` (signature) and `:1113-1116` (validation block).
 
 - [ ] **Step 1: Extend signature**
 
@@ -138,12 +138,12 @@ Find the `return PatchingResult(` near line 1236. Add `n_steps=(n_steps if n_ste
 
 - [ ] **Step 4: Pyright check**
 
-Run: `.venv/bin/python -m pyright testing/llm_surgeon/probe.py`
+Run: `.venv/bin/python -m pyright llm_surgeon/probe.py`
 Expected: 0/0/0.
 
 - [ ] **Step 5: Regression test — n_steps=1 still produces old values bit-identical**
 
-Run: `.venv/bin/python -m pytest testing/tests/test_probe_attribution_patch.py -v`
+Run: `.venv/bin/python -m pytest tests/test_probe_attribution_patch.py -v`
 Expected: all pre-IG tests still pass (default `n_steps=1` preserves behavior).
 
 - [ ] **Step 6: No commit yet — combine with Task 3.**
@@ -153,7 +153,7 @@ Expected: all pre-IG tests still pass (default `n_steps=1` preserves behavior).
 ## Task 3: Implement IG algorithm for `n_steps >= 2`
 
 **Files:**
-- Modify: `testing/llm_surgeon/probe.py:1188-1194` (the scalar metric + single backward call).
+- Modify: `llm_surgeon/probe.py:1188-1194` (the scalar metric + single backward call).
 
 This is the core algorithmic change. Replace the single-backward block with a branch.
 
@@ -346,18 +346,18 @@ The existing Step 4 loop at `for (L, sub) in sorted_keys:` reads `base_act.grad`
 
 - [ ] **Step 5: Pyright check**
 
-Run: `.venv/bin/python -m pyright testing/llm_surgeon/probe.py`
+Run: `.venv/bin/python -m pyright llm_surgeon/probe.py`
 Expected: 0/0/0.
 
 - [ ] **Step 6: Regression — n_steps=1 still bit-identical**
 
-Run: `.venv/bin/python -m pytest testing/tests/test_probe_attribution_patch.py -v`
+Run: `.venv/bin/python -m pytest tests/test_probe_attribution_patch.py -v`
 Expected: all Phase 3.5 tests still pass unchanged.
 
 - [ ] **Step 7: Commit Tasks 1+2+3 together**
 
 ```bash
-git add testing/llm_surgeon/probe.py
+git add llm_surgeon/probe.py
 git commit -m "$(cat <<'EOF'
 feat(probe): attribution_patch n_steps for Integrated Gradients
 
@@ -377,7 +377,7 @@ EOF
 ## Task 4: Backend unit tests for IG
 
 **Files:**
-- Modify: `testing/tests/test_probe_attribution_patch.py` (append tests at end).
+- Modify: `tests/test_probe_attribution_patch.py` (append tests at end).
 
 - [ ] **Step 1: Write `test_n_steps_1_matches_old_behavior`**
 
@@ -492,7 +492,7 @@ def test_n_steps_noise_direction(mock_ap_model, mock_ap_tokenizer):
 
 Run:
 ```bash
-.venv/bin/python -m pytest testing/tests/test_probe_attribution_patch.py -v -k "n_steps"
+.venv/bin/python -m pytest tests/test_probe_attribution_patch.py -v -k "n_steps"
 ```
 Expected: 5 passed.
 
@@ -500,19 +500,19 @@ Expected: 5 passed.
 
 Run:
 ```bash
-.venv/bin/python -m pytest testing/tests/test_probe_attribution_patch.py -v
+.venv/bin/python -m pytest tests/test_probe_attribution_patch.py -v
 ```
 Expected: all old + 5 new tests pass.
 
 - [ ] **Step 8: Pyright**
 
-Run: `.venv/bin/python -m pyright testing/tests/test_probe_attribution_patch.py`
+Run: `.venv/bin/python -m pyright tests/test_probe_attribution_patch.py`
 Expected: 0/0/0.
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add testing/tests/test_probe_attribution_patch.py
+git add tests/test_probe_attribution_patch.py
 git commit -m "$(cat <<'EOF'
 test(probe): IG unit tests for attribution_patch n_steps
 
@@ -530,7 +530,7 @@ EOF
 ## Task 5: TinyLlama integration test
 
 **Files:**
-- Modify: `testing/tests/test_probe_attribution_patch.py` (append).
+- Modify: `tests/test_probe_attribution_patch.py` (append).
 
 - [ ] **Step 1: Write the TinyLlama test**
 
@@ -572,14 +572,14 @@ def test_ig_tinyllama_converges(tinyllama_model):
 
 Run:
 ```bash
-.venv/bin/python -m pytest testing/tests/test_probe_attribution_patch.py::test_ig_tinyllama_converges -v
+.venv/bin/python -m pytest tests/test_probe_attribution_patch.py::test_ig_tinyllama_converges -v
 ```
 Expected: PASS in ≤180s, or SKIPPED if the fixture is absent.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add testing/tests/test_probe_attribution_patch.py
+git add tests/test_probe_attribution_patch.py
 git commit -m "$(cat <<'EOF'
 test(probe): TinyLlama IG integration — n_steps=5 rank correlation
 
@@ -596,7 +596,7 @@ EOF
 ## Task 6: Backend WS route cfg passthrough
 
 **Files:**
-- Modify: `testing/gui/backend/routes/probes.py:~1162-1181` (the `approx` branch) plus the `complete.summary` construction nearby.
+- Modify: `gui/backend/routes/probes.py:~1162-1181` (the `approx` branch) plus the `complete.summary` construction nearby.
 
 - [ ] **Step 1: Read `n_steps` from cfg dict**
 
@@ -647,13 +647,13 @@ Find the `complete.summary = {...}` or equivalent dict construction for `approx`
 
 - [ ] **Step 4: Pyright check**
 
-Run: `.venv/bin/python -m pyright testing/gui/backend/routes/probes.py`
+Run: `.venv/bin/python -m pyright gui/backend/routes/probes.py`
 Expected: 0/0/0.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add testing/gui/backend/routes/probes.py
+git add gui/backend/routes/probes.py
 git commit -m "$(cat <<'EOF'
 feat(backend): WS approx mode accepts n_steps for IG
 
@@ -670,7 +670,7 @@ EOF
 ## Task 7: Frontend types
 
 **Files:**
-- Modify: `testing/gui/frontend/src/api/types.ts` (or wherever `PatchingCompleteData` / `PatchingSummary` is declared — check for `PatchingCompleteData.summary.mode` to locate it).
+- Modify: `gui/frontend/src/api/types.ts` (or wherever `PatchingCompleteData` / `PatchingSummary` is declared — check for `PatchingCompleteData.summary.mode` to locate it).
 
 - [ ] **Step 1: Add `n_steps?` field to the summary type**
 
@@ -688,7 +688,7 @@ export interface PatchingCompleteSummary {
 
 - [ ] **Step 2: tsc check**
 
-Run: `cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit`
+Run: `cd gui/frontend && ./node_modules/.bin/tsc --noEmit`
 Expected: clean.
 
 - [ ] **Step 3: No commit yet — bundle with Tasks 8+9.**
@@ -698,7 +698,7 @@ Expected: clean.
 ## Task 8: PatchingControls — add `n_steps` input
 
 **Files:**
-- Modify: `testing/gui/frontend/src/components/PatchingControls.tsx:18-46` (interface + default) and the render block around line 180 (approx radio).
+- Modify: `gui/frontend/src/components/PatchingControls.tsx:18-46` (interface + default) and the render block around line 180 (approx radio).
 
 - [ ] **Step 1: Extend `PatchingState` interface**
 
@@ -757,7 +757,7 @@ In `ProbePanel.tsx`, find the section that builds the WS config for `activation-
 
 - [ ] **Step 5: tsc check**
 
-Run: `cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit`
+Run: `cd gui/frontend && ./node_modules/.bin/tsc --noEmit`
 Expected: clean.
 
 - [ ] **Step 6: No commit yet.**
@@ -767,7 +767,7 @@ Expected: clean.
 ## Task 9: Heatmap header — annotate IG
 
 **Files:**
-- Modify: `testing/gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx:257-259`.
+- Modify: `gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx:257-259`.
 
 - [ ] **Step 1: Extend header text**
 
@@ -796,7 +796,7 @@ Replace with:
 
 - [ ] **Step 2: tsc check**
 
-Run: `cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit`
+Run: `cd gui/frontend && ./node_modules/.bin/tsc --noEmit`
 Expected: clean.
 
 - [ ] **Step 3: No commit yet.**
@@ -806,8 +806,8 @@ Expected: clean.
 ## Task 10: Playwright fixture + smoke test
 
 **Files:**
-- Modify: `testing/gui/frontend/tests/e2e/fixtures/activation-patching-approx.json` — add `n_steps: 5` to the fixture's result summary.
-- Modify: `testing/gui/frontend/tests/e2e/smoke.spec.ts` — add test.
+- Modify: `gui/frontend/tests/e2e/fixtures/activation-patching-approx.json` — add `n_steps: 5` to the fixture's result summary.
+- Modify: `gui/frontend/tests/e2e/smoke.spec.ts` — add test.
 
 - [ ] **Step 1: Update fixture**
 
@@ -843,23 +843,23 @@ test("approx mode with IG shows step count in heatmap header", async ({ page }) 
 
 - [ ] **Step 3: Run Playwright**
 
-Run: `cd testing/gui/frontend && npm run e2e`
+Run: `cd gui/frontend && npm run e2e`
 Expected: 18 tests pass (17 existing + 1 new).
 
 - [ ] **Step 4: Run Vitest (regression)**
 
-Run: `cd testing/gui/frontend && ./node_modules/.bin/vitest run`
+Run: `cd gui/frontend && ./node_modules/.bin/vitest run`
 Expected: 19/19 pass.
 
 - [ ] **Step 5: Commit Tasks 7+8+9+10 together (all frontend)**
 
 ```bash
-git add testing/gui/frontend/src/api/types.ts \
-        testing/gui/frontend/src/components/PatchingControls.tsx \
-        testing/gui/frontend/src/components/ProbePanel.tsx \
-        testing/gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx \
-        testing/gui/frontend/tests/e2e/fixtures/activation-patching-approx.json \
-        testing/gui/frontend/tests/e2e/smoke.spec.ts
+git add gui/frontend/src/api/types.ts \
+        gui/frontend/src/components/PatchingControls.tsx \
+        gui/frontend/src/components/ProbePanel.tsx \
+        gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx \
+        gui/frontend/tests/e2e/fixtures/activation-patching-approx.json \
+        gui/frontend/tests/e2e/smoke.spec.ts
 git commit -m "$(cat <<'EOF'
 feat(gui/frontend): n_steps control + IG header annotation
 
@@ -879,12 +879,12 @@ EOF
 
 Run each and confirm output:
 
-- **pyright**: `.venv/bin/python -m pyright testing/llm_surgeon/probe.py testing/gui/backend/routes/probes.py testing/tests/test_probe_attribution_patch.py` → 0/0/0.
-- **tsc**: `cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit` → clean.
-- **pytest (AP)**: `.venv/bin/python -m pytest testing/tests/test_probe_attribution_patch.py -v` → all pass (including 5 new unit + 1 TinyLlama).
-- **pytest (regressions)**: `.venv/bin/python -m pytest testing/tests/ -v --ignore=testing/tests/test_probe_attribution_patch.py` → unchanged from pre-Phase-3.10 baseline.
-- **vitest**: `cd testing/gui/frontend && ./node_modules/.bin/vitest run` → 19/19.
-- **playwright**: `cd testing/gui/frontend && npm run e2e` → 18/18.
+- **pyright**: `.venv/bin/python -m pyright llm_surgeon/probe.py gui/backend/routes/probes.py tests/test_probe_attribution_patch.py` → 0/0/0.
+- **tsc**: `cd gui/frontend && ./node_modules/.bin/tsc --noEmit` → clean.
+- **pytest (AP)**: `.venv/bin/python -m pytest tests/test_probe_attribution_patch.py -v` → all pass (including 5 new unit + 1 TinyLlama).
+- **pytest (regressions)**: `.venv/bin/python -m pytest tests/ -v --ignore=tests/test_probe_attribution_patch.py` → unchanged from pre-Phase-3.10 baseline.
+- **vitest**: `cd gui/frontend && ./node_modules/.bin/vitest run` → 19/19.
+- **playwright**: `cd gui/frontend && npm run e2e` → 18/18.
 
 ---
 

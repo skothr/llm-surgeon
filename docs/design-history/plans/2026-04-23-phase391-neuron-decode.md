@@ -8,11 +8,11 @@
 
 **Tech Stack:** Python 3.11 + PyTorch + FastAPI + React 18 + TypeScript. No new deps.
 
-**Spec:** `testing/docs/superpowers/specs/2026-04-23-phase391-neuron-decode.md` (commit `f50bba8`).
+**Spec:** `docs/design-history/specs/2026-04-23-phase391-neuron-decode.md` (commit `f50bba8`).
 
 **Tool rules (for every subagent prompt):**
 - Use Read (not cat), Edit (not Bash sed/awk/cat), Grep (not Bash grep/rg/awk), Glob (not find)
-- Git: `git -C /home/ai/ai-projects/llm <cmd>`
+- Git: `git <cmd>`
 - For tsc/pyright/vitest/playwright/pytest/git: pass `dangerouslyDisableSandbox: true`
 - If Bash is denied TWICE on the same command, STOP and report BLOCKED
 - Pyright/tsc must be 0/0/0 after every task
@@ -22,33 +22,33 @@
 ## File Structure
 
 **Backend**
-- **Modify** `testing/gui/backend/routes/sessions.py`
+- **Modify** `gui/backend/routes/sessions.py`
   - Add `DecodeNeuronRequest` pydantic model near existing `DecodeIdsRequest` (line ~492)
   - Add `POST /sessions/{name}/decode-neuron` endpoint after `decode_token_ids` (line ~523)
 
 **Tests**
-- **Create** `testing/tests/test_decode_neuron.py` — unit tests (mock session) + TinyLlama integration
+- **Create** `tests/test_decode_neuron.py` — unit tests (mock session) + TinyLlama integration
 
 **Frontend**
-- **Modify** `testing/gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx`
+- **Modify** `gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx`
   - Add `sessionName: string` prop
   - Add `pinnedRow: { layer: number; neuron: number } | null` state + click handler
   - Add pinned-card render block (top-10 promoted + bottom-10 suppressed + close button)
   - Inline `fetch()` call with AbortController cleanup on remount/unpin
-- **Modify** `testing/gui/frontend/src/components/VisualizationArea.tsx` — pass `sessionName` prop
-- **Modify** `testing/gui/frontend/tests/e2e/smoke.spec.ts` — 16th test: click row, intercept route, assert card renders
+- **Modify** `gui/frontend/src/components/VisualizationArea.tsx` — pass `sessionName` prop
+- **Modify** `gui/frontend/tests/e2e/smoke.spec.ts` — 16th test: click row, intercept route, assert card renders
 
 ---
 
 ## Task 1: Backend endpoint + unit tests
 
 **Files:**
-- Modify: `testing/gui/backend/routes/sessions.py`
-- Create: `testing/tests/test_decode_neuron.py` (unit-test portion — append TinyLlama in Task 2)
+- Modify: `gui/backend/routes/sessions.py`
+- Create: `tests/test_decode_neuron.py` (unit-test portion — append TinyLlama in Task 2)
 
 - [ ] **Step 1: Add Pydantic model and endpoint**
 
-In `testing/gui/backend/routes/sessions.py`, find the existing `DecodeIdsRequest` (line ~492) and `decode_token_ids` handler (line ~499). Directly AFTER the `return {"tokens": tokens}` line of that handler (around line ~524), insert:
+In `gui/backend/routes/sessions.py`, find the existing `DecodeIdsRequest` (line ~492) and `decode_token_ids` handler (line ~499). Directly AFTER the `return {"tokens": tokens}` line of that handler (around line ~524), insert:
 
 ```python
 class DecodeNeuronRequest(BaseModel):
@@ -129,7 +129,7 @@ async def decode_neuron(name: str, req: DecodeNeuronRequest):
 
 - [ ] **Step 2: Write unit tests**
 
-Create `testing/tests/test_decode_neuron.py`:
+Create `tests/test_decode_neuron.py`:
 
 ```python
 """Unit + integration tests for POST /api/sessions/{name}/decode-neuron (Phase 3.9.1)."""
@@ -288,7 +288,7 @@ class TestDecodeNeuronUnit:
 
 Run:
 ```bash
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pytest testing/tests/test_decode_neuron.py -v -k "Unit"
+cd . && python -m pytest tests/test_decode_neuron.py -v -k "Unit"
 ```
 Expected: 6 tests pass.
 
@@ -298,15 +298,15 @@ If the test fails on `mgr._sessions` attribute access, the SessionManager's priv
 
 Run:
 ```bash
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pyright testing/gui/backend/routes/sessions.py testing/tests/test_decode_neuron.py
+cd . && python -m pyright gui/backend/routes/sessions.py tests/test_decode_neuron.py
 ```
 Expected: 0/0/0.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/backend/routes/sessions.py testing/tests/test_decode_neuron.py
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add gui/backend/routes/sessions.py tests/test_decode_neuron.py
+git commit -m "$(cat <<'EOF'
 feat(backend): POST /sessions/{name}/decode-neuron endpoint
 
 Returns top-k and bottom-k tokens most strongly promoted/suppressed by
@@ -327,11 +327,11 @@ EOF
 ## Task 2: TinyLlama integration test
 
 **Files:**
-- Modify: `testing/tests/test_decode_neuron.py` — append GPU-guarded class
+- Modify: `tests/test_decode_neuron.py` — append GPU-guarded class
 
 - [ ] **Step 1: Append TinyLlama integration test**
 
-At the end of `testing/tests/test_decode_neuron.py`, append:
+At the end of `tests/test_decode_neuron.py`, append:
 
 ```python
 # -------------------------------------------------------------------------
@@ -343,7 +343,7 @@ def _tinyllama_cached() -> bool:
     env_cache = os.environ.get("TINYLLAMA_CACHE")
     if env_cache:
         return Path(env_cache).exists()
-    default = Path("testing/.cache/models/models--TinyLlama--TinyLlama-1.1B-Chat-v1.0")
+    default = Path(".cache/models/models--TinyLlama--TinyLlama-1.1B-Chat-v1.0")
     return default.exists()
 
 
@@ -393,15 +393,15 @@ class TestDecodeNeuronTinyLlama:
 
 Run:
 ```bash
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pytest testing/tests/test_decode_neuron.py::TestDecodeNeuronTinyLlama -v -s
+cd . && python -m pytest tests/test_decode_neuron.py::TestDecodeNeuronTinyLlama -v -s
 ```
 Expected: passes in ~1 min (dominated by model load + one AP pass ~43s + trivial matmul).
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/tests/test_decode_neuron.py
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add tests/test_decode_neuron.py
+git commit -m "$(cat <<'EOF'
 test(probe): TinyLlama integration for decode-neuron + Phase 3.9 chain
 
 Runs attribution_patch_per_neuron on capital-of-France, picks the
@@ -420,9 +420,9 @@ EOF
 ## Task 3: Frontend pinned-card UI + Playwright smoke
 
 **Files:**
-- Modify: `testing/gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx`
-- Modify: `testing/gui/frontend/src/components/VisualizationArea.tsx`
-- Modify: `testing/gui/frontend/tests/e2e/smoke.spec.ts`
+- Modify: `gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx`
+- Modify: `gui/frontend/src/components/VisualizationArea.tsx`
+- Modify: `gui/frontend/tests/e2e/smoke.spec.ts`
 
 - [ ] **Step 1: Extend `PerNeuronPatchingPanel` with pinned-card + fetch**
 
@@ -586,7 +586,7 @@ Directly AFTER the stats strip `<div className="stats">…</div>` and BEFORE the
 
 - [ ] **Step 3: Pass `sessionName` from `VisualizationArea`**
 
-In `testing/gui/frontend/src/components/VisualizationArea.tsx`, find the `PerNeuronPatchingPanel` render. Update it to pass `sessionName`:
+In `gui/frontend/src/components/VisualizationArea.tsx`, find the `PerNeuronPatchingPanel` render. Update it to pass `sessionName`:
 
 ```tsx
 <PerNeuronPatchingPanel cells={cellMsgs} complete={completeMsg} sessionName={activeResult.sessionName} />
@@ -598,7 +598,7 @@ In `testing/gui/frontend/src/components/VisualizationArea.tsx`, find the `PerNeu
 
 Run:
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 Expected: no errors.
 
@@ -606,13 +606,13 @@ Expected: no errors.
 
 Run:
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npx vitest run
+cd ./gui/frontend && npx vitest run
 ```
 Expected: 19/19 tests still pass (no new Vitest added — effect logic is tested via Playwright).
 
 - [ ] **Step 6: Add 16th Playwright smoke test**
 
-Append to `testing/gui/frontend/tests/e2e/smoke.spec.ts` (after the 15th per-neuron test):
+Append to `gui/frontend/tests/e2e/smoke.spec.ts` (after the 15th per-neuron test):
 
 ```ts
 test("per-neuron row click opens pinned card with decoded tokens", async ({ page }) => {
@@ -692,7 +692,7 @@ test("per-neuron row click opens pinned card with decoded tokens", async ({ page
 
 Run:
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npm run e2e
+cd ./gui/frontend && npm run e2e
 ```
 Expected: 16/16 tests pass.
 
@@ -700,11 +700,11 @@ Expected: 16/16 tests pass.
 
 Run each:
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npx vitest run
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pyright testing/gui/backend/routes/sessions.py testing/tests/test_decode_neuron.py
-cd /home/ai/ai-projects/llm && testing/.venv/bin/python -m pytest testing/tests/ -v -k "not TinyLlama"
-cd /home/ai/ai-projects/llm/testing/gui/frontend && npm run e2e
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && npx vitest run
+cd . && python -m pyright gui/backend/routes/sessions.py tests/test_decode_neuron.py
+cd . && python -m pytest tests/ -v -k "not TinyLlama"
+cd ./gui/frontend && npm run e2e
 ```
 
 Expected: all green, 0/0/0 pyright, 68+ Python tests pass, Vitest 19/19, Playwright 16/16.
@@ -712,8 +712,8 @@ Expected: all green, 0/0/0 pyright, 68+ Python tests pass, Vitest 19/19, Playwri
 - [ ] **Step 9: Commit + roadmap memory update**
 
 ```bash
-git -C /home/ai/ai-projects/llm add testing/gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx testing/gui/frontend/src/components/VisualizationArea.tsx testing/gui/frontend/tests/e2e/smoke.spec.ts
-git -C /home/ai/ai-projects/llm commit -m "$(cat <<'EOF'
+git add gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx gui/frontend/src/components/VisualizationArea.tsx gui/frontend/tests/e2e/smoke.spec.ts
+git commit -m "$(cat <<'EOF'
 feat(gui/frontend): per-neuron pin-card with logit-lens decode
 
 Clicking a row in PerNeuronPatchingPanel fetches the backend's
@@ -739,13 +739,13 @@ Update the roadmap memory at `~/.claude/projects/-home-ai-ai-projects-llm/memory
 
 | Check | Command | Expected |
 |-------|---------|----------|
-| Pyright | `.venv/bin/python -m pyright testing/gui/backend/routes/sessions.py testing/tests/test_decode_neuron.py` | 0/0/0 |
-| Tsc | `cd testing/gui/frontend && ./node_modules/.bin/tsc --noEmit` | clean |
-| Python unit | `.venv/bin/python -m pytest testing/tests/test_decode_neuron.py -v -k "Unit"` | 6 pass |
-| Python TinyLlama | `.venv/bin/python -m pytest testing/tests/test_decode_neuron.py::TestDecodeNeuronTinyLlama -v` | pass ~1 min |
-| Phase 3.5–3.9 regressions | `.venv/bin/python -m pytest testing/tests/ -v -k "not TinyLlama"` | 68+ pass |
-| Vitest | `cd testing/gui/frontend && npx vitest run` | 19/19 |
-| Playwright | `cd testing/gui/frontend && npm run e2e` | 16/16 |
+| Pyright | `.venv/bin/python -m pyright gui/backend/routes/sessions.py tests/test_decode_neuron.py` | 0/0/0 |
+| Tsc | `cd gui/frontend && ./node_modules/.bin/tsc --noEmit` | clean |
+| Python unit | `.venv/bin/python -m pytest tests/test_decode_neuron.py -v -k "Unit"` | 6 pass |
+| Python TinyLlama | `.venv/bin/python -m pytest tests/test_decode_neuron.py::TestDecodeNeuronTinyLlama -v` | pass ~1 min |
+| Phase 3.5–3.9 regressions | `.venv/bin/python -m pytest tests/ -v -k "not TinyLlama"` | 68+ pass |
+| Vitest | `cd gui/frontend && npx vitest run` | 19/19 |
+| Playwright | `cd gui/frontend && npm run e2e` | 16/16 |
 
 ---
 

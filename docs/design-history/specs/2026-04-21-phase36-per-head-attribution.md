@@ -484,7 +484,7 @@ type PatchingMode = "exact" | "approx" | "approx_head";
 
 ## 6. Verification Plan
 
-### 6.1 Unit tests (`testing/tests/test_probe_per_head_ap.py`)
+### 6.1 Unit tests (`tests/test_probe_per_head_ap.py`)
 
 | Test | What it checks |
 |---|---|
@@ -546,15 +546,15 @@ Frontend: PatchingCompleteData.summary.mode === "approx_head"
 
 | File | Change |
 |---|---|
-| `testing/llm_surgeon/probe.py` | **+** `attribution_patch_per_head()`, extend `_capture_residual_stream_with_grad` with `capture_concat_z` flag, add `n_heads` field to `PatchingResult`; update `attribution_patch` callers to unpack 5-tuple return |
-| `testing/tests/test_probe_per_head_ap.py` | **new** — unit tests + TinyLlama Spearman |
-| `testing/gui/backend/routes/probes.py` | **~** `approx_head` mode branch; `on_cell` emits `unit` for head mode; complete frame gains `n_heads` |
-| `testing/gui/frontend/src/types/api.ts` | **~** `PatchingCellData.unit?`, `PatchingCellData.head?`, `PatchingCompleteData.summary.mode` extended, `summary.n_heads?` |
-| `testing/gui/frontend/src/components/PatchingControls.tsx` | **~** third mode radio (`"approx_head"`), extend `PatchingMode` type |
-| `testing/gui/frontend/src/components/ProbePanel.tsx` | **~** route `mode === "approx_head"` to `<PerHeadPatchingHeatmap>` |
-| `testing/gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx` | **new** — position selector, layer×head grid, pinned card |
-| `testing/gui/frontend/tests/e2e/smoke.spec.ts` | **+** one per-head smoke test |
-| `testing/gui/frontend/tests/e2e/fixtures/activation-patching-per-head.json` | **new** — fixture with `mode: "approx_head"` + unit-keyed cells |
+| `llm_surgeon/probe.py` | **+** `attribution_patch_per_head()`, extend `_capture_residual_stream_with_grad` with `capture_concat_z` flag, add `n_heads` field to `PatchingResult`; update `attribution_patch` callers to unpack 5-tuple return |
+| `tests/test_probe_per_head_ap.py` | **new** — unit tests + TinyLlama Spearman |
+| `gui/backend/routes/probes.py` | **~** `approx_head` mode branch; `on_cell` emits `unit` for head mode; complete frame gains `n_heads` |
+| `gui/frontend/src/types/api.ts` | **~** `PatchingCellData.unit?`, `PatchingCellData.head?`, `PatchingCompleteData.summary.mode` extended, `summary.n_heads?` |
+| `gui/frontend/src/components/PatchingControls.tsx` | **~** third mode radio (`"approx_head"`), extend `PatchingMode` type |
+| `gui/frontend/src/components/ProbePanel.tsx` | **~** route `mode === "approx_head"` to `<PerHeadPatchingHeatmap>` |
+| `gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx` | **new** — position selector, layer×head grid, pinned card |
+| `gui/frontend/tests/e2e/smoke.spec.ts` | **+** one per-head smoke test |
+| `gui/frontend/tests/e2e/fixtures/activation-patching-per-head.json` | **new** — fixture with `mode: "approx_head"` + unit-keyed cells |
 
 ---
 

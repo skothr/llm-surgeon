@@ -13,8 +13,8 @@
 ## Task 1 — Backend endpoint + tests
 
 **Files:**
-- Modify: `testing/gui/backend/routes/sessions.py` (append new endpoint at end of decode-* block, just after `decode_head`)
-- Create: `testing/tests/test_decode_residual.py`
+- Modify: `gui/backend/routes/sessions.py` (append new endpoint at end of decode-* block, just after `decode_head`)
+- Create: `tests/test_decode_residual.py`
 
 - [ ] **Step 1: Append the endpoint to `sessions.py`**
 
@@ -293,7 +293,7 @@ def test_decode_residual_tinyllama_matches_logit_lens():
     from fastapi.testclient import TestClient
     from gui.backend.app import create_app
 
-    cache_root = os.environ.get("HF_HOME", os.path.expanduser("~/ai-projects/llm/testing/.cache/models"))
+    cache_root = os.environ.get("HF_HOME", os.path.expanduser("~/ai-projects/llm/.cache/models"))
     repo = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     tok = AutoTokenizer.from_pretrained(repo, cache_dir=cache_root)
     model = AutoModelForCausalLM.from_pretrained(
@@ -343,7 +343,7 @@ def test_decode_residual_tinyllama_matches_logit_lens():
 - [ ] **Step 3: Run unit tests (parent, sandbox-disabled)**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_decode_residual.py -v -k "not tinyllama"
+cd . && .venv/bin/python -m pytest tests/test_decode_residual.py -v -k "not tinyllama"
 ```
 
 Expected: 7/7 pass.
@@ -351,7 +351,7 @@ Expected: 7/7 pass.
 - [ ] **Step 4: Run pyright (parent, sandbox-disabled)**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pyright gui/backend/routes/sessions.py tests/test_decode_residual.py
+cd . && .venv/bin/python -m pyright gui/backend/routes/sessions.py tests/test_decode_residual.py
 ```
 
 Expected: 0 errors / 0 warnings / 0 informations.
@@ -359,7 +359,7 @@ Expected: 0 errors / 0 warnings / 0 informations.
 - [ ] **Step 5: Run TinyLlama integration (parent, sandbox-disabled, GPU)**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing && .venv/bin/python -m pytest tests/test_decode_residual.py -v -k "tinyllama"
+cd . && .venv/bin/python -m pytest tests/test_decode_residual.py -v -k "tinyllama"
 ```
 
 Expected: 1/1 pass in ~30-60s.
@@ -367,7 +367,7 @@ Expected: 1/1 pass in ~30-60s.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add testing/gui/backend/routes/sessions.py testing/tests/test_decode_residual.py
+git add gui/backend/routes/sessions.py tests/test_decode_residual.py
 git commit -m "feat(probe): /decode-residual endpoint for AP pin-card logit lens
 
 Standard logit lens (final-norm + lm_head) applied to a single
@@ -380,9 +380,9 @@ residual-stream point on demand. Reuses _capture_residual_stream
 ## Task 2 — Shared frontend hook + ResidualDecodeBlock component
 
 **Files:**
-- Create: `testing/gui/frontend/src/utils/useResidualDecode.ts`
-- Create: `testing/gui/frontend/src/components/visualizations/ResidualDecodeBlock.tsx`
-- Create: `testing/gui/frontend/tests/unit/useResidualDecode.test.ts` (Vitest)
+- Create: `gui/frontend/src/utils/useResidualDecode.ts`
+- Create: `gui/frontend/src/components/visualizations/ResidualDecodeBlock.tsx`
+- Create: `gui/frontend/tests/unit/useResidualDecode.test.ts` (Vitest)
 
 - [ ] **Step 1: Create `utils/useResidualDecode.ts`**
 
@@ -573,12 +573,12 @@ describe("useResidualDecode", () => {
 });
 ```
 
-**Note:** if `@testing-library/react` is not yet installed, install via `cd testing/gui/frontend && npm install --save-dev @testing-library/react`. Check `package.json` first; it may already be a dep from prior phases.
+**Note:** if `@testing-library/react` is not yet installed, install via `cd gui/frontend && npm install --save-dev @testing-library/react`. Check `package.json` first; it may already be a dep from prior phases.
 
 - [ ] **Step 4: Run Vitest (parent, sandbox-disabled)**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/vitest run
+cd ./gui/frontend && ./node_modules/.bin/vitest run
 ```
 
 Expected: 22/22 pass (19 prior + 3 new). If `@testing-library/react` is missing, add it first.
@@ -586,7 +586,7 @@ Expected: 22/22 pass (19 prior + 3 new). If `@testing-library/react` is missing,
 - [ ] **Step 5: Run tsc**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit
 ```
 
 Expected: clean.
@@ -594,10 +594,10 @@ Expected: clean.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add testing/gui/frontend/src/utils/useResidualDecode.ts \
-        testing/gui/frontend/src/components/visualizations/ResidualDecodeBlock.tsx \
-        testing/gui/frontend/tests/unit/useResidualDecode.test.ts \
-        testing/gui/frontend/package.json testing/gui/frontend/package-lock.json
+git add gui/frontend/src/utils/useResidualDecode.ts \
+        gui/frontend/src/components/visualizations/ResidualDecodeBlock.tsx \
+        gui/frontend/tests/unit/useResidualDecode.test.ts \
+        gui/frontend/package.json gui/frontend/package-lock.json
 git commit -m "feat(gui): ResidualDecodeBlock + useResidualDecode hook
 
 Shared component used by all 5 AP pin cards in the next task.
@@ -610,11 +610,11 @@ Phase 3.11 Task 2 (frontend hook + component)."
 ## Task 3 — Wire into all 5 AP pin cards
 
 **Files:**
-- Modify: `testing/gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx`
-- Modify: `testing/gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx`
-- Modify: `testing/gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx`
-- Modify: `testing/gui/frontend/src/components/visualizations/EdgeAttributionPanel.tsx`
-- Modify: `testing/gui/frontend/src/components/visualizations/CircuitPanel.tsx`
+- Modify: `gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx`
+- Modify: `gui/frontend/src/components/visualizations/PerHeadPatchingHeatmap.tsx`
+- Modify: `gui/frontend/src/components/visualizations/PerNeuronPatchingPanel.tsx`
+- Modify: `gui/frontend/src/components/visualizations/EdgeAttributionPanel.tsx`
+- Modify: `gui/frontend/src/components/visualizations/CircuitPanel.tsx`
 
 **Strategy:** Each panel's pin card already shows cell info. Inject `<ResidualDecodeBlock>` (or a caption fallback for embed-writers) at the END of the pin card, after existing content but before the close button.
 
@@ -645,7 +645,7 @@ For `sessionName`: each panel already receives this prop or has access via `resu
 - [ ] **Step 6: Run tsc, vitest**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/tsc --noEmit && ./node_modules/.bin/vitest run
+cd ./gui/frontend && ./node_modules/.bin/tsc --noEmit && ./node_modules/.bin/vitest run
 ```
 
 Both clean.
@@ -653,7 +653,7 @@ Both clean.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add testing/gui/frontend/src/components/visualizations/{ActivationPatchingHeatmap,PerHeadPatchingHeatmap,PerNeuronPatchingPanel,EdgeAttributionPanel,CircuitPanel}.tsx
+git add gui/frontend/src/components/visualizations/{ActivationPatchingHeatmap,PerHeadPatchingHeatmap,PerNeuronPatchingPanel,EdgeAttributionPanel,CircuitPanel}.tsx
 git commit -m "feat(gui): logit-lens decode block on every AP pin card
 
 Each of the five AP visualization panels now renders ResidualDecodeBlock
@@ -666,7 +666,7 @@ Phase 3.11 Task 3 (panel wiring)."
 ## Task 4 — Playwright smoke test
 
 **Files:**
-- Modify: `testing/gui/frontend/tests/e2e/smoke.spec.ts`
+- Modify: `gui/frontend/tests/e2e/smoke.spec.ts`
 
 - [ ] **Step 1: Add a Playwright test that mocks `/decode-residual`**
 
@@ -707,7 +707,7 @@ test("AP pin card shows residual decode (logit lens)", async ({ page }) => {
 - [ ] **Step 2: Run Playwright (parent, sandbox-disabled)**
 
 ```bash
-cd /home/ai/ai-projects/llm/testing/gui/frontend && ./node_modules/.bin/playwright test
+cd ./gui/frontend && ./node_modules/.bin/playwright test
 ```
 
 Expected: 19/19 pass.
@@ -715,7 +715,7 @@ Expected: 19/19 pass.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add testing/gui/frontend/tests/e2e/smoke.spec.ts
+git add gui/frontend/tests/e2e/smoke.spec.ts
 git commit -m "test(gui): Playwright smoke for AP residual lens decode
 
 Mocks /decode-residual and asserts the Logit lens block renders

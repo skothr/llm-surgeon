@@ -1,4 +1,4 @@
-# testing/experiments/test_full_recipe.yaml
+# experiments/test_full_recipe.yaml
 name: tinyllama-smart-cut
 base_model: TinyLlama/TinyLlama-1.1B-Chat-v1.0
 description: Remove lowest-BI layer with calibration

@@ -1,5 +1,24 @@
 {
-  "extends": "/home/skothr/.config/pyright/base.json",
+  // Self-contained (vendored from a user-global base for standalone use).
+  "exclude": ["**/__pycache__", "output", "dist", "build", "node_modules", "old", ".venv", "venv", ".tox"],
+  "typeCheckingMode": "standard",
+
+  // reportUnnecessaryTypeIgnoreComment stays ON (default) so stale
+  // `# pyright: ignore[...]` surface for deletion when stubs catch up.
+
+  // Stub-lag mutes (noise from incomplete third-party stubs, not user bugs):
+  // torch's __init__.pyi under-re-exports its runtime surface; bitsandbytes /
+  // llama_cpp / gguf ship no stubs.
+  "reportPrivateImportUsage": "none",
+  "reportMissingTypeStubs": "none",
+  "reportMissingModuleSource": "none",
+
+  // Anti-pattern-forming mutes (escape hatches worse than the warning):
+  "reportPrivateUsage": "none",
+  "reportImplicitOverride": "none",
+  "reportUnusedFunction": "none",
+  "reportUnusedClass": "none",
+
   "pythonVersion": "3.12",
   "venvPath": ".",
   "venv": ".venv",

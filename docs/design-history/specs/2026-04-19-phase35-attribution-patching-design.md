@@ -272,7 +272,7 @@ Row computation, column layout, SVG sizing, legend rendering, ExportButtons — 
 
 ## 6. Data types
 
-### `testing/gui/frontend/src/types/api.ts`
+### `gui/frontend/src/types/api.ts`
 
 ```tsx
 export interface PatchingCellData {
@@ -306,7 +306,7 @@ Patching reducers (`setPendingResult` / `updatePendingResult` / `finalizePending
 
 ## 7. Testing strategy
 
-### Python: `testing/tests/test_probe_attribution_patch.py` (new file)
+### Python: `tests/test_probe_attribution_patch.py` (new file)
 
 | Test | Covers |
 |---|---|
@@ -357,14 +357,14 @@ Before commit: pyright 0/0/0 on `probe.py`, `test_probe_attribution_patch.py`, `
 
 | File | Change |
 |---|---|
-| `testing/llm_surgeon/probe.py` | **+** `attribution_patch()`, `_capture_residual_stream_with_grad()` helper, `mode` field on `PatchingResult` (default `"exact"`) |
-| `testing/gui/backend/routes/probes.py` | **~** `/activation-patching` handler: branch on `cfg.mode`; token-pair resolution before `attribution_patch` call; `ap_recovery` in data frames |
-| `testing/gui/frontend/src/types/api.ts` | **~** `PatchingCellData.ap_recovery?`, `PatchingCompleteData.summary.mode` |
-| `testing/gui/frontend/src/components/PatchingControls.tsx` | **~** mode radio + `PatchingState.mode` field + `DEFAULT_PATCHING_STATE.mode` |
-| `testing/gui/frontend/src/components/ProbePanel.tsx` | **~** forward `mode` in cfg payload |
-| `testing/gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx` | **~** mode-branch: hide metric dropdown in approx, read `ap_recovery` directly, different heading |
-| `testing/tests/test_probe_attribution_patch.py` | **new** — unit + TinyLlama correlation integration |
-| `testing/gui/frontend/tests/e2e/smoke.spec.ts` | **+** one approx-mode heatmap test |
-| `testing/gui/frontend/tests/e2e/fixtures/activation-patching-approx.json` | **new** — sibling fixture with `mode: "approx"` + `ap_recovery` cells |
+| `llm_surgeon/probe.py` | **+** `attribution_patch()`, `_capture_residual_stream_with_grad()` helper, `mode` field on `PatchingResult` (default `"exact"`) |
+| `gui/backend/routes/probes.py` | **~** `/activation-patching` handler: branch on `cfg.mode`; token-pair resolution before `attribution_patch` call; `ap_recovery` in data frames |
+| `gui/frontend/src/types/api.ts` | **~** `PatchingCellData.ap_recovery?`, `PatchingCompleteData.summary.mode` |
+| `gui/frontend/src/components/PatchingControls.tsx` | **~** mode radio + `PatchingState.mode` field + `DEFAULT_PATCHING_STATE.mode` |
+| `gui/frontend/src/components/ProbePanel.tsx` | **~** forward `mode` in cfg payload |
+| `gui/frontend/src/components/visualizations/ActivationPatchingHeatmap.tsx` | **~** mode-branch: hide metric dropdown in approx, read `ap_recovery` directly, different heading |
+| `tests/test_probe_attribution_patch.py` | **new** — unit + TinyLlama correlation integration |
+| `gui/frontend/tests/e2e/smoke.spec.ts` | **+** one approx-mode heatmap test |
+| `gui/frontend/tests/e2e/fixtures/activation-patching-approx.json` | **new** — sibling fixture with `mode: "approx"` + `ap_recovery` cells |
 
 Roadmap memory update in the last plan task, same pattern as Phases 1 / 2 / 3.

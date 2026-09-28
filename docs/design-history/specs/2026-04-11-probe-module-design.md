@@ -1,8 +1,8 @@
 # probe.py — Hidden State Probing and Intervention
 
 **Date:** 2026-04-11
-**Module:** `testing/llm_surgeon/probe.py`
-**Tests:** `testing/tests/test_probe.py`
+**Module:** `llm_surgeon/probe.py`
+**Tests:** `tests/test_probe.py`
 
 ## Purpose
 

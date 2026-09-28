@@ -33,12 +33,17 @@ jobs:
       - name: Install CPU torch
         run: .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Install package with test extras
+      - name: Install package with all extras
         # Keep the CPU index visible so no dependency pulls a CUDA torch build.
-        run: .venv/bin/pip install -e ".[dev,eval,gguf]" --extra-index-url https://download.pytorch.org/whl/cpu
+        # The llama-cpp-python CPU wheel index avoids compiling llama.cpp.
+        # Every optional import must resolve, or pyright fails on it.
+        run: >-
+          .venv/bin/pip install -e ".[dev,eval,gguf,quant,llama]"
+          --extra-index-url https://download.pytorch.org/whl/cpu
+          --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 
       - name: pytest
-        run: .venv/bin/python -m pytest -q
+        run: .venv/bin/python -m pytest -q -rs
 
       - name: pyright
         run: .venv/bin/python -m pyright llm_surgeon tests

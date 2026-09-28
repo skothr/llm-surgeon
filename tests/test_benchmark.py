@@ -77,8 +77,14 @@ class TestPerplexityBasic:
 
 
 def _network_available() -> bool:
-    """Return True if a basic network connection can be established."""
+    """Return True if a basic network connection can be established.
+
+    ``HF_HUB_OFFLINE=1`` (set in CI) forces False so download tests skip.
+    """
+    import os
     import socket
+    if os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes", "on"):
+        return False
     try:
         socket.create_connection(("huggingface.co", 443), timeout=3)
         return True
@@ -91,7 +97,20 @@ requires_network = pytest.mark.skipif(
     reason="No network access — skipping dataset download test",
 )
 
+def _has_module(name: str) -> bool:
+    import importlib.util
+    return importlib.util.find_spec(name) is not None
 
+
+requires_datasets = pytest.mark.skipif(
+    not _has_module("datasets"), reason="`datasets` not installed",
+)
+requires_lm_eval = pytest.mark.skipif(
+    not _has_module("lm_eval"), reason="lm_eval not installed (pip install 'llm-surgeon[eval]')",
+)
+
+
+@requires_datasets
 class TestPerplexityDataset:
     """Tests for dataset-based perplexity (requires network / HF datasets)."""
 
@@ -114,6 +133,7 @@ class TestPerplexityDataset:
 # Task 2: eval_downstream()
 # ---------------------------------------------------------------------------
 
+@requires_lm_eval
 class TestEvalDownstream:
     """Tests for eval_downstream() using lm-eval harness.
 
@@ -392,6 +412,7 @@ class TestGroupByFewshot:
         assert groups == [(0, ["arc_easy", "hellaswag"]), (25, ["arc_challenge"])]
 
 
+@requires_lm_eval
 class TestEvalDownstreamInProcess:
     """Mock simple_evaluate / HFLM; assert kwarg routing and grouping."""
 

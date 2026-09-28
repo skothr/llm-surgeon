@@ -21,6 +21,25 @@ from llm_surgeon.export import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _llama_cpp_tool(*parts: str) -> bool:
+    """True if $LLAMA_CPP_PATH is set and contains the given file."""
+    root = os.environ.get("LLAMA_CPP_PATH")
+    if not root:
+        return False
+    return os.path.exists(os.path.join(root, *parts))
+
+
+requires_llama_cpp = pytest.mark.skipif(
+    not _llama_cpp_tool("convert_hf_to_gguf.py"),
+    reason="needs LLAMA_CPP_PATH pointing at a llama.cpp checkout",
+)
+requires_llama_quantize = pytest.mark.skipif(
+    not (_llama_cpp_tool("convert_hf_to_gguf.py")
+         and _llama_cpp_tool("build", "bin", "llama-quantize")),
+    reason="needs LLAMA_CPP_PATH pointing at a built llama.cpp (build/bin/llama-quantize)",
+)
+
+
 def _ollama_available() -> bool:
     try:
         import requests
@@ -112,35 +131,45 @@ class TestToGguf:
                 llama_cpp_path="/nonexistent/path",
             )
 
+    @requires_llama_cpp
     def test_convert_produces_f16_gguf(self, tiny_checkpoint, tmp_path):
         out_dir = str(tmp_path / "gguf")
         result = to_gguf(tiny_checkpoint, out_dir, quantization=None)
         assert result.endswith(".gguf")
         assert os.path.exists(result)
 
+    @requires_llama_quantize
     def test_convert_with_quantization_produces_quantized_gguf(self, tiny_checkpoint, tmp_path):
         out_dir = str(tmp_path / "gguf")
         result = to_gguf(tiny_checkpoint, out_dir, quantization="Q4_K_M")
         assert os.path.exists(result)
         assert "Q4_K_M" in result or result.endswith(".gguf")
 
+    @requires_llama_quantize
     def test_f16_intermediate_cleaned_up_after_quantization(self, tiny_checkpoint, tmp_path):
         out_dir = str(tmp_path / "gguf")
         to_gguf(tiny_checkpoint, out_dir, quantization="Q4_K_M")
         gguf_files = list(Path(out_dir).glob("*F16*.gguf"))
         assert len(gguf_files) == 0
 
+    @requires_llama_cpp
     def test_no_quantization_returns_f16_path(self, tiny_checkpoint, tmp_path):
         out_dir = str(tmp_path / "gguf")
         result = to_gguf(tiny_checkpoint, out_dir, quantization=None)
         assert os.path.exists(result)
         assert result.endswith(".gguf")
 
+    def test_raises_without_llama_cpp_path(self, tiny_checkpoint, tmp_path, monkeypatch):
+        monkeypatch.delenv("LLAMA_CPP_PATH", raising=False)
+        with pytest.raises(FileNotFoundError, match="LLAMA_CPP_PATH"):
+            to_gguf(tiny_checkpoint, str(tmp_path / "gguf"), quantization=None)
+
     def test_env_var_overrides_llama_cpp_path(self, tiny_checkpoint, tmp_path, monkeypatch):
         monkeypatch.setenv("LLAMA_CPP_PATH", "/nonexistent/path")
         with pytest.raises(FileNotFoundError):
             to_gguf(tiny_checkpoint, str(tmp_path / "gguf"))
 
+    @requires_llama_cpp
     def test_raises_on_conversion_failure(self, tiny_llama, tmp_path):
         """A checkpoint with no tokenizer fails conversion and raises RuntimeError."""
         ckpt = str(tmp_path / "bad_ckpt")
@@ -209,6 +238,7 @@ class TestRegisterOllama:
             with pytest.raises(RuntimeError, match="ollama create"):
                 register_ollama(gguf, "bad-model")
 
+    @requires_llama_cpp
     @pytest.mark.skipif(not _ollama_available(), reason="ollama not running")
     def test_registers_model_with_ollama(self, tiny_checkpoint, tmp_path):
         gguf_path = to_gguf(tiny_checkpoint, str(tmp_path / "gguf"), quantization=None)
@@ -350,6 +380,7 @@ class TestFullPipeline:
         # quantization should be passed through
         assert "Q4_K_M" in str(call_kwargs)
 
+    @requires_llama_cpp
     def test_end_to_end_no_ollama(self, tiny_checkpoint, tmp_path):
         """Full pipeline from checkpoint dir to GGUF, no registration."""
         # tiny_checkpoint is already a saved checkpoint — use it as the source
@@ -359,6 +390,7 @@ class TestFullPipeline:
         assert os.path.exists(gguf_path)
         assert gguf_path.endswith(".gguf")
 
+    @requires_llama_cpp
     @pytest.mark.skipif(not _ollama_available(), reason="ollama not running")
     def test_registers_with_ollama_when_requested(self, tiny_checkpoint, tmp_path):
         """End-to-end with real ollama registration."""

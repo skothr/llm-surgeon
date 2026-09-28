@@ -334,93 +334,82 @@ class TestLlamaEnginePerplexity:
         assert coherent < garbage
 
 
-import tempfile
+@pytest.fixture(scope="class")
+def tinyllama_exported(tmp_path_factory) -> Path:
+    """TinyLlama loaded from Ollama, exported once, and freed.
+
+    The fp32 model is about 4.4 GB; loading it once per test risks OOM.
+    """
+    import gc
+
+    import torch
+
+    from llm_surgeon.gguf_writer import export_hf_to_gguf
+    from llm_surgeon.surgery import load_model
+
+    model, tokenizer = load_model("tinyllama:latest", mode="fp32")
+    out_path = tmp_path_factory.mktemp("export") / "exported.gguf"
+    export_hf_to_gguf(model, tokenizer, out_path)
+    del model, tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
+    return out_path
 
 
 @pytest.mark.skipif(not TINYLLAMA_EXISTS, reason="tinyllama not in Ollama")
 @requires_gguf
 class TestExportHfToGguf:
-    def test_round_trip_logits(self):
+    def test_round_trip_logits(self, tinyllama_exported):
         """Load GGUF -> dequant to PyTorch -> export back -> reload -> compare logits."""
-        import gc
-        import torch
-        from llm_surgeon.llama_engine import export_hf_to_gguf
-        from llm_surgeon.surgery import load_model
+        out_path = tinyllama_exported
+        assert out_path.exists()
+        assert out_path.stat().st_size > 1e6
 
-        model, tokenizer = load_model("tinyllama:latest", mode="fp32")
+        with LlamaEngine(out_path, n_ctx=128) as eng:
+            tokens = eng.tokenize("The capital of France is")
+            logits_exported = eng.logits(tokens)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            out_path = Path(tmpdir) / "exported.gguf"
-            export_hf_to_gguf(model, tokenizer, out_path)
+        blob = _tinyllama_blob()
+        with LlamaEngine(blob, n_ctx=128) as eng_orig:
+            tokens_orig = eng_orig.tokenize("The capital of France is")
+            logits_original = eng_orig.logits(tokens_orig)
 
-            assert out_path.exists()
-            assert out_path.stat().st_size > 1e6
+        result = compare_logits(logits_original, logits_exported)
+        assert result["cosine_similarity"] > 0.99
+        assert result["top_k_agreement"] >= 8
 
-            del model, tokenizer
-            gc.collect()
-            torch.cuda.empty_cache()
-
-            with LlamaEngine(out_path, n_ctx=128) as eng:
-                tokens = eng.tokenize("The capital of France is")
-                logits_exported = eng.logits(tokens)
-
-            blob = _tinyllama_blob()
-            with LlamaEngine(blob, n_ctx=128) as eng_orig:
-                tokens_orig = eng_orig.tokenize("The capital of France is")
-                logits_original = eng_orig.logits(tokens_orig)
-
-            result = compare_logits(logits_original, logits_exported)
-            assert result["cosine_similarity"] > 0.99
-            assert result["top_k_agreement"] >= 8
-
-    def test_exported_file_is_valid_gguf(self):
+    def test_exported_file_is_valid_gguf(self, tinyllama_exported):
         """Verify the exported file can be parsed as GGUF."""
-        from llm_surgeon.llama_engine import export_hf_to_gguf
-        from llm_surgeon.surgery import load_model
         from llm_surgeon.gguf_reader import GGUFFile
 
-        model, tokenizer = load_model("tinyllama:latest", mode="fp32")
+        with GGUFFile(tinyllama_exported) as g:
+            assert g.architecture == "llama"
+            assert len(g.tensor_infos) > 0
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            out_path = Path(tmpdir) / "exported.gguf"
-            export_hf_to_gguf(model, tokenizer, out_path)
-
-            with GGUFFile(out_path) as g:
-                assert g.architecture == "llama"
-                assert len(g.tensor_infos) > 0
-
-    def test_exported_tokenizer_metadata(self):
+    def test_exported_tokenizer_metadata(self, tinyllama_exported):
         """Exported GGUF carries chat_template, byte-typed byte tokens, and merges."""
-        from llm_surgeon.llama_engine import export_hf_to_gguf
-        from llm_surgeon.surgery import load_model
         from llm_surgeon.gguf_reader import GGUFFile
 
-        model, tokenizer = load_model("tinyllama:latest", mode="fp32")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            out_path = Path(tmpdir) / "exported.gguf"
-            export_hf_to_gguf(model, tokenizer, out_path)
-
-            with GGUFFile(out_path) as g:
-                meta = g.metadata
-                assert meta.get("tokenizer.chat_template"), "chat_template missing"
-                token_types = meta.get("tokenizer.ggml.token_type")
-                assert token_types is not None
-                # TinyLlama has 256 byte tokens <0x00>..<0xFF> in the base vocab.
-                # Before this fix, all were tagged type 1 (normal); now they should be 6 (byte).
-                byte_type_count = sum(1 for t in token_types if t == 6)
-                assert byte_type_count >= 256, f"expected ≥256 byte-typed tokens, got {byte_type_count}"
-                # Merges are present for BPE-backed fast tokenizers.
-                merges = meta.get("tokenizer.ggml.merges")
-                assert merges is not None and len(merges) > 0
+        with GGUFFile(tinyllama_exported) as g:
+            meta = g.metadata
+            assert meta.get("tokenizer.chat_template"), "chat_template missing"
+            token_types = meta.get("tokenizer.ggml.token_type")
+            assert token_types is not None
+            # TinyLlama has 256 byte tokens <0x00>..<0xFF> in the base vocab.
+            # Before this fix, all were tagged type 1 (normal); now they should be 6 (byte).
+            byte_type_count = sum(1 for t in token_types if t == 6)
+            assert byte_type_count >= 256, f"expected ≥256 byte-typed tokens, got {byte_type_count}"
+            # Merges are present for BPE-backed fast tokenizers.
+            merges = meta.get("tokenizer.ggml.merges")
+            assert merges is not None and len(merges) > 0
 
 
 @requires_gguf
 class TestExportHfToGgufRopeTheta:
-    def test_raises_on_none_rope_theta(self, tiny_llama):
+    def test_raises_on_none_rope_theta(self, tiny_llama, tmp_path):
         """rope_theta=None must raise — silent fallback to 10000.0 would corrupt
         LLaMA 3 / Mistral exports where the true base is 500000 / 1000000."""
-        from llm_surgeon.llama_engine import export_hf_to_gguf
+        from llm_surgeon.gguf_writer import export_hf_to_gguf
 
         tiny_llama.config.rope_theta = None
         # Newer transformers stashes rope_theta under rope_parameters too —
@@ -428,10 +417,8 @@ class TestExportHfToGgufRopeTheta:
         if hasattr(tiny_llama.config, "rope_parameters"):
             tiny_llama.config.rope_parameters = None
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            out_path = Path(tmpdir) / "bad.gguf"
-            with pytest.raises(ValueError, match="rope_theta"):
-                export_hf_to_gguf(tiny_llama, None, out_path)
+        with pytest.raises(ValueError, match="rope_theta"):
+            export_hf_to_gguf(tiny_llama, None, tmp_path / "bad.gguf")
 
 
 def test_export_hf_to_gguf_without_gguf_raises_actionable_error(tiny_llama, tmp_path, monkeypatch):

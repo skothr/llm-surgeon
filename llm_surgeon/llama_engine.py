@@ -1,8 +1,7 @@
 """llama.cpp engine: native GGUF inference via llama-cpp-python.
 
 Provides LlamaEngine for fast generation/logits/perplexity on quantized
-GGUF models. The HF-to-GGUF export path lives in ``gguf_writer``;
-``export_hf_to_gguf`` is re-exported here for backward compatibility.
+GGUF models. The HF-to-GGUF export path lives in ``gguf_writer``.
 """
 
 import codecs
@@ -363,5 +362,3 @@ class LlamaEngine:
         target_logits = rows[np.arange(len(targets)), targets].astype(np.float64)
         return float(np.exp(np.mean(log_z - target_logits)))
 
-
-from llm_surgeon.gguf_writer import export_hf_to_gguf  # noqa: F401  (re-export)

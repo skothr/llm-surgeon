@@ -161,3 +161,40 @@ class TestLogitReads:
         eng = _engine(monkeypatch, FakeLlama(plan=_greedy_plan(2, [4, 5, EOS])))
         steps = list(eng.generate([BOS, 3], max_tokens=5, temperature=0))
         assert [s.token_id for s in steps] == [4, 5, EOS]
+
+
+# ---------------------------------------------------------------------------
+# Streaming text across multi-byte UTF-8 characters
+# ---------------------------------------------------------------------------
+
+
+class TestUtf8Streaming:
+    GEN = [8, 9, 10, 11, 12, 13]  # "é😀" as six byte tokens
+
+    def test_split_characters_are_emitted_whole(self, monkeypatch):
+        eng = _engine(monkeypatch, FakeLlama(plan=_greedy_plan(2, [*self.GEN, EOS])))
+        steps = list(eng.generate([BOS, 3], max_tokens=10, temperature=0))
+        text = "".join(s.token_str for s in steps)
+        assert text == "é😀"
+        assert "�" not in text
+        # The character is emitted on the step that completes it.
+        assert [s.token_str for s in steps[:6]] == ["", "é", "", "", "", "😀"]
+
+    def test_non_ascii_stop_sequence_matches(self, monkeypatch):
+        eng = _engine(monkeypatch, FakeLlama(plan=_greedy_plan(2, [*self.GEN, 3, 4])))
+        steps = list(
+            eng.generate([BOS, 3], max_tokens=10, temperature=0, stop_sequences=["😀"])
+        )
+        assert [s.token_id for s in steps] == self.GEN
+
+    def test_incomplete_tail_flushed_at_max_tokens(self, monkeypatch):
+        # Generation ends mid-character: the dangling byte is flushed as a
+        # replacement character instead of being silently dropped.
+        eng = _engine(monkeypatch, FakeLlama(plan=_greedy_plan(2, [3, 10])))
+        steps = list(eng.generate([BOS, 3], max_tokens=2, temperature=0))
+        assert "".join(s.token_str for s in steps) == " Hi�"
+
+    def test_leading_space_of_first_token_kept(self, monkeypatch):
+        eng = _engine(monkeypatch, FakeLlama(plan=_greedy_plan(2, [4, EOS])))
+        steps = list(eng.generate([BOS, 3], max_tokens=5, temperature=0))
+        assert steps[0].token_str == " there"

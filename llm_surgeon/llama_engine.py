@@ -5,6 +5,7 @@ GGUF models. The HF-to-GGUF export path lives in ``gguf_writer``;
 ``export_hf_to_gguf`` is re-exported here for backward compatibility.
 """
 
+import codecs
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -130,6 +131,18 @@ def _scores(llm: "Llama") -> np.ndarray:
     return llm.scores[: llm.n_tokens]
 
 
+def _decode_utf8(data: bytes, *, final: bool) -> str:
+    """Decode ``data`` as UTF-8, holding back an incomplete trailing character.
+
+    With ``final=False`` a multi-byte character whose bytes are not all
+    present yet (LLaMA byte-fallback tokens split emoji and rare CJK across
+    tokens) is left out instead of becoming U+FFFD; it appears once the
+    token that completes it arrives. ``final=True`` flushes it as U+FFFD.
+    """
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    return decoder.decode(data, final=final)
+
+
 class LlamaEngine:
     """Native GGUF inference via llama-cpp-python.
 
@@ -247,12 +260,14 @@ class LlamaEngine:
         # prior context). Detokenize `[last_prompt_token, *gen_so_far]` and
         # slice off whatever was already emitted so the first generated
         # token carries its leading space — otherwise " Paris" arrives as
-        # "Paris" and the panel renders "isParis". O(1) extra cost per step.
+        # "Paris" and the panel renders "isParis". Each step re-detokenizes
+        # the whole generation, O(len(generated)) per step.
         boundary_id = tokens[-1] if tokens else None
-        boundary_text = self.detokenize([boundary_id]) if boundary_id is not None else ""
-        prev_full = boundary_text
+        boundary = [boundary_id] if boundary_id is not None else []
+        prev_full = _decode_utf8(llm.detokenize(boundary), final=False)
+        eos_id = llm.token_eos()
 
-        for _ in range(max_tokens):
+        for step in range(max_tokens):
             logits_arr = np.array(_scores(llm)[-1], dtype=np.float32)
 
             if repetition_penalty != 1.0:
@@ -275,10 +290,10 @@ class LlamaEngine:
                 )
 
             generated_ids.append(next_id)
-            if boundary_id is not None:
-                full = self.detokenize([boundary_id, *generated_ids])
-            else:
-                full = self.detokenize(generated_ids)
+            # Flush a dangling partial character only when no later token
+            # can complete it.
+            last = step == max_tokens - 1 or next_id == eos_id
+            full = _decode_utf8(llm.detokenize([*boundary, *generated_ids]), final=last)
             token_str = full[len(prev_full):]
             prev_full = full
             generated_text += token_str
@@ -289,7 +304,7 @@ class LlamaEngine:
                 logits=logits_arr if emit_logits else None,
             )
 
-            if next_id == llm.token_eos():
+            if next_id == eos_id:
                 break
             if stop_sequences and any(s in generated_text for s in stop_sequences):
                 break

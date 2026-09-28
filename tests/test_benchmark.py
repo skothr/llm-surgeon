@@ -44,17 +44,15 @@ class TestPerplexityBasic:
         tok = _make_tiny_tokenizer(tiny_llama.config.vocab_size)
         text = " ".join([f"word{i % 50}" for i in range(300)])
 
-        perplexity(tiny_llama, tok, text=text)
+        ppl_base = perplexity(tiny_llama, tok, text=text)
 
         # Deep-copy so we operate on an independent model
         modified = copy.deepcopy(tiny_llama)
         remove_layers(modified, [3, 4, 5])
         ppl_modified = perplexity(modified, tok, text=text)
 
-        # Random-weight tiny models may produce similar perplexity after surgery.
-        # Just verify computation completed without error — real models show clear deltas.
-        assert isinstance(ppl_modified, float)
-        assert ppl_modified > 0
+        assert math.isfinite(ppl_modified)
+        assert ppl_modified != pytest.approx(ppl_base, rel=1e-6)
 
     def test_warns_on_quantized_model(self, tiny_llama):
         """perplexity() warns when model.config has quantization_config."""
@@ -158,7 +156,9 @@ class TestEvalDownstream:
 
     def test_invalid_task_raises_runtime_error(self, tiny_eval_checkpoint):
         """eval_downstream() raises RuntimeError for an unknown task name."""
-        with pytest.raises(RuntimeError):
+        # The task name must appear in lm_eval's error output, so a crash or
+        # network failure unrelated to task lookup does not satisfy the test.
+        with pytest.raises(RuntimeError, match="this_task_does_not_exist_xyz"):
             eval_downstream(
                 tasks=["this_task_does_not_exist_xyz"],
                 model_path=tiny_eval_checkpoint,

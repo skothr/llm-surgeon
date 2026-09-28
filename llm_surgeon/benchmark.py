@@ -1,5 +1,6 @@
 """Quantitative evaluation: perplexity and downstream task benchmarks."""
 
+import itertools
 import json
 import math
 import os
@@ -8,10 +9,13 @@ import subprocess
 import sys
 import tempfile
 import warnings
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn as nn
+
+if TYPE_CHECKING:
+    from llm_surgeon.tracking import Experiment
 
 
 # Downstream-eval defaults and helpers
@@ -25,6 +29,19 @@ PAPER_STANDARD_FEWSHOT: dict[str, int] = {
     "mmlu": 5,
 }
 
+PRIMARY_METRIC: dict[str, str] = {
+    "hellaswag": "acc_norm",
+    "arc_easy": "acc_norm",
+    "arc_challenge": "acc_norm",
+    "mmlu": "acc",
+}
+"""Metric reported per task by eval_downstream / eval_and_log.
+
+Length-normalised accuracy for the multiple-choice completion tasks, as in
+the Open LLM Leaderboard settings that PAPER_STANDARD_FEWSHOT follows.
+Tasks not listed report ``acc``.
+"""
+
 
 def _resolve_fewshot(
     tasks: list[str],
@@ -37,6 +54,8 @@ def _resolve_fewshot(
     dict -> specified tasks use the dict value; unspecified fall back to
             PAPER_STANDARD_FEWSHOT (then 0).
     """
+    if isinstance(num_fewshot, bool):
+        raise TypeError("num_fewshot must be an int, a dict or None, not bool.")
     if num_fewshot is None:
         return {t: PAPER_STANDARD_FEWSHOT.get(t, 0) for t in tasks}
     if isinstance(num_fewshot, int):
@@ -56,7 +75,7 @@ def _group_by_fewshot(fewshot_map: dict[str, int]) -> list[tuple[int, list[str]]
 
     Returns a sorted list of (count, [task, ...]) pairs. Ordering is
     deterministic: ascending by count, then by task name inside each group.
-    This lets _in_process_eval call simple_evaluate once per unique count.
+    Both harness paths run one lm_eval call per unique count.
     """
     buckets: dict[int, list[str]] = {}
     for task, n in fewshot_map.items():
@@ -66,6 +85,22 @@ def _group_by_fewshot(fewshot_map: dict[str, int]) -> list[tuple[int, list[str]]
 
 # Perplexity
 
+DEFAULT_PPL_WINDOW: int = 2048
+"""Default sliding-window length for :func:`perplexity`, in tokens.
+
+The window is ``min(max_position_embeddings, DEFAULT_PPL_WINDOW)`` unless the
+caller passes ``max_length``. Long-context configs (e.g. 131072 positions)
+would otherwise put the whole corpus in one forward pass.
+"""
+
+C4_DEFAULT_MAX_SAMPLES: int = 256
+"""Number of C4 validation documents read when ``max_samples`` is None.
+
+C4 is streamed; without a bound the whole validation split would be read
+into memory.
+"""
+
+
 def perplexity(
     model,
     tokenizer,
@@ -74,17 +109,28 @@ def perplexity(
     max_samples: int | None = None,
     stride: int | None = None,
     verbose: bool = False,
+    max_length: int | None = None,
 ) -> float:
     """Compute perplexity of *model* on the given text or dataset.
+
+    Every token after the first is scored exactly once. Each window of
+    *max_length* tokens scores only the tokens the previous window did not
+    reach, conditioned on up to ``max_length - 1`` tokens of context.
 
     Args:
         model: A HuggingFace ``CausalLM`` model (already loaded, in eval mode).
         tokenizer: Matching tokenizer.
         text: Raw text string to evaluate on.  Mutually exclusive with *dataset*.
         dataset: Dataset shorthand — ``"wikitext2"`` or ``"c4"``.
-        max_samples: Maximum number of dataset examples to concatenate.
-        stride: Sliding-window stride (tokens).  Defaults to
-            ``max_position_embeddings // 2``.
+        max_samples: Number of dataset rows to concatenate: raw wikitext-2
+            rows (blank rows included), or C4 documents (default
+            ``C4_DEFAULT_MAX_SAMPLES``).  None reads all of wikitext-2.
+        stride: Sliding-window stride (tokens), ``0 < stride < max_length``
+            (consecutive windows overlap so each window's first scored
+            token has context).
+            Defaults to ``max_length // 2``.
+        max_length: Window length (tokens).  Defaults to
+            ``min(max_position_embeddings, DEFAULT_PPL_WINDOW)``.
 
     Returns:
         Perplexity as a ``float``.
@@ -108,6 +154,20 @@ def perplexity(
                 stacklevel=2,
             )
 
+    # ---- Sliding window parameters -----------------------------------------
+    if max_length is None:
+        max_pos = int(getattr(model.config, "max_position_embeddings", 512))
+        max_length = min(max_pos, DEFAULT_PPL_WINDOW)
+    if max_length < 2:
+        raise ValueError(f"max_length must be >= 2, got {max_length}.")
+    if stride is None:
+        stride = max_length // 2
+    if not 0 < stride < max_length:
+        raise ValueError(
+            f"stride must satisfy 0 < stride < max_length ({max_length}), "
+            f"got {stride}."
+        )
+
     # ---- Resolve text -------------------------------------------------------
     if dataset is not None:
         text = _load_dataset_text(dataset, max_samples=max_samples)
@@ -119,14 +179,11 @@ def perplexity(
     # doesn't warn about sequence length exceeding max_position_embeddings.
     _saved_max = tokenizer.model_max_length
     tokenizer.model_max_length = int(1e12)
-    encodings = tokenizer(text, return_tensors="pt")
-    tokenizer.model_max_length = _saved_max
+    try:
+        encodings = tokenizer(text, return_tensors="pt")
+    finally:
+        tokenizer.model_max_length = _saved_max
     input_ids = encodings.input_ids  # shape (1, seq_len)
-
-    # ---- Sliding window parameters -----------------------------------------
-    max_length: int = int(getattr(model.config, "max_position_embeddings", 512))
-    if stride is None:
-        stride = max_length // 2
 
     seq_len = input_ids.size(1)
     # Use get_input_embeddings() for portability across HF architectures
@@ -137,40 +194,35 @@ def perplexity(
     nlls = []
     n_scored = 0
     prev_end = 0
-    total_windows = (seq_len - 1) // stride + 1
+    if seq_len <= max_length:
+        total_windows = 1
+    else:
+        total_windows = math.ceil((seq_len - max_length) / stride) + 1
     window_idx = 0
+    loss_fct = nn.CrossEntropyLoss(reduction="sum")
 
     for begin in range(0, seq_len, stride):
         end = min(begin + max_length, seq_len)
-        target_begin = max(begin, prev_end)
-
+        # Score tokens [target_begin, end). Token 0 has no context, and
+        # tokens before prev_end were scored by an earlier window.
+        target_begin = max(begin + 1, prev_end)
         chunk = input_ids[:, begin:end].to(device)
-        target_len = end - target_begin
-
-        if target_len <= 0:
-            prev_end = end
-            continue
 
         with torch.no_grad():
-            outputs = model(chunk, labels=chunk)
+            outputs = model(chunk)
 
-        # NLL only over the non-overlapping suffix. Re-compute from logits
-        # because outputs.loss is averaged across the full chunk.
-        logits = outputs.logits  # (1, chunk_len, vocab)
-        shift_logits = logits[:, :-1, :].contiguous()
-        shift_labels = chunk[:, 1:].contiguous()
-
-        rel_start = target_begin - begin
-        sl = shift_logits[:, rel_start:, :]
-        lb = shift_labels[:, rel_start:]
+        # The output at chunk position j predicts token begin + j + 1, so
+        # the first scored token (target_begin) is predicted at j = rel_start.
+        rel_start = target_begin - begin - 1
+        sl = outputs.logits[:, rel_start:-1, :]  # (1, n_target, vocab)
+        lb = chunk[:, rel_start + 1:]
 
         scored = lb.numel()
+        prev_end = end
         if scored == 0:
-            prev_end = end
             continue
 
-        loss_fct = nn.CrossEntropyLoss(reduction="sum")
-        nll = loss_fct(sl.view(-1, sl.size(-1)), lb.view(-1))
+        nll = loss_fct(sl.reshape(-1, sl.size(-1)).float(), lb.reshape(-1))
         nlls.append(nll.item())
         n_scored += scored
         window_idx += 1
@@ -180,7 +232,6 @@ def perplexity(
             print(f"  [perplexity] window {window_idx}/{total_windows} "
                   f"({end}/{seq_len} tokens, running ppl: {running_ppl:.2f})")
 
-        prev_end = end
         if end == seq_len:
             break
 
@@ -192,27 +243,28 @@ def perplexity(
 
 
 def _load_dataset_text(name: str, max_samples: int | None = None) -> str:
-    """Load and concatenate text from a HuggingFace dataset."""
+    """Load and concatenate text from a HuggingFace dataset.
+
+    wikitext2 follows the reference recipe, ``"\\n\\n".join(test["text"])``
+    over the raw rows (blank rows included), so the result is comparable
+    with published wikitext-2 perplexities; *max_samples* keeps the first N
+    raw rows.  c4 reads the first *max_samples* validation documents
+    (``C4_DEFAULT_MAX_SAMPLES`` when None).
+    """
     from datasets import load_dataset
 
     if name == "wikitext2":
         ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
-        texts = ds["text"]
-    elif name == "c4":
+        rows = list(ds["text"])
+        if max_samples is not None:
+            rows = rows[:max_samples]
+        return "\n\n".join(rows)
+    if name == "c4":
         ds = load_dataset("allenai/c4", "en", split="validation", streaming=True)
-        texts = (ex["text"] for ex in ds)
-    else:
-        raise ValueError(f"Unknown dataset: '{name}'. Supported: 'wikitext2', 'c4'.")
-
-    if max_samples is not None:
-        collected = []
-        for i, t in enumerate(texts):
-            if i >= max_samples:
-                break
-            collected.append(t)
-        texts = collected
-
-    return "\n\n".join(t for t in texts if t and t.strip())
+        n = C4_DEFAULT_MAX_SAMPLES if max_samples is None else max_samples
+        docs = (ex["text"] for ex in itertools.islice(ds, n))
+        return "\n\n".join(t for t in docs if t and t.strip())
+    raise ValueError(f"Unknown dataset: '{name}'. Supported: 'wikitext2', 'c4'.")
 
 
 # Downstream evaluation via lm-evaluation-harness
@@ -232,8 +284,39 @@ def eval_downstream(
 
     - ``model_path=...`` -> shells out to ``lm_eval`` CLI (legacy path).
     - ``model=..., tokenizer=...`` -> runs in-process via ``HFLM`` (new).
+
+    Both paths resolve *num_fewshot* the same way (see ``_resolve_fewshot``):
+    None uses ``PAPER_STANDARD_FEWSHOT`` per task, an int applies to every
+    task, and a dict overrides per task.  Tasks with different counts run
+    as separate harness calls.
+
+    Returns:
+        ``{task: score}`` using each task's primary metric from
+        ``PRIMARY_METRIC`` (``acc`` for tasks not listed there).
     """
-    # Validate model-source arguments.
+    if tasks is None:
+        tasks = list(FAST_TRIPLET)
+    full = _run_harness(
+        model_path=model_path, model=model, tokenizer=tokenizer,
+        tasks=tasks, num_fewshot=num_fewshot, limit=limit,
+    )
+    return _extract_accuracies(full, tasks)
+
+
+def _run_harness(
+    *,
+    model_path: str | None,
+    model: Any,
+    tokenizer: Any,
+    tasks: list[str],
+    num_fewshot: int | dict[str, int] | None,
+    limit: int | None,
+) -> dict[str, Any]:
+    """Validate the model source and run lm_eval on the chosen path.
+
+    Returns the merged harness output; ``full["effective_num_fewshot"]`` is
+    the per-task few-shot count that actually ran.
+    """
     if (model_path is None) == (model is None):
         raise ValueError(
             "Exactly one of model_path or model must be provided."
@@ -241,30 +324,33 @@ def eval_downstream(
     if model is not None and tokenizer is None:
         raise ValueError("tokenizer is required when model is provided.")
 
-    if tasks is None:
-        tasks = list(FAST_TRIPLET)
-
     if model is not None:
-        full_result = _in_process_eval(
+        return _in_process_eval(
             model=model, tokenizer=tokenizer,
             tasks=tasks, num_fewshot=num_fewshot, limit=limit,
         )
-        return _extract_accuracies(full_result, tasks)
-
-    # Subprocess path (legacy).
-    if isinstance(num_fewshot, dict):
-        raise ValueError(
-            "Dict num_fewshot is only supported with in-memory model; "
-            "pass an int or None for the model_path subprocess path."
-        )
-    effective_nf = num_fewshot if num_fewshot is not None else 0
     assert model_path is not None
-    return _subprocess_eval(
-        model_path=model_path,
-        tasks=tasks,
-        num_fewshot=effective_nf,
-        limit=limit,
+    return _subprocess_eval_grouped(
+        model_path=model_path, tasks=tasks,
+        num_fewshot=num_fewshot, limit=limit,
     )
+
+
+def _merge_harness_outputs(partials: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge the outputs of several harness calls (one per few-shot group).
+
+    Dict-valued top-level keys (``results``, ``versions``, ``n-shot``,
+    ``configs``, ``higher_is_better``, ...) are merged across groups.  The
+    run-level ``config`` and other non-dict values come from the first group.
+    """
+    merged: dict[str, Any] = {"results": {}}
+    for partial in partials:
+        for key, value in partial.items():
+            if key == "config" or not isinstance(value, dict):
+                merged.setdefault(key, value)
+            else:
+                merged.setdefault(key, {}).update(value)
+    return merged
 
 
 def _subprocess_eval_full(
@@ -274,11 +360,7 @@ def _subprocess_eval_full(
     num_fewshot: int,
     limit: int | None,
 ) -> dict[str, Any]:
-    """Shell out to ``lm_eval`` CLI and return the full output dict.
-
-    Core subprocess path; both `_subprocess_eval` (narrowed) and
-    `eval_and_log`'s subprocess branch build on this.
-    """
+    """Shell out to ``lm_eval`` CLI once and return the full output dict."""
     tasks_str = ",".join(tasks)
     with tempfile.TemporaryDirectory() as tmpdir:
         cmd = [
@@ -308,19 +390,25 @@ def _subprocess_eval_full(
         return _find_and_parse_results(tmpdir)
 
 
-def _subprocess_eval(
+def _subprocess_eval_grouped(
     *,
     model_path: str,
     tasks: list[str],
-    num_fewshot: int,
+    num_fewshot: int | dict[str, int] | None,
     limit: int | None,
-) -> dict[str, float]:
-    """Narrowed-output subprocess path — delegates to `_subprocess_eval_full`."""
-    results_data = _subprocess_eval_full(
-        model_path=model_path, tasks=tasks,
-        num_fewshot=num_fewshot, limit=limit,
-    )
-    return _extract_accuracies(results_data, tasks)
+) -> dict[str, Any]:
+    """Run the ``lm_eval`` CLI once per few-shot group and merge the outputs."""
+    fewshot_map = _resolve_fewshot(tasks, num_fewshot)
+    partials = [
+        _subprocess_eval_full(
+            model_path=model_path, tasks=group,
+            num_fewshot=n, limit=limit,
+        )
+        for n, group in _group_by_fewshot(fewshot_map)
+    ]
+    merged = _merge_harness_outputs(partials)
+    merged["effective_num_fewshot"] = fewshot_map
+    return merged
 
 
 def _in_process_eval(
@@ -347,31 +435,33 @@ def _in_process_eval(
     lm = HFLM(pretrained=model, tokenizer=tokenizer)  # pyright: ignore[reportCallIssue]
     fewshot_map = _resolve_fewshot(tasks, num_fewshot)
 
-    merged: dict[str, Any] = {"results": {}, "config": None}
+    partials: list[dict[str, Any]] = []
     for n, group in _group_by_fewshot(fewshot_map):
         # pyright resolves simple_evaluate through lm_eval's lazy __getattr__
         # and can't see the real signature — runtime call is correct.
         partial: Any = simple_evaluate(model=lm, tasks=group, num_fewshot=n, limit=limit)  # pyright: ignore[reportCallIssue, reportArgumentType]
-        merged["results"].update(partial["results"])
-        if merged["config"] is None:
-            merged["config"] = partial.get("config", {})
+        partials.append(partial)
+    merged = _merge_harness_outputs(partials)
     merged["effective_num_fewshot"] = fewshot_map
     return merged
 
 
 def _serialize_harness_metrics(task_result: dict[str, Any]) -> dict[str, float]:
-    """Flatten a single task's harness result into float-valued metrics."""
+    """Flatten a single task's harness result into float-valued metrics.
+
+    Keeps finite int/float values; drops strings, bools and NaN/inf.
+    """
     out: dict[str, float] = {}
     for k, v in task_result.items():
-        if isinstance(v, (int, float)) and not (
-            isinstance(v, float) and math.isnan(v)
-        ):
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            continue
+        if math.isfinite(v):
             out[k] = float(v)
     return out
 
 
 def eval_and_log(
-    experiment: Any,
+    experiment: "Experiment",
     *,
     model_path: str | None = None,
     model: Any = None,
@@ -380,33 +470,17 @@ def eval_and_log(
     num_fewshot: int | dict[str, int] | None = None,
     limit: int | None = None,
 ) -> dict[str, float]:
-    """Run eval_downstream and persist results to experiment tracking."""
-    if (model_path is None) == (model is None):
-        raise ValueError(
-            "Exactly one of model_path or model must be provided."
-        )
-    if model is not None and tokenizer is None:
-        raise ValueError("tokenizer is required when model is provided.")
+    """Run eval_downstream and persist results to experiment tracking.
 
+    The stored ``num_fewshot`` is the per-task count that actually ran.
+    """
     if tasks is None:
         tasks = list(FAST_TRIPLET)
 
-    if model is not None:
-        full = _in_process_eval(
-            model=model, tokenizer=tokenizer,
-            tasks=tasks, num_fewshot=num_fewshot, limit=limit,
-        )
-    else:
-        if isinstance(num_fewshot, dict):
-            raise ValueError(
-                "Dict num_fewshot is only supported with in-memory model."
-            )
-        effective_nf = num_fewshot if num_fewshot is not None else 0
-        assert model_path is not None
-        full = _subprocess_eval_full(
-            model_path=model_path, tasks=tasks,
-            num_fewshot=effective_nf, limit=limit,
-        )
+    full = _run_harness(
+        model_path=model_path, model=model, tokenizer=tokenizer,
+        tasks=tasks, num_fewshot=num_fewshot, limit=limit,
+    )
 
     for task in tasks:
         task_result = full.get("results", {}).get(task, {})
@@ -415,15 +489,11 @@ def eval_and_log(
             experiment.log_metric(f"harness.{task}.{metric_key}", value)
 
     from llm_surgeon.tracking import log_harness_result
-    if isinstance(num_fewshot, int):
-        nf_to_store: Any = num_fewshot
-    else:
-        nf_to_store = _resolve_fewshot(tasks, num_fewshot)
     log_harness_result(
         db_path=experiment.db_path,
         experiment_name=experiment.name,
         tasks=tasks,
-        num_fewshot=nf_to_store,
+        num_fewshot=full["effective_num_fewshot"],
         limit=limit,
         result=full,
     )
@@ -446,21 +516,27 @@ def _find_and_parse_results(output_dir: str) -> dict:
 
 
 def _extract_accuracies(data: dict, tasks: list[str]) -> dict[str, float]:
-    """Extract per-task accuracy from lm_eval JSON output."""
+    """Extract per-task primary-metric scores from lm_eval JSON output.
+
+    The metric for each task is ``PRIMARY_METRIC[task]`` (default ``acc``);
+    if the harness did not report it, the other of ``acc`` / ``acc_norm``
+    is used.
+    """
     results = data.get("results", {})
     out: dict[str, float] = {}
 
     for task in tasks:
         if task not in results:
-            # Try with comma-separated group fallback
             raise RuntimeError(
                 f"Task '{task}' not found in lm_eval results. "
                 f"Available keys: {list(results.keys())}"
             )
         task_data = results[task]
-        # lm_eval stores accuracy under different keys depending on the task
-        for key in ("acc,none", "acc_norm,none", "acc", "acc_norm"):
-            if key in task_data:
+        primary = PRIMARY_METRIC.get(task, "acc")
+        metrics = [primary] + [m for m in ("acc", "acc_norm") if m != primary]
+        for metric in metrics:
+            key = next((k for k in (f"{metric},none", metric) if k in task_data), None)
+            if key is not None:
                 out[task] = float(task_data[key])
                 break
         else:
@@ -495,6 +571,7 @@ def compare(
     temperature: float = 0.0,
     max_tokens: int = 256,
     output_file: str | None = None,
+    host: str = "http://localhost:11434",
 ) -> list[dict[str, Any]]:
     """Compare multiple ollama models across a set of prompts.
 
@@ -508,6 +585,7 @@ def compare(
         temperature: Sampling temperature.  ``0.0`` is near-deterministic.
         max_tokens: Maximum number of tokens to generate per response.
         output_file: If provided, write results as JSON to this path.
+        host: Base URL of the Ollama server.
 
     Returns:
         List of result dicts, one per prompt::
@@ -521,11 +599,16 @@ def compare(
                             "text": str,
                             "tokens_per_second": float,
                             "total_tokens": int,
+                            "error": str,  # only when the request failed
                         }
                     }
                 },
                 ...
             ]
+
+        A failed request (connection error, timeout, HTTP error, bad JSON)
+        is recorded with ``text=""`` and an ``error`` message instead of
+        aborting the run.
 
     Note:
         ``temperature=0.0`` is near-deterministic but not exact due to
@@ -554,13 +637,22 @@ def compare(
                     "num_predict": max_tokens,
                 },
             }
-            resp = requests.post(
-                "http://localhost:11434/api/generate",
-                json=payload,
-                timeout=120,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            try:
+                resp = requests.post(
+                    f"{host.rstrip('/')}/api/generate",
+                    json=payload,
+                    timeout=120,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except requests.RequestException as exc:
+                responses[model] = {
+                    "text": "",
+                    "tokens_per_second": 0.0,
+                    "total_tokens": 0,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                continue
 
             text = data.get("response", "")
             eval_count = data.get("eval_count", 0)
@@ -628,11 +720,14 @@ def generation_metrics(results: list[dict[str, Any]]) -> dict[str, dict[str, flo
     Metrics computed per model:
 
     - ``mean_output_length``: average character length of responses.
-    - ``vocab_diversity``: ``unique_words / total_words`` (0–1).
-    - ``repetition_rate``: fraction of 3-grams that are repeated
+    - ``vocab_diversity``: ``unique_words / total_words`` per response,
+      averaged over responses with words (0–1).
+    - ``repetition_rate``: fraction of 3-grams repeated within a response,
+      averaged over responses with at least 3 words
       (0 = no repetition, 1 = all repeated).
-    - ``coherence``: fraction of responses that are non-empty,
-      non-error, and contain only printable text.
+    - ``coherence``: fraction of responses that are non-empty, non-error
+      (no ``error`` key from :func:`compare`), and at least 90% printable
+      text (newlines, tabs and carriage returns count as printable).
 
     Args:
         results: Output from :func:`compare`.
@@ -650,7 +745,9 @@ def generation_metrics(results: list[dict[str, Any]]) -> dict[str, dict[str, flo
     texts_per_model: dict[str, list[str]] = {m: [] for m in model_names}
     for entry in results:
         for model in model_names:
-            text = entry["responses"].get(model, {}).get("text", "")
+            resp = entry["responses"].get(model, {})
+            # A failed request scores as an empty (incoherent) response.
+            text = "" if resp.get("error") else resp.get("text", "")
             texts_per_model[model].append(text)
 
     out: dict[str, dict[str, float]] = {}
@@ -672,47 +769,55 @@ def _mean_output_length(texts: list[str]) -> float:
     return sum(len(t) for t in texts) / len(texts)
 
 
+def _words(text: str) -> list[str]:
+    return re.findall(r"\b\w+\b", text.lower())
+
+
 def _vocab_diversity(texts: list[str]) -> float:
-    """Ratio of unique words to total words across all texts (0–1)."""
-    all_words: list[str] = []
-    for text in texts:
-        words = re.findall(r"\b\w+\b", text.lower())
-        all_words.extend(words)
-    if not all_words:
+    """Mean per-response ratio of unique words to total words (0–1).
+
+    Computed per response so the score does not fall with the number or
+    length of responses pooled together.
+    """
+    ratios = [len(set(w)) / len(w) for w in map(_words, texts) if w]
+    if not ratios:
         return 0.0
-    return len(set(all_words)) / len(all_words)
+    return sum(ratios) / len(ratios)
 
 
 def _repetition_rate(texts: list[str]) -> float:
-    """Fraction of 3-grams that are repeated within the combined text.
+    """Mean per-response fraction of 3-grams that are repeated.
 
-    A 3-gram is "repeated" if it appears more than once.  The rate is
-    ``repeated_3gram_count / total_3gram_count``, or 0 if there are
-    fewer than 3 words total.
+    A 3-gram is "repeated" if it appears more than once in the same
+    response.  Each response's rate is
+    ``repeated_3gram_count / total_3gram_count``; responses with fewer
+    than 3 words are skipped, and the result is 0 if none remain.  Phrases
+    shared across different responses do not count.
     """
-    all_words: list[str] = []
-    for text in texts:
-        words = re.findall(r"\b\w+\b", text.lower())
-        all_words.extend(words)
-
-    if len(all_words) < 3:
+    rates: list[float] = []
+    for words in map(_words, texts):
+        if len(words) < 3:
+            continue
+        trigrams = list(zip(words, words[1:], words[2:]))
+        counts: dict[tuple, int] = {}
+        for tg in trigrams:
+            counts[tg] = counts.get(tg, 0) + 1
+        repeated = sum(1 for tg in trigrams if counts[tg] > 1)
+        rates.append(repeated / len(trigrams))
+    if not rates:
         return 0.0
+    return sum(rates) / len(rates)
 
-    trigrams = [
-        (all_words[i], all_words[i + 1], all_words[i + 2])
-        for i in range(len(all_words) - 2)
-    ]
-    total = len(trigrams)
-    counts: dict[tuple, int] = {}
-    for tg in trigrams:
-        counts[tg] = counts.get(tg, 0) + 1
 
-    repeated = sum(1 for tg in trigrams if counts[tg] > 1)
-    return repeated / total
+_ALLOWED_WHITESPACE = frozenset("\n\t\r")
 
 
 def _coherence(texts: list[str]) -> float:
-    """Fraction of responses that are non-empty and contain printable text."""
+    """Fraction of responses that are non-empty and contain printable text.
+
+    ``str.isprintable`` is False for newlines and tabs, so those are
+    counted as printable here; multi-line answers are not failures.
+    """
     if not texts:
         return 0.0
     coherent = 0
@@ -720,7 +825,9 @@ def _coherence(texts: list[str]) -> float:
         if not text or not text.strip():
             continue
         # Check that at least 90% of characters are printable
-        printable_count = sum(1 for c in text if c.isprintable())
+        printable_count = sum(
+            1 for c in text if c.isprintable() or c in _ALLOWED_WHITESPACE
+        )
         if printable_count / len(text) >= 0.9:
             coherent += 1
     return coherent / len(texts)

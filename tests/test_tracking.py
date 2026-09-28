@@ -3,6 +3,8 @@
 import json
 import sqlite3
 
+import pytest
+
 from llm_surgeon.tracking import (
     compare_experiments,
     get_experiment,
@@ -15,7 +17,9 @@ from llm_surgeon.surgery import SurgeryLog
 
 def test_start_creates_experiment(tmp_path):
     db = str(tmp_path / "exp.db")
-    exp = start("test-exp", description="a test", base_model="tiny", recipe={}, db_path=db)
+    exp = start(
+        "test-exp", description="a test", base_model="tiny", recipe={}, db_path=db
+    )
     assert exp is not None
     exps = list_experiments(db_path=db)
     assert len(exps) == 1
@@ -148,8 +152,11 @@ class TestHarnessResultsTable:
         db = str(tmp_path / "t.db")
         start("exp1", db_path=db)
         log_harness_result(
-            db_path=db, experiment_name="exp1",
-            tasks=["hellaswag"], num_fewshot=0, limit=None,
+            db_path=db,
+            experiment_name="exp1",
+            tasks=["hellaswag"],
+            num_fewshot=0,
+            limit=None,
             result={"results": {}},
         )
         # Re-run the experiment — prior rows should be wiped.
@@ -209,3 +216,68 @@ def test_default_db_lives_under_llm_surgeon_home(tmp_path, monkeypatch):
     exp = start("home-exp")
     assert exp.db_path == str(tmp_path / "home" / "experiments.db")
     assert (tmp_path / "home" / "experiments.db").exists()
+
+
+class TestFailAndReplace:
+    def test_fail_sets_failed_status_and_error(self, tmp_path):
+        db = str(tmp_path / "exp.db")
+        exp = start("crashy", db_path=db)
+        exp.fail("RuntimeError: out of memory")
+        row = get_experiment("crashy", db_path=db)
+        assert row["status"] == "failed"
+        assert "out of memory" in row["notes"]
+        assert row["finished_at"] is not None
+
+    def test_replace_false_refuses_existing_name(self, tmp_path):
+        db = str(tmp_path / "exp.db")
+        exp = start("keep-me", db_path=db)
+        exp.log_metric("perplexity", 12.0)
+        exp.finish()
+        with pytest.raises(ValueError, match="keep-me"):
+            start("keep-me", db_path=db, replace=False)
+        # The earlier run's data is untouched.
+        row = get_experiment("keep-me", db_path=db)
+        assert row["status"] == "completed"
+        assert [m["value"] for m in row["metrics"]] == [12.0]
+
+    def test_replace_default_still_replaces(self, tmp_path):
+        db = str(tmp_path / "exp.db")
+        start("again", db_path=db).log_metric("x", 1.0)
+        start("again", db_path=db)
+        assert get_experiment("again", db_path=db)["metrics"] == []
+
+
+class TestSchemaCreation:
+    def test_recreated_db_file_gets_schema(self, tmp_path):
+        db = tmp_path / "exp.db"
+        start("first", db_path=str(db))
+        db.unlink()
+        # A per-path "schema already created" cache skipped CREATE TABLE here.
+        start("second", db_path=str(db))
+        assert [e["name"] for e in list_experiments(db_path=str(db))] == ["second"]
+
+
+class TestGetExperimentExtras:
+    def test_includes_harness_results(self, tmp_path):
+        db = str(tmp_path / "exp.db")
+        start("h", db_path=db)
+        log_harness_result(
+            db_path=db,
+            experiment_name="h",
+            tasks=["arc_easy"],
+            num_fewshot=0,
+            limit=5,
+            result={"results": {"arc_easy": {"acc": 0.5}}},
+        )
+        row = get_experiment("h", db_path=db)
+        assert len(row["harness_results"]) == 1
+        hr = row["harness_results"][0]
+        assert json.loads(hr["tasks_json"]) == ["arc_easy"]
+        assert json.loads(hr["result_json"])["results"]["arc_easy"]["acc"] == 0.5
+
+    def test_compare_experiments_last_metric_wins(self, tmp_path):
+        db = str(tmp_path / "exp.db")
+        exp = start("dup", db_path=db)
+        exp.log_metric("ppl", 10.0)
+        exp.log_metric("ppl", 20.0)
+        assert compare_experiments(["dup"], db_path=db) == {"dup": {"ppl": 20.0}}
